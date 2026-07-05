@@ -28,7 +28,8 @@ Tools are the build, test, protocol, and integration surfaces agents can use.
 Planned tools:
 
 - Python 3.11+ for the MVP bridge.
-- FastAPI, Pydantic, and qrcode for bridge transport and pairing.
+- Python standard library HTTP/WebSocket server for the default bridge runtime.
+- Optional FastAPI, Pydantic, uvicorn, and qrcode extras for richer transport and QR rendering.
 - Gradle for Android builds.
 - Kotlin and Jetpack Compose for UI.
 - Kotlin serialization for typed JSON messages.

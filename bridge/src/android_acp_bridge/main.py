@@ -5,7 +5,8 @@ import sys
 
 from .config import DEFAULT_PORT, default_config
 from .pairing import PairingStore, build_pairing_payload, encode_pairing_deep_link, render_terminal_qr
-from .server import BridgeRuntime, create_app
+from .runtime import BridgeRuntime
+from .stdlib_server import run_server
 from .tailscale import TailscaleState, build_websocket_endpoint, get_status
 
 
@@ -19,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--workspace", help="Allowed workspace path. Defaults to the current directory.")
     start_parser.add_argument("--allow-non-tailscale", action="store_true", help="Allow localhost/manual endpoint when Tailscale is unavailable.")
     start_parser.add_argument("--auto-approve-pairing", action="store_true", help="Skip local pairing confirmation. Use only for tests or trusted local demos.")
+    start_parser.add_argument("--server", choices=("stdlib", "fastapi"), default="stdlib", help="Server backend. Defaults to stdlib with no external dependencies.")
     start_parser.add_argument("--no-qr", action="store_true", help="Print pairing link without terminal QR art.")
 
     subparsers.add_parser("tailscale-status", help="Print the detected Tailscale status")
@@ -91,11 +93,10 @@ def _start(args: argparse.Namespace) -> int:
         pairing_store=pairing_store,
         require_local_pairing_confirmation=not args.auto_approve_pairing,
     )
-    app = create_app(runtime)
-
-    import uvicorn
-
-    uvicorn.run(app, host=config.host, port=config.port)
+    if args.server == "fastapi":
+        _run_fastapi(runtime)
+    else:
+        run_server(runtime)
     return 0
 
 
@@ -112,6 +113,17 @@ def _print_pairing(machine_name: str, endpoint: str, bridge_fingerprint: str, no
     if not no_qr:
         print(render_terminal_qr(deep_link))
     return 0
+
+
+def _run_fastapi(runtime: BridgeRuntime) -> None:
+    try:
+        import uvicorn
+
+        from .server import create_app
+    except ImportError as exc:
+        raise SystemExit("FastAPI server backend requires: python -m pip install -e .[fastapi]") from exc
+
+    uvicorn.run(create_app(runtime), host=runtime.config.host, port=runtime.config.port)
 
 
 if __name__ == "__main__":

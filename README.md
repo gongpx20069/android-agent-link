@@ -25,9 +25,8 @@ This repository currently contains the initial project harness, design documenta
 
 ```powershell
 cd bridge
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -e .
-.\.venv\Scripts\android-acp-bridge start --allow-non-tailscale
+$env:PYTHONPATH="$PWD\src"
+python -m android_acp_bridge.main start --allow-non-tailscale
 ```
 
-For normal use, run with Tailscale connected so the generated QR code contains a private-network endpoint.
+The default bridge server uses only the Python standard library. For normal use, run with Tailscale connected so the generated QR code contains a private-network endpoint.

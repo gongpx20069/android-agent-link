@@ -32,12 +32,12 @@ The MVP bridge is implemented as a Python subproject under `bridge/`.
 Initial choices:
 
 - Python 3.11+
-- FastAPI for HTTP/WebSocket endpoints
-- Pydantic for request models
-- `qrcode` for terminal pairing QR rendering
+- Python standard library HTTP/WebSocket server as the default runtime path
 - Tailscale CLI integration through subprocess calls
+- Optional FastAPI/Pydantic/uvicorn backend for future richer transport work
+- Optional `qrcode` dependency for terminal QR rendering
 
-The Python bridge is optimized for MVP speed and cross-platform development. A later release may package it as a standalone executable so developer machines do not need to install Python manually.
+The Python bridge is optimized for MVP speed and cross-platform development. The default path avoids external runtime dependencies so a developer can run from source with `PYTHONPATH=bridge/src`. A later release may package it as a standalone executable so developer machines do not need to install Python manually.
 
 ## App Modules
 
