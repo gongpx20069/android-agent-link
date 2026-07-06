@@ -42,3 +42,56 @@ enum class ConnectionState {
     Online,
     Offline,
 }
+
+data class Chat(
+    val id: String,
+    val title: String,
+    val machineId: String,
+    val machineName: String,
+    val workspaceId: String,
+    val workspaceName: String,
+    val workspacePath: String,
+    val agentId: String,
+    val agentName: String,
+    val createdAtMillis: Long,
+    val messages: List<ChatMessage> = emptyList(),
+)
+
+data class ChatMessage(
+    val role: MessageRole,
+    val text: String,
+    val timestampMillis: Long,
+    val kind: ChatMessageKind = ChatMessageKind.Message,
+    val title: String? = null,
+    val details: String? = null,
+)
+
+enum class MessageRole {
+    User,
+    Agent,
+    System,
+}
+
+enum class ChatMessageKind {
+    Message,
+    Activity,
+}
+
+data class Approval(
+    val id: String,
+    val chatId: String,
+    val chatTitle: String,
+    val machineId: String,
+    val machineName: String,
+    val workspacePath: String,
+    val action: String,
+    val summary: String,
+    val status: ApprovalStatus = ApprovalStatus.Pending,
+    val createdAtMillis: Long,
+)
+
+enum class ApprovalStatus {
+    Pending,
+    Approved,
+    Denied,
+}

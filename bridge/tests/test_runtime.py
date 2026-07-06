@@ -8,6 +8,15 @@ from android_acp_bridge.runtime import BridgeRuntime, DeviceInfo, InvalidPairing
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_default_runtime_has_no_startup_workspaces(self) -> None:
+        runtime = BridgeRuntime(
+            config=BridgeConfig(machine_name="devbox"),
+            pairing_store=PairingStore(),
+            require_local_pairing_confirmation=False,
+        )
+
+        self.assertEqual(runtime.workspaces_response(), {"workspaces": []})
+
     def test_workspaces_response_uses_wire_names(self) -> None:
         runtime = BridgeRuntime(
             config=BridgeConfig(
@@ -82,4 +91,3 @@ class RuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

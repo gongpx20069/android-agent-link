@@ -4,7 +4,7 @@ This document describes the current AgentLink Android client implementation.
 
 ## Current Scope
 
-The initial Android app focuses on machine onboarding:
+The initial Android app supports machine onboarding plus an MVP chat shell:
 
 - Compose application shell.
 - Bottom tabs: Chats, Approvals, Machines, Settings.
@@ -14,8 +14,13 @@ The initial Android app focuses on machine onboarding:
 - Pairing token redemption through the bridge.
 - Secure machine storage using AndroidX Security encrypted preferences.
 - Health, agents, and workspaces loading from the bridge.
+- New Chat form with machine, per-chat workspace path, and agent selection.
+- Chat list and WhatsApp-style chat detail view with full conversation history.
+- Fixed bottom prompt box for sending chat messages.
+- Collapsible agent activity cards for tool calls, bridge calls, and future agent steps.
+- Approval list with approve/deny actions.
 
-Chats and approvals are placeholder screens until machine/workspace onboarding is stable.
+Full ACP agent execution is not wired yet. The current chat shell sends prompt and approval messages through the bridge WebSocket and displays bridge responses as agent activity.
 
 ## Pairing UX
 
@@ -52,9 +57,13 @@ After pairing, the app calls:
 
 If the pairing payload includes `headers`, the app sends those headers with all bridge HTTP calls for that machine.
 
-Future chat support will use:
+The chat shell uses:
 
 - `WS /ws?token=<deviceToken>`
+
+## Workspace Selection
+
+The bridge does not bind a workspace at startup. Workspace is selected per chat in the New Chat form by entering the remote absolute project path. That path will map to ACP `cwd` when ACP session execution is connected.
 
 ## Validation
 

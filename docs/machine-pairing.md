@@ -114,6 +114,8 @@ Expected checks:
 
 The bridge startup command requires Tailscale by default. `--allow-non-tailscale` is reserved for localhost/manual testing and should not be used for normal Android pairing.
 
+The bridge does not select a workspace during pairing. Workspace selection happens later in Android when creating a chat.
+
 ## Android Pairing QR Payload
 
 The Android pairing QR should use a deep link:

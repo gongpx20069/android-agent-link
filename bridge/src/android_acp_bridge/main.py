@@ -23,7 +23,6 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--host", default=None, help="Host to bind. Defaults to the Tailscale IP in Tailscale mode.")
     start_parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind.")
     start_parser.add_argument("--pairing-endpoint", help="Endpoint to put in the Android pairing QR/link when a relay forwards to this bridge, e.g. wss://<id>-4317.devtunnels.ms.")
-    start_parser.add_argument("--workspace", help="Allowed workspace path. Defaults to the current directory.")
     start_parser.add_argument("--allow-non-tailscale", action="store_true", help="Allow localhost/manual endpoint when Tailscale is unavailable.")
     start_parser.add_argument("--no-tailscale-setup", action="store_true", help="Skip automatic Tailscale install/login and only report current status.")
     start_parser.add_argument("--devtunnel-id", default=default_tunnel_id(), help="Microsoft Dev Tunnel ID to create or reuse when --transport devtunnel is selected.")
@@ -108,7 +107,7 @@ def _start(args: argparse.Namespace) -> int:
 
         pairing_endpoint = _validate_pairing_endpoint(args.pairing_endpoint) if args.pairing_endpoint else endpoint
 
-    config = default_config(host=bind_host, port=args.port, workspace=args.workspace)
+    config = default_config(host=bind_host, port=args.port)
 
     pairing_store = PairingStore()
     token = pairing_store.create()

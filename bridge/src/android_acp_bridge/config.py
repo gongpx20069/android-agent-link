@@ -39,11 +39,10 @@ def default_workspace(path: str | None = None) -> WorkspaceConfig:
     )
 
 
-def default_config(host: str = "127.0.0.1", port: int = DEFAULT_PORT, workspace: str | None = None) -> BridgeConfig:
-    return BridgeConfig(host=host, port=port, workspaces=(default_workspace(workspace),))
+def default_config(host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> BridgeConfig:
+    return BridgeConfig(host=host, port=port, workspaces=())
 
 
 def _stable_id(value: str) -> str:
     normalized = "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-")
     return normalized or "workspace"
-

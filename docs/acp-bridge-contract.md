@@ -101,17 +101,11 @@ Response:
 
 ```json
 {
-  "workspaces": [
-    {
-      "id": "android-agent-link",
-      "displayName": "android-agent-link",
-      "absolutePath": "D:\\repos\\android-agent-link"
-    }
-  ]
+  "workspaces": []
 }
 ```
 
-The bridge should only return configured or allowed workspace roots.
+The bridge does not bind a workspace at startup. The Android app selects a workspace per chat. This endpoint is reserved for optional recent/allowed workspace discovery.
 
 ### Pairing Redeem
 
