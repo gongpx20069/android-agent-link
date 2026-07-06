@@ -8,7 +8,7 @@ Python MVP bridge for pairing Android ACP Client with a remote developer machine
 python .\run.py start --allow-non-tailscale
 ```
 
-The default server backend uses only the Python standard library. It checks Tailscale status, starts a local HTTP/WebSocket server, creates a short-lived pairing token, and prints both an Android pairing link and terminal QR code on every bridge startup.
+The default server backend uses only the Python standard library. It checks Tailscale status, starts a local HTTP/WebSocket server, creates a short-lived pairing token, and prints both an Android pairing link and a compact CLI QR code on every bridge startup.
 
 `run.py` creates `bridge\.venv` on first use, installs `requirements.txt`, and forwards every argument to the bridge CLI. Package installation is still supported when you want the command on your PATH:
 
@@ -60,5 +60,5 @@ python .\run.py pairing
 python -m pip install -r requirements-fastapi.txt
 ```
 
-- `qrcode` is part of the required bridge runtime so pairing can render terminal QR codes by default.
+- `qrcode` is part of the required bridge runtime so pairing can render compact CLI QR codes by default.
 - `fastapi` enables the optional FastAPI/uvicorn server backend.

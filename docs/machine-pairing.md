@@ -83,7 +83,7 @@ The bridge listener is up and a pairing token exists.
 
 Bridge behavior:
 
-- Display a QR code containing endpoint metadata and a one-time token.
+- Display a compact CLI QR code containing endpoint metadata and a one-time token.
 - Display the underlying `acpclient://pair?...` link next to the QR code so the user can paste it manually if scanning is unavailable.
 - Expire the token quickly.
 - Require local confirmation on the developer machine when a device redeems the token.

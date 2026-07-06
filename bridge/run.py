@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import venv
@@ -39,7 +40,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args:
         args = ["start"]
 
-    return subprocess.call([str(python), "-m", "android_acp_bridge.main", *args])
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return subprocess.call([str(python), "-m", "android_acp_bridge.main", *args], env=env)
 
 
 def _venv_python(venv_root: Path) -> Path:

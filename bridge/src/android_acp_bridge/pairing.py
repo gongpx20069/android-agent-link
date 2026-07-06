@@ -104,18 +104,39 @@ def encode_pairing_deep_link(payload: PairingPayload) -> str:
     return f"{PAIRING_DEEP_LINK_SCHEME}?data={encoded}"
 
 
-def render_terminal_qr(value: str) -> str:
+def render_terminal_qr(value: str, *, ansi: bool = False) -> str:
     import qrcode
+    from qrcode.constants import ERROR_CORRECT_L
 
-    qr = qrcode.QRCode(border=1)
+    qr = qrcode.QRCode(border=2, error_correction=ERROR_CORRECT_L)
     qr.add_data(value)
     qr.make(fit=True)
-    return _qr_to_ascii(qr)
+    return _qr_to_terminal(qr.get_matrix(), ansi=ansi)
 
 
-def _qr_to_ascii(qr: Any) -> str:
+def _qr_to_terminal(matrix: list[list[bool]], *, ansi: bool) -> str:
     rows: list[str] = []
-    matrix = qr.get_matrix()
-    for row in matrix:
-        rows.append("".join("##" if cell else "  " for cell in row))
+    for row_index in range(0, len(matrix), 2):
+        top_row = matrix[row_index]
+        bottom_row = matrix[row_index + 1] if row_index + 1 < len(matrix) else [False] * len(top_row)
+        if ansi:
+            rows.append("".join(_ansi_half_block(top, bottom) for top, bottom in zip(top_row, bottom_row)) + "\033[0m")
+        else:
+            rows.append("".join(_unicode_half_block(top, bottom) for top, bottom in zip(top_row, bottom_row)))
     return "\n".join(rows)
+
+
+def _unicode_half_block(top: bool, bottom: bool) -> str:
+    if top and bottom:
+        return "█"
+    if top:
+        return "▀"
+    if bottom:
+        return "▄"
+    return " "
+
+
+def _ansi_half_block(top: bool, bottom: bool) -> str:
+    foreground = 232 if top else 255
+    background = 232 if bottom else 255
+    return f"\033[38;5;{foreground}m\033[48;5;{background}m▀"

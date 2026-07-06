@@ -44,8 +44,31 @@ class PairingTests(unittest.TestCase):
     def test_terminal_qr_is_rendered(self) -> None:
         qr = render_terminal_qr("acpclient://pair?data=test")
 
-        self.assertIn("##", qr)
+        self.assertRegex(qr, "[▀▄█]")
+        self.assertNotIn("\u00a0", qr)
         self.assertGreater(len(qr.splitlines()), 1)
+
+    def test_terminal_qr_can_render_with_ansi_contrast(self) -> None:
+        qr = render_terminal_qr("acpclient://pair?data=test", ansi=True)
+
+        self.assertIn("\033[38;5;", qr)
+        self.assertIn("\033[48;5;", qr)
+        self.assertIn("\033[0m", qr)
+
+    def test_terminal_qr_uses_compact_single_width_cells(self) -> None:
+        store = PairingStore()
+        token = store.create()
+        payload = build_pairing_payload(
+            machine_name="devbox",
+            endpoint="ws://127.0.0.1:4317",
+            token=token,
+            bridge_fingerprint="sha256:test",
+        )
+
+        qr = render_terminal_qr(encode_pairing_deep_link(payload))
+        max_line_width = max(len(line) for line in qr.splitlines())
+
+        self.assertLess(max_line_width, 120)
 
 
 if __name__ == "__main__":

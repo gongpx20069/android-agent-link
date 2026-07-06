@@ -11,6 +11,8 @@ from .tailscale import TailscaleState, build_websocket_endpoint, get_status
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdout()
+
     parser = argparse.ArgumentParser(prog="android-acp-bridge")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -85,7 +87,7 @@ def _start(args: argparse.Namespace) -> int:
     print("Android pairing link:", flush=True)
     print(deep_link, flush=True)
     print("Android pairing QR:", flush=True)
-    print(render_terminal_qr(deep_link), flush=True)
+    print(render_terminal_qr(deep_link, ansi=sys.stdout.isatty()), flush=True)
 
     runtime = BridgeRuntime(
         config=config,
@@ -110,7 +112,7 @@ def _print_pairing(machine_name: str, endpoint: str, bridge_fingerprint: str, no
     deep_link = encode_pairing_deep_link(payload)
     print(deep_link)
     if not no_qr:
-        print(render_terminal_qr(deep_link))
+        print(render_terminal_qr(deep_link, ansi=sys.stdout.isatty()))
     return 0
 
 
@@ -123,6 +125,11 @@ def _run_fastapi(runtime: BridgeRuntime) -> None:
         raise SystemExit("FastAPI server backend requires: python -m pip install -r requirements-fastapi.txt") from exc
 
     uvicorn.run(create_app(runtime), host=runtime.config.host, port=runtime.config.port)
+
+
+def _configure_stdout() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 if __name__ == "__main__":

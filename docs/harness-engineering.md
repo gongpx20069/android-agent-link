@@ -29,7 +29,7 @@ Planned tools:
 
 - Python 3.11+ for the MVP bridge.
 - Python standard library HTTP/WebSocket server for the default bridge runtime.
-- Required qrcode support for pairing QR rendering.
+- Required qrcode support for compact CLI pairing QR rendering.
 - Optional FastAPI, Pydantic, and uvicorn extras for richer transport.
 - Gradle for Android builds.
 - Kotlin and Jetpack Compose for UI.

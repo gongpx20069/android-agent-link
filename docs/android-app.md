@@ -18,7 +18,7 @@ Chats and approvals are placeholder screens until machine/workspace onboarding i
 
 ## Pairing UX
 
-The bridge prints both an Android pairing link and a terminal QR code on every startup.
+The bridge prints both an Android pairing link and a compact CLI QR code on every startup.
 
 The Android app supports two onboarding paths:
 
