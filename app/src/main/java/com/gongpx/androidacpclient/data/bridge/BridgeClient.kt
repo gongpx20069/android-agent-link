@@ -71,12 +71,14 @@ class BridgeClient {
         }
     }
 
-    suspend fun sendChatPrompt(machine: Machine, chatId: String, text: String): Result<List<ChatMessage>> {
+    suspend fun sendChatPrompt(machine: Machine, chatId: String, agentId: String, workspacePath: String, text: String): Result<List<ChatMessage>> {
         return sendBridgeMessage(
             machine,
             JSONObject()
                 .put("type", "chat.prompt")
                 .put("chatId", chatId)
+                .put("agentId", agentId)
+                .put("workspacePath", workspacePath)
                 .put("content", text),
         )
     }
@@ -139,7 +141,18 @@ class BridgeClient {
                             webSocket.close(1000, "done")
                             return
                         }
-                        parsed.message?.let(messages::add)
+                        parsed.message?.let { message ->
+                            if (message.kind == ChatMessageKind.Activity && message.activityId != null) {
+                                val existingIndex = messages.indexOfFirst { it.activityId == message.activityId }
+                                if (existingIndex >= 0) {
+                                    messages[existingIndex] = message
+                                } else {
+                                    messages.add(message)
+                                }
+                            } else {
+                                messages.add(message)
+                            }
+                        }
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -212,9 +225,10 @@ class BridgeClient {
         )
     }
 
-    private fun JSONObject.toChatMessage(): ChatMessage {
+    private fun JSONObject.toChatMessage(): ChatMessage? {
         val sessionUpdate = optString("sessionUpdate")
         return when (sessionUpdate) {
+            "available_commands_update", "config_option_update", "usage_update" -> null
             "tool_call", "tool_call_update" -> {
                 val content = optJSONObject("content")
                 val status = optString("status").ifBlank { if (sessionUpdate == "tool_call") "started" else "updated" }
@@ -225,6 +239,7 @@ class BridgeClient {
                     timestampMillis = System.currentTimeMillis(),
                     kind = ChatMessageKind.Activity,
                     title = title,
+                    activityId = optString("toolCallId").ifBlank { null },
                     details = JSONObject()
                         .put("sessionUpdate", sessionUpdate)
                         .put("toolCallId", optString("toolCallId"))

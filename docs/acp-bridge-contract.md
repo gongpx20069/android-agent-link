@@ -178,11 +178,13 @@ Android sends a chat prompt through the bridge WebSocket:
 {
   "type": "chat.prompt",
   "chatId": "chat_123",
+  "agentId": "copilot-cli",
+  "workspacePath": "D:\\repos\\android-agent-link",
   "content": "Run the tests"
 }
 ```
 
-The bridge streams ACP-style updates:
+The bridge starts or reuses the ACP agent session for `chatId`, creates the session with `workspacePath` as ACP `cwd`, sends `session/prompt`, and streams ACP `session/update` messages back to Android. Tool call events are forwarded in the same shape produced by the ACP agent:
 
 ```json
 {
@@ -191,12 +193,9 @@ The bridge streams ACP-style updates:
   "update": {
     "sessionUpdate": "tool_call",
     "toolCallId": "tool_abc",
-    "title": "Dispatch prompt",
-    "kind": "bridge.websocket",
-    "status": "started",
-    "content": {
-      "prompt": "Run the tests"
-    }
+    "title": "Reading files",
+    "kind": "read",
+    "status": "pending"
   }
 }
 ```
@@ -210,7 +209,7 @@ The bridge streams ACP-style updates:
     "toolCallId": "tool_abc",
     "status": "completed",
     "content": {
-      "result": "Prompt delivered to the bridge."
+      "result": "Tool result content from the ACP agent."
     }
   }
 }

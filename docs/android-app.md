@@ -20,7 +20,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Collapsible agent activity cards for ACP `tool_call` and `tool_call_update` events.
 - Approval list with approve/deny actions.
 
-Full ACP agent execution is not wired yet. The current chat shell sends prompt and approval messages through the bridge WebSocket and displays ACP-style `session/update` responses as agent messages and expandable activity cards.
+GitHub Copilot CLI ACP execution is wired through the bridge when `copilot --acp` is available on the developer machine. The chat shell sends prompts through the bridge WebSocket and displays ACP `session/update` responses as agent messages and expandable activity cards. Claude Code requires the `claude` CLI to be installed and expose an ACP server command.
 
 ## Pairing UX
 
@@ -65,12 +65,14 @@ The app maps these bridge/ACP events:
 
 - `session/update` + `tool_call` -> collapsed Agent Activity card.
 - `session/update` + `tool_call_update` -> collapsed Agent Activity card with status/details.
+- Updates with the same `toolCallId` replace the existing activity card, so one tool call stays as one expandable row.
 - `session/update` + `agent_message_chunk` -> normal agent chat bubble.
+- `available_commands_update`, `config_option_update`, and `usage_update` are suppressed in chat to avoid noisy setup cards on every prompt.
 - `bridge.done` -> ends the current one-shot WebSocket request.
 
 ## Workspace Selection
 
-The bridge does not bind a workspace at startup. Workspace is selected per chat in the New Chat form by entering the remote absolute project path. That path will map to ACP `cwd` when ACP session execution is connected.
+The bridge does not bind a workspace at startup. Workspace is selected per chat in the New Chat form by entering the remote absolute project path. That path maps to ACP `cwd` when the bridge creates the Copilot ACP session.
 
 ## Validation
 

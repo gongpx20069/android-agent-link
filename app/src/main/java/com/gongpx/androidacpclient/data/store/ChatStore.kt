@@ -73,6 +73,7 @@ class ChatStore(context: Context) {
             .put("kind", kind.name)
             .put("title", title)
             .put("details", details)
+            .put("activityId", activityId)
     }
 
     private fun JSONObject.toChatMessage(): ChatMessage {
@@ -83,6 +84,7 @@ class ChatStore(context: Context) {
             kind = runCatching { ChatMessageKind.valueOf(optString("kind")) }.getOrDefault(ChatMessageKind.Message),
             title = optString("title").ifBlank { null },
             details = optString("details").ifBlank { null },
+            activityId = optString("activityId").ifBlank { null },
         )
     }
 

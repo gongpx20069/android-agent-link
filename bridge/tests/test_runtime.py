@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from android_acp_bridge.acp_agent import AcpPromptRequest
 from android_acp_bridge.config import BridgeConfig, WorkspaceConfig
 from android_acp_bridge.pairing import PairingStore
 from android_acp_bridge.runtime import BridgeRuntime, DeviceInfo, InvalidPairingTokenError, parse_device_info
@@ -93,9 +94,10 @@ class RuntimeTests(unittest.TestCase):
             config=BridgeConfig(machine_name="devbox"),
             pairing_store=PairingStore(),
             require_local_pairing_confirmation=False,
+            agent_manager=FakeAgentManager(),
         )
 
-        responses = runtime.websocket_responses({"type": "chat.prompt", "chatId": "chat_1", "content": "hello"})
+        responses = runtime.websocket_responses({"type": "chat.prompt", "chatId": "chat_1", "agentId": "copilot-cli", "workspacePath": "D:\\repo", "content": "hello"})
 
         self.assertEqual(responses[0]["type"], "session/update")
         self.assertEqual(responses[0]["update"]["sessionUpdate"], "tool_call")
@@ -115,6 +117,38 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(responses[0]["update"]["sessionUpdate"], "tool_call_update")
         self.assertEqual(responses[0]["update"]["toolCallId"], "approval_1")
         self.assertEqual(responses[-1]["type"], "bridge.done")
+
+
+class FakeAgentManager:
+    def prompt(self, request: AcpPromptRequest):
+        return [
+            {
+                "type": "session/update",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tool_1",
+                    "title": "Fake tool",
+                    "kind": "other",
+                    "status": "started",
+                },
+            },
+            {
+                "type": "session/update",
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tool_1",
+                    "status": "completed",
+                    "content": {"result": request.prompt},
+                },
+            },
+            {
+                "type": "session/update",
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "hello back"},
+                },
+            },
+        ]
 
 
 if __name__ == "__main__":

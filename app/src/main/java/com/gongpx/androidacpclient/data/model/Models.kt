@@ -64,6 +64,7 @@ data class ChatMessage(
     val kind: ChatMessageKind = ChatMessageKind.Message,
     val title: String? = null,
     val details: String? = null,
+    val activityId: String? = null,
 )
 
 enum class MessageRole {

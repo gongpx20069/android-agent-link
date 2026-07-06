@@ -11,6 +11,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -86,11 +87,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.launch
 
-private enum class AppTab(val label: String) {
-    Chats("Chats"),
-    Approvals("Approvals"),
-    Machines("Machines"),
-    Settings("Settings"),
+private enum class AppTab(val label: String, val icon: String) {
+    Chats("Chats", "✦"),
+    Approvals("Approvals", "✓"),
+    Machines("Machines", "⌁"),
+    Settings("Settings", "⚙"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -228,11 +229,29 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                 )
             } else {
                 Scaffold(
-                    topBar = { TopAppBar(title = { Text("AgentLink", fontWeight = FontWeight.SemiBold) }) },
+                    topBar = {
+                        TopAppBar(
+                            title = {
+                                Column {
+                                    Text("AgentLink", fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        "Mobile control for remote coding agents",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            },
+                        )
+                    },
                     bottomBar = {
                         NavigationBar {
                             AppTab.entries.forEach { tab ->
-                                NavigationBarItem(selected = selectedTab == tab, onClick = { selectedTab = tab }, label = { Text(tab.label) }, icon = {})
+                                NavigationBarItem(
+                                    selected = selectedTab == tab,
+                                    onClick = { selectedTab = tab },
+                                    label = { Text(tab.label) },
+                                    icon = { Text(tab.icon, fontWeight = FontWeight.SemiBold) },
+                                )
                             }
                         }
                     },
@@ -252,19 +271,14 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                                     upsertChat(chat.withMessage(MessageRole.System, "Machine is not available."))
                                 } else {
                                     val updated = chat.withMessage(MessageRole.User, message)
-                                    val sending = updated.withActivity(
-                                        title = "Sending prompt",
-                                        summary = "Opening bridge WebSocket",
-                                        details = "type=chat.prompt\nchatId=${chat.id}\nworkspace=${chat.workspacePath}",
-                                    )
-                                    upsertChat(sending)
+                                    upsertChat(updated)
                                     scope.launch {
-                                        bridgeClient.sendChatPrompt(machine, chat.id, message)
+                                        bridgeClient.sendChatPrompt(machine, chat.id, chat.agentId, chat.workspacePath, message)
                                             .onSuccess { events ->
-                                                upsertChat(sending.copy(messages = sending.messages + events))
+                                                upsertChat(updated.copy(messages = updated.messages + events))
                                             }
                                             .onFailure {
-                                                upsertChat(sending.withMessage(MessageRole.System, "Bridge WebSocket failed: ${it.message}"))
+                                                upsertChat(updated.withMessage(MessageRole.System, "Bridge WebSocket failed: ${it.message}"))
                                             }
                                     }
                                 }
@@ -324,44 +338,85 @@ private fun ChatsScreen(
     var selectedAgentId by remember(selectedMachine) { mutableStateOf(selectedMachine?.agents?.firstOrNull()?.id.orEmpty()) }
     val selectedAgent = selectedMachine?.agents?.firstOrNull { it.id == selectedAgentId } ?: selectedMachine?.agents?.firstOrNull()
 
+    var newChatExpanded by remember(chats.isEmpty()) { mutableStateOf(chats.isEmpty()) }
+
     LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             ElevatedCard(colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                 Column(Modifier.padding(18.dp)) {
-                    Text("New Chat", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                    Text("Workspace is chosen here, not when the bridge starts.", color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    Spacer(Modifier.height(12.dp))
-                    Text("Machine", style = MaterialTheme.typography.titleSmall)
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        machines.forEach { machine ->
-                            FilterChip(selected = selectedMachine?.id == machine.id, onClick = { selectedMachineId = machine.id }, label = { Text(machine.displayName) })
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column {
+                            Text("New Chat", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (newChatExpanded) "Choose machine, workspace, and agent" else "Tap to create another agent session",
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                        OutlinedButton(onClick = { newChatExpanded = !newChatExpanded }) {
+                            Text(if (newChatExpanded) "Collapse" else "New")
                         }
                     }
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = workspacePath,
-                        onValueChange = { workspacePath = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Remote workspace path") },
-                        placeholder = { Text("D:\\repos\\project-a or /home/me/project-a") },
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text("Agent", style = MaterialTheme.typography.titleSmall)
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        selectedMachine?.agents.orEmpty().forEach { agent ->
-                            FilterChip(selected = selectedAgent?.id == agent.id, onClick = { selectedAgentId = agent.id }, label = { Text("${agent.displayName} (${agent.status})") })
+                    if (newChatExpanded) {
+                        Spacer(Modifier.height(16.dp))
+                        Text("Machine", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            machines.forEach { machine ->
+                                SelectableOptionCard(
+                                    selected = selectedMachine?.id == machine.id,
+                                    title = machine.displayName,
+                                    subtitle = "${machine.connectionState.name} · ${machine.endpoint}",
+                                    onClick = {
+                                        selectedMachineId = machine.id
+                                        selectedAgentId = machine.agents.firstOrNull()?.id.orEmpty()
+                                    },
+                                )
+                            }
+                            if (machines.isEmpty()) {
+                                Text("Pair a machine first from the Machines tab.", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
                         }
-                    }
-                    Spacer(Modifier.height(14.dp))
-                    Button(enabled = selectedMachine != null && selectedAgent != null && workspacePath.isNotBlank(), onClick = { onCreateChat(selectedMachine!!, workspacePath, selectedAgent!!) }) {
-                        Text("Create Chat")
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = workspacePath,
+                            onValueChange = { workspacePath = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Remote workspace path") },
+                            placeholder = { Text("D:\\repos\\project-a or /home/me/project-a") },
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text("Agent", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            selectedMachine?.agents.orEmpty().forEach { agent ->
+                                SelectableOptionCard(
+                                    selected = selectedAgent?.id == agent.id,
+                                    title = agent.displayName,
+                                    subtitle = agent.status,
+                                    onClick = { selectedAgentId = agent.id },
+                                )
+                            }
+                            if (selectedMachine?.agents.orEmpty().isEmpty()) {
+                                Text("No agent discovered on this machine yet.", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Button(
+                            enabled = selectedMachine != null && selectedAgent != null && workspacePath.isNotBlank(),
+                            onClick = { onCreateChat(selectedMachine!!, workspacePath, selectedAgent!!) },
+                        ) {
+                            Text("Create Chat")
+                        }
                     }
                 }
             }
         }
-        item { Text("Chats", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold) }
+        item {
+            SectionHeader(
+                title = "Chats",
+                subtitle = "${chats.size} conversation${if (chats.size == 1) "" else "s"}",
+            )
+        }
         if (chats.isEmpty()) {
-            item { Text("No chats yet.") }
+            item { EmptyStateCard("No chats yet", "Create a chat above after pairing a machine.") }
         } else {
             items(chats, key = { it.id }) { chat ->
                 ElevatedCard(onClick = { onOpenChat(chat) }, modifier = Modifier.fillMaxWidth()) {
@@ -519,9 +574,15 @@ private fun AgentActivityItem(item: ChatMessage) {
 @Composable
 private fun ApprovalsScreen(padding: PaddingValues, approvals: List<Approval>, onDecision: (Approval, ApprovalStatus) -> Unit) {
     LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("Approvals", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold) }
+        item {
+            PageHero(
+                title = "Approvals",
+                subtitle = "Review commands, file changes, and risky actions before they run.",
+                metric = "${approvals.count { it.status == ApprovalStatus.Pending }} pending",
+            )
+        }
         if (approvals.isEmpty()) {
-            item { Text("No approval requests yet.") }
+            item { EmptyStateCard("No approval requests", "Agent requests that need your decision will appear here.") }
         } else {
             items(approvals, key = { it.id }) { approval ->
                 ElevatedCard(modifier = Modifier.fillMaxWidth()) {
@@ -576,18 +637,85 @@ private fun MachinesScreen(
                 }
             }
         }
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Machines", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text("${machines.size} paired", style = MaterialTheme.typography.labelLarge)
-            }
-        }
+        item { SectionHeader("Machines", "${machines.size} paired") }
         if (machines.isEmpty()) {
-            item { Text("No machines paired yet.") }
+            item { EmptyStateCard("No machines paired", "Start the bridge, scan the QR code, then test the connection.") }
         } else {
             items(machines, key = { it.id }) { machine ->
                 MachineCard(machine = machine, onRefresh = { onRefreshMachine(machine) })
             }
+        }
+    }
+}
+
+@Composable
+private fun SelectableOptionCard(selected: Boolean, title: String, subtitle: String, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
+        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+        tonalElevation = if (selected) 3.dp else 0.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (selected) {
+                Surface(shape = RoundedCornerShape(999.dp), color = MaterialTheme.colorScheme.primary) {
+                    Text("Selected", modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String, subtitle: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Text(subtitle, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+    }
+}
+
+@Composable
+private fun PageHero(title: String, subtitle: String, metric: String) {
+    ElevatedCard(colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, color = MaterialTheme.colorScheme.onSecondaryContainer)
+            }
+            Surface(shape = RoundedCornerShape(999.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)) {
+                Text(metric, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyStateCard(title: String, subtitle: String) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(18.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -746,6 +874,7 @@ private fun Chat.withActivity(title: String, summary: String, details: String): 
             kind = ChatMessageKind.Activity,
             title = title,
             details = details,
+            activityId = title,
         ),
     )
 }

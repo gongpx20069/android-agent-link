@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import secrets
-import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from . import __version__
+from .acp_agent import AcpAgentError, AcpAgentManager, AcpPromptRequest
 from .agents import discover_agents
 from .config import BridgeConfig
 from .pairing import PairingStore
@@ -26,12 +26,24 @@ class InvalidPairingTokenError(Exception):
     pass
 
 
+class AgentManager(Protocol):
+    def prompt(self, request: AcpPromptRequest) -> list[dict[str, Any]]:
+        ...
+
+
 class BridgeRuntime:
-    def __init__(self, config: BridgeConfig, pairing_store: PairingStore, require_local_pairing_confirmation: bool = True) -> None:
+    def __init__(
+        self,
+        config: BridgeConfig,
+        pairing_store: PairingStore,
+        require_local_pairing_confirmation: bool = True,
+        agent_manager: AgentManager | None = None,
+    ) -> None:
         self.config = config
         self.pairing_store = pairing_store
         self.require_local_pairing_confirmation = require_local_pairing_confirmation
         self.device_tokens: set[str] = set()
+        self.agent_manager = agent_manager or AcpAgentManager()
 
     def health_response(self) -> dict[str, Any]:
         return {"status": "ok", "bridgeVersion": __version__}
@@ -97,50 +109,35 @@ class BridgeRuntime:
     def _chat_prompt_updates(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
         prompt = _string_or_default(payload.get("content"), "")
-        tool_call_id = "tool_" + secrets.token_urlsafe(8)
-        return [
-            {
-                "type": "session/update",
-                "chatId": chat_id,
-                "update": {
-                    "sessionUpdate": "tool_call",
-                    "toolCallId": tool_call_id,
-                    "title": "Dispatch prompt",
-                    "kind": "bridge.websocket",
-                    "status": "started",
-                    "content": {
-                        "prompt": prompt,
-                        "timestampMillis": int(time.time() * 1000),
+        agent_id = _string_or_default(payload.get("agentId"), "copilot-cli")
+        workspace_path = _string_or_default(payload.get("workspacePath"), "")
+        try:
+            updates = self.agent_manager.prompt(
+                AcpPromptRequest(
+                    chat_id=chat_id,
+                    agent_id=agent_id,
+                    workspace_path=workspace_path,
+                    prompt=prompt,
+                )
+            )
+        except AcpAgentError as exc:
+            updates = [
+                {
+                    "type": "session/update",
+                    "chatId": chat_id,
+                    "update": {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": "agent_start",
+                        "title": "Agent runtime",
+                        "kind": "execute",
+                        "status": "failed",
+                        "content": {"error": str(exc)},
                     },
-                },
-            },
-            {
-                "type": "session/update",
-                "chatId": chat_id,
-                "update": {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": tool_call_id,
-                    "title": "Dispatch prompt",
-                    "kind": "bridge.websocket",
-                    "status": "completed",
-                    "content": {
-                        "result": "Prompt delivered to the bridge. ACP agent runtime is not attached yet.",
-                    },
-                },
-            },
-            {
-                "type": "session/update",
-                "chatId": chat_id,
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {
-                        "type": "text",
-                        "text": "Bridge acknowledged the prompt. ACP agent execution will stream here when attached.",
-                    },
-                },
-            },
-            {"type": "bridge.done", "chatId": chat_id},
-        ]
+                }
+            ]
+        for update in updates:
+            update.setdefault("chatId", chat_id)
+        return updates + [{"type": "bridge.done", "chatId": chat_id}]
 
     def _approval_decision_updates(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         approval_id = _string_or_default(payload.get("approvalId"), "unknown-approval")
