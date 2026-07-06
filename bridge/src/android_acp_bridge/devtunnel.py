@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -57,8 +58,18 @@ class DevTunnelAuthError(RuntimeError):
     pass
 
 
+class DevTunnelConflictError(RuntimeError):
+    pass
+
+
 def default_runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def default_tunnel_id() -> str:
+    host = socket.gethostname().lower()
+    suffix = re.sub(r"[^a-z0-9-]+", "-", host).strip("-")
+    return f"{DEFAULT_TUNNEL_ID}-{suffix}" if suffix else DEFAULT_TUNNEL_ID
 
 
 def ensure_devtunnel_cli(
@@ -109,6 +120,12 @@ def create_or_reuse_tunnel(cli_path: str, tunnel_id: str, runner: CommandRunner 
                 "Run `devtunnel user login -d` if devtunnel is on PATH, or "
                 "`\\.\\bridge\\.tools\\devtunnel.exe user login -d` when using the bridge-downloaded CLI. "
                 "Then retry `python .\\bridge\\run.py start --transport devtunnel`."
+            )
+        if "conflict with existing entity" in output or "already exists" in output:
+            raise DevTunnelConflictError(
+                f"Dev Tunnel ID `{tunnel_id}` is already taken but is not visible to this account. "
+                "Retry with a unique ID, for example "
+                "`python .\\bridge\\run.py start --transport devtunnel --devtunnel-id agentlink-myname-devbox`."
             )
         raise RuntimeError(_command_error("devtunnel create", create))
 

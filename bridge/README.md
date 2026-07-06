@@ -72,7 +72,7 @@ What it does:
 
 1. Finds `devtunnel` on `PATH`, or downloads `bridge\.tools\devtunnel.exe` on Windows.
 2. Starts `devtunnel user login -d` if login is required.
-3. Creates or reuses the `agentlink` tunnel.
+3. Creates or reuses a machine-specific `agentlink-<hostname>` tunnel.
 4. Adds the bridge port with HTTP forwarding if needed.
 5. Issues a short-lived `connect` token.
 6. Starts `devtunnel host agentlink` as a child process.
@@ -98,6 +98,12 @@ Optional overrides:
 ```powershell
 python .\run.py start --transport devtunnel --devtunnel-id my-agentlink
 python .\run.py start --transport devtunnel --devtunnel-cli C:\tools\devtunnel.exe
+```
+
+If tunnel creation fails with `Conflict with existing entity`, the tunnel ID is already taken but not visible to your account. Retry with a unique ID:
+
+```powershell
+python .\run.py start --transport devtunnel --devtunnel-id agentlink-<yourname>-<devbox>
 ```
 
 Android stores the relay header per machine and sends it on `/pairing/redeem`, `/health`, `/agents`, `/workspaces`, and future WebSocket requests for that machine. Dev Tunnel connect tokens currently expire after a short period, so re-run the command and re-scan when access expires.

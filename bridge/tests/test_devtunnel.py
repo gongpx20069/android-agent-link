@@ -8,7 +8,9 @@ from pathlib import Path
 
 from android_acp_bridge.devtunnel import (
     DevTunnelAuthError,
+    DevTunnelConflictError,
     create_or_reuse_tunnel,
+    default_tunnel_id,
     ensure_devtunnel_login,
     ensure_devtunnel_cli,
     ensure_tunnel_port,
@@ -75,6 +77,18 @@ class DevTunnelTests(unittest.TestCase):
 
         with self.assertRaises(DevTunnelAuthError):
             create_or_reuse_tunnel("devtunnel", "agentlink", runner)
+
+    def test_create_or_reuse_tunnel_reports_id_conflict(self) -> None:
+        def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            if args[1] == "show":
+                return subprocess.CompletedProcess(args, 1, "", "")
+            return subprocess.CompletedProcess(args, 1, "", "Conflict with existing entity. Retry tunnel operation.")
+
+        with self.assertRaises(DevTunnelConflictError):
+            create_or_reuse_tunnel("devtunnel", "agentlink", runner)
+
+    def test_default_tunnel_id_is_agentlink_prefixed(self) -> None:
+        self.assertTrue(default_tunnel_id().startswith("agentlink"))
 
     def test_ensure_devtunnel_login_treats_anonymous_show_as_logged_out(self) -> None:
         commands: list[list[str]] = []

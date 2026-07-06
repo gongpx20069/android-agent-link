@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from .config import DEFAULT_PORT, default_config
-from .devtunnel import DEFAULT_TUNNEL_ID, DevTunnelAuthError, DevTunnelHost, setup_devtunnel
+from .devtunnel import DevTunnelAuthError, DevTunnelConflictError, DevTunnelHost, default_tunnel_id, setup_devtunnel
 from .pairing import PairingStore, build_pairing_payload, encode_pairing_deep_link, render_terminal_qr
 from .runtime import BridgeRuntime
 from .stdlib_server import run_server
@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--workspace", help="Allowed workspace path. Defaults to the current directory.")
     start_parser.add_argument("--allow-non-tailscale", action="store_true", help="Allow localhost/manual endpoint when Tailscale is unavailable.")
     start_parser.add_argument("--no-tailscale-setup", action="store_true", help="Skip automatic Tailscale install/login and only report current status.")
-    start_parser.add_argument("--devtunnel-id", default=DEFAULT_TUNNEL_ID, help="Microsoft Dev Tunnel ID to create or reuse when --transport devtunnel is selected.")
+    start_parser.add_argument("--devtunnel-id", default=default_tunnel_id(), help="Microsoft Dev Tunnel ID to create or reuse when --transport devtunnel is selected.")
     start_parser.add_argument("--devtunnel-cli", help="Path to devtunnel CLI. Defaults to PATH or bridge\\.tools\\devtunnel.exe.")
     start_parser.add_argument("--auto-approve-pairing", action="store_true", help="Skip local pairing confirmation. Use only for tests or trusted local demos.")
     start_parser.add_argument("--server", choices=("stdlib", "fastapi"), default="stdlib", help="Server backend. Defaults to the standard-library backend.")
@@ -81,7 +81,7 @@ def _start(args: argparse.Namespace) -> int:
                 local_port=args.port,
                 cli_path=args.devtunnel_cli,
             )
-        except DevTunnelAuthError as exc:
+        except (DevTunnelAuthError, DevTunnelConflictError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         pairing_endpoint = _validate_pairing_endpoint(args.pairing_endpoint) if args.pairing_endpoint else devtunnel_host.config.websocket_endpoint
