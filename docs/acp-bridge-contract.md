@@ -222,24 +222,6 @@ The bridge starts or reuses the ACP agent session for `chatId`, creates the sess
 }
 ```
 
-Android sends:
-
-```json
-{
-  "type": "chat.prompt",
-  "id": "req_002",
-  "chatId": "chat_123",
-  "content": [
-    {
-      "type": "text",
-      "text": "Fix the failing Android build."
-    }
-  ]
-}
-```
-
-Bridge maps this to `session/prompt`.
-
 ### Agent Update
 
 Bridge sends:

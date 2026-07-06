@@ -142,16 +142,7 @@ class BridgeClient {
                             return
                         }
                         parsed.message?.let { message ->
-                            if (message.kind == ChatMessageKind.Activity && message.activityId != null) {
-                                val existingIndex = messages.indexOfFirst { it.activityId == message.activityId }
-                                if (existingIndex >= 0) {
-                                    messages[existingIndex] = message
-                                } else {
-                                    messages.add(message)
-                                }
-                            } else {
-                                messages.add(message)
-                            }
+                            mergeStreamingMessage(messages, message)
                         }
                     }
 
@@ -251,10 +242,27 @@ class BridgeClient {
             }
             "agent_message_chunk" -> {
                 val content = optJSONObject("content")
+                val text = content?.optString("text").orEmpty().ifBlank { optString("text") }
+                if (text.isBlank()) return null
                 ChatMessage(
                     role = MessageRole.Agent,
-                    text = content?.optString("text").orEmpty().ifBlank { optString("text").ifBlank { toString() } },
+                    text = text,
                     timestampMillis = System.currentTimeMillis(),
+                    activityId = optString("messageId").ifBlank { "agent_message" },
+                )
+            }
+            "agent_thought_chunk" -> {
+                val content = optJSONObject("content")
+                val text = content?.optString("text").orEmpty().ifBlank { optString("text") }
+                if (text.isBlank()) return null
+                ChatMessage(
+                    role = MessageRole.Agent,
+                    text = "Thinking",
+                    timestampMillis = System.currentTimeMillis(),
+                    kind = ChatMessageKind.Activity,
+                    title = "Thought",
+                    details = text,
+                    activityId = optString("messageId").ifBlank { "agent_thought" },
                 )
             }
             else -> ChatMessage(
@@ -265,6 +273,35 @@ class BridgeClient {
                 title = sessionUpdate.ifBlank { "Agent update" },
                 details = toString(2),
             )
+        }
+    }
+
+    private fun mergeStreamingMessage(messages: MutableList<ChatMessage>, message: ChatMessage) {
+        val streamId = message.activityId
+        if (streamId == null) {
+            messages.add(message)
+            return
+        }
+
+        val existingIndex = messages.indexOfFirst { it.activityId == streamId }
+        if (existingIndex < 0) {
+            messages.add(message)
+            return
+        }
+
+        val existing = messages[existingIndex]
+        messages[existingIndex] = when {
+            message.kind == ChatMessageKind.Activity && existing.kind == ChatMessageKind.Activity -> {
+                if (existing.title == "Thought" && message.title == "Thought") {
+                    existing.copy(details = listOfNotNull(existing.details, message.details).joinToString(""))
+                } else {
+                    message
+                }
+            }
+            message.kind == ChatMessageKind.Message && existing.kind == ChatMessageKind.Message -> {
+                existing.copy(text = existing.text + message.text)
+            }
+            else -> message
         }
     }
 

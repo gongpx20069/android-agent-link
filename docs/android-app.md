@@ -66,13 +66,22 @@ The app maps these bridge/ACP events:
 - `session/update` + `tool_call` -> collapsed Agent Activity card.
 - `session/update` + `tool_call_update` -> collapsed Agent Activity card with status/details.
 - Updates with the same `toolCallId` replace the existing activity card, so one tool call stays as one expandable row.
-- `session/update` + `agent_message_chunk` -> normal agent chat bubble.
+- `session/update` + `agent_message_chunk` -> normal agent chat bubble. Streaming chunks are merged into one bubble instead of one word per message.
+- Empty `agent_thought_chunk` updates are ignored; non-empty thought chunks appear as expandable activity.
 - `available_commands_update`, `config_option_update`, and `usage_update` are suppressed in chat to avoid noisy setup cards on every prompt.
 - `bridge.done` -> ends the current one-shot WebSocket request.
 
 ## Workspace Selection
 
 The bridge does not bind a workspace at startup. Workspace is selected per chat in the New Chat form by entering the remote absolute project path. That path maps to ACP `cwd` when the bridge creates the Copilot ACP session.
+
+The workspace does not have to be a Git repository, but Copilot's coding workflows work best inside a repository. If a parent folder such as `D:\peixianws` is selected instead of `D:\peixianws\android-agent-link`, Git-aware commands may report that the current directory is not a Git repository.
+
+## Slash Commands and Resume
+
+ACP slash commands are not the same as Copilot CLI's interactive slash commands. In ACP, commands must be advertised by the agent through `available_commands_update` and then sent as normal prompt text, such as `/plan ...` when that command is available.
+
+`/resume` is not advertised by Copilot ACP as a slash command in the current CLI. Resuming is represented by ACP session methods such as `session/list`, `session/load`, and `session/resume`, which require a session ID and UI support. AgentLink does not yet expose session history/resume UI, so typing `/resume` in the prompt is treated as text by the agent rather than invoking Copilot CLI's interactive `/resume`.
 
 ## Validation
 
