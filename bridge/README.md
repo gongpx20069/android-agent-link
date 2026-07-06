@@ -35,33 +35,35 @@ If Windows reports `组织策略正在阻止安装` / installer exit code `1625`
 
 Use this when Tailscale/ZeroTier are blocked but a private authenticated Microsoft relay is acceptable. Do not enable anonymous Dev Tunnel access.
 
-Install the `devtunnel` CLI. If `winget` is blocked, use the direct executable download:
+One command handles setup and startup:
 
 ```powershell
-Invoke-WebRequest -Uri https://aka.ms/TunnelsCliDownload/win-x64 -OutFile .\devtunnel.exe
-.\devtunnel.exe user login -d
+python .\run.py start --transport devtunnel
 ```
 
-Create a persistent tunnel and port:
+What it does:
+
+1. Finds `devtunnel` on `PATH`, or downloads `bridge\.tools\devtunnel.exe` on Windows.
+2. Starts `devtunnel user login -d` if login is required.
+3. Creates or reuses the `agentlink` tunnel.
+4. Adds the bridge port with HTTP forwarding if needed.
+5. Issues a short-lived `connect` token.
+6. Starts `devtunnel host agentlink` as a child process.
+7. Starts the local bridge listener.
+8. Prints an AgentLink QR/link containing the Dev Tunnel `wss://` endpoint and `X-Tunnel-Authorization` header.
+
+Optional overrides:
 
 ```powershell
-.\devtunnel.exe create agentlink
-.\devtunnel.exe port create agentlink -p 4317 --protocol http
+python .\run.py start --transport devtunnel --devtunnel-id my-agentlink
+python .\run.py start --transport devtunnel --devtunnel-cli C:\tools\devtunnel.exe
 ```
 
-Issue a short-lived connect token for Android:
+Android stores the relay header per machine and sends it on `/pairing/redeem`, `/health`, `/agents`, `/workspaces`, and future WebSocket requests for that machine. Dev Tunnel connect tokens currently expire after a short period, so re-run the command and re-scan when access expires.
 
-```powershell
-.\devtunnel.exe token agentlink --scopes connect
-```
+Manual debugging flow:
 
-Start the Dev Tunnel host in terminal 1 and copy the printed `https://...devtunnels.ms/` URL:
-
-```powershell
-.\devtunnel.exe host agentlink
-```
-
-Start the AgentLink bridge in terminal 2. The server still listens locally, but the QR/link contains the Dev Tunnel `wss://` endpoint and `X-Tunnel-Authorization` header. Convert the printed URL from `https://...devtunnels.ms/` to `wss://...devtunnels.ms`:
+If you need to run `devtunnel host` yourself, start the AgentLink bridge separately with the relay endpoint and connect token:
 
 ```powershell
 python .\run.py start `
@@ -73,8 +75,6 @@ python .\run.py start `
 ```
 
 Why `--pairing-endpoint` matters: the pairing token is created by the running bridge process. Do not use the standalone `pairing` command for the active Dev Tunnel server, because it creates a separate one-off token that the running server will not recognize.
-
-Android stores the relay header per machine and sends it on `/pairing/redeem`, `/health`, `/agents`, `/workspaces`, and future WebSocket requests for that machine. Dev Tunnel connect tokens currently expire after a short period, so regenerate and re-scan when access expires.
 
 ### Localhost/manual testing
 

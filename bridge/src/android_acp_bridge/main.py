@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .config import DEFAULT_PORT, default_config
+from .devtunnel import DEFAULT_TUNNEL_ID, DevTunnelHost, setup_devtunnel
 from .pairing import PairingStore, build_pairing_payload, encode_pairing_deep_link, render_terminal_qr
 from .runtime import BridgeRuntime
 from .stdlib_server import run_server
@@ -17,12 +19,15 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     start_parser = subparsers.add_parser("start", help="Start the bridge server and print a pairing QR code")
+    start_parser.add_argument("--transport", choices=("tailscale", "devtunnel", "local"), default="tailscale", help="How Android reaches the bridge. Defaults to tailscale.")
     start_parser.add_argument("--host", default=None, help="Host to bind. Defaults to the Tailscale IP in Tailscale mode.")
     start_parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind.")
     start_parser.add_argument("--pairing-endpoint", help="Endpoint to put in the Android pairing QR/link when a relay forwards to this bridge, e.g. wss://<id>-4317.devtunnels.ms.")
     start_parser.add_argument("--workspace", help="Allowed workspace path. Defaults to the current directory.")
     start_parser.add_argument("--allow-non-tailscale", action="store_true", help="Allow localhost/manual endpoint when Tailscale is unavailable.")
     start_parser.add_argument("--no-tailscale-setup", action="store_true", help="Skip automatic Tailscale install/login and only report current status.")
+    start_parser.add_argument("--devtunnel-id", default=DEFAULT_TUNNEL_ID, help="Microsoft Dev Tunnel ID to create or reuse when --transport devtunnel is selected.")
+    start_parser.add_argument("--devtunnel-cli", help="Path to devtunnel CLI. Defaults to PATH or bridge\\.tools\\devtunnel.exe.")
     start_parser.add_argument("--auto-approve-pairing", action="store_true", help="Skip local pairing confirmation. Use only for tests or trusted local demos.")
     start_parser.add_argument("--server", choices=("stdlib", "fastapi"), default="stdlib", help="Server backend. Defaults to the standard-library backend.")
     start_parser.add_argument("--connection-header", action="append", default=[], metavar="NAME=VALUE", help="Header Android must send when connecting through a relay, e.g. X-Tunnel-Authorization='tunnel <token>'.")
@@ -63,22 +68,41 @@ def _print_tailscale_status() -> int:
 
 
 def _start(args: argparse.Namespace) -> int:
-    status = get_status() if args.allow_non_tailscale or args.no_tailscale_setup else _prepare_tailscale()
-    endpoint = build_websocket_endpoint(status, args.port)
+    devtunnel_host: DevTunnelHost | None = None
+    connection_headers = _parse_connection_headers(args.connection_header)
 
-    if endpoint is None:
-        if not args.allow_non_tailscale:
-            print(f"Tailscale is not ready: {status.state}", file=sys.stderr)
-            if status.message:
-                print(status.message, file=sys.stderr)
-            print("Default bridge startup requires Tailscale. Use --allow-non-tailscale only for localhost/manual testing.", file=sys.stderr)
-            return 1
+    if args.transport == "devtunnel":
         bind_host = args.host or "127.0.0.1"
         endpoint = f"ws://{bind_host}:{args.port}"
+        devtunnel_host = setup_devtunnel(
+            bridge_root=Path(__file__).resolve().parents[2],
+            tunnel_id=args.devtunnel_id,
+            local_port=args.port,
+            cli_path=args.devtunnel_cli,
+        )
+        pairing_endpoint = _validate_pairing_endpoint(args.pairing_endpoint) if args.pairing_endpoint else devtunnel_host.config.websocket_endpoint
+        connection_headers.setdefault("X-Tunnel-Authorization", f"tunnel {devtunnel_host.config.connect_token}")
+    elif args.transport == "local":
+        bind_host = args.host or "127.0.0.1"
+        endpoint = f"ws://{bind_host}:{args.port}"
+        pairing_endpoint = _validate_pairing_endpoint(args.pairing_endpoint) if args.pairing_endpoint else endpoint
     else:
-        bind_host = args.host or status.tailscale_ips[0]
+        status = get_status() if args.allow_non_tailscale or args.no_tailscale_setup else _prepare_tailscale()
+        endpoint = build_websocket_endpoint(status, args.port)
 
-    pairing_endpoint = _validate_pairing_endpoint(args.pairing_endpoint) if args.pairing_endpoint else endpoint
+        if endpoint is None:
+            if not args.allow_non_tailscale:
+                print(f"Tailscale is not ready: {status.state}", file=sys.stderr)
+                if status.message:
+                    print(status.message, file=sys.stderr)
+                print("Default bridge startup requires Tailscale. Use --transport devtunnel for a private relay or --transport local for localhost/manual testing.", file=sys.stderr)
+                return 1
+            bind_host = args.host or "127.0.0.1"
+            endpoint = f"ws://{bind_host}:{args.port}"
+        else:
+            bind_host = args.host or status.tailscale_ips[0]
+
+        pairing_endpoint = _validate_pairing_endpoint(args.pairing_endpoint) if args.pairing_endpoint else endpoint
 
     config = default_config(host=bind_host, port=args.port, workspace=args.workspace)
 
@@ -89,7 +113,7 @@ def _start(args: argparse.Namespace) -> int:
         endpoint=pairing_endpoint,
         token=token,
         bridge_fingerprint=config.bridge_fingerprint,
-        headers=_parse_connection_headers(args.connection_header),
+        headers=connection_headers,
     )
     deep_link = encode_pairing_deep_link(payload)
 
@@ -106,11 +130,15 @@ def _start(args: argparse.Namespace) -> int:
         pairing_store=pairing_store,
         require_local_pairing_confirmation=not args.auto_approve_pairing,
     )
-    if args.server == "fastapi":
-        _run_fastapi(runtime)
-    else:
-        run_server(runtime)
-    return 0
+    try:
+        if args.server == "fastapi":
+            _run_fastapi(runtime)
+        else:
+            run_server(runtime)
+        return 0
+    finally:
+        if devtunnel_host is not None:
+            devtunnel_host.stop()
 
 
 def _prepare_tailscale() -> TailscaleStatus:

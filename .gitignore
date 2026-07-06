@@ -18,6 +18,8 @@ __pycache__/
 .pytest_cache/
 dist/
 *.egg-info/
+bridge/.tools/
+devtunnel.exe
 
 # OS
 .DS_Store

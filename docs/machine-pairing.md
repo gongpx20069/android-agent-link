@@ -210,11 +210,14 @@ If the endpoint is unreachable, the app should explain likely causes:
 
 ## Non-Tailscale Fallbacks
 
+Supported:
+
+- Microsoft Dev Tunnels private relay with `python bridge\run.py start --transport devtunnel`. The bridge downloads or finds the `devtunnel` CLI, triggers device-code login when needed, creates/reuses a tunnel, creates the port, issues a short-lived connect token, starts `devtunnel host`, and includes the `wss://*.devtunnels.ms` endpoint plus `X-Tunnel-Authorization` header in the Android pairing QR.
+
 Supported later:
 
 - Manual endpoint entry.
 - LAN endpoint.
 - ZeroTier or WireGuard endpoint.
-- Cloudflare Tunnel or another explicit tunnel.
 
 Fallbacks must preserve the same pairing-token and local-confirmation model.

@@ -49,28 +49,33 @@ If Windows blocks `winget` with organization policy / exit code `1625`, install 
 
 Use this when VPN/mesh networking is blocked but an authenticated Microsoft Dev Tunnel is acceptable. Do **not** use anonymous/public tunnels.
 
-Install the CLI without `winget` if package installation is blocked:
+One command handles the tunnel setup, starts the Dev Tunnel host, starts the bridge on localhost, and prints the Android pairing QR:
 
 ```powershell
-Invoke-WebRequest -Uri https://aka.ms/TunnelsCliDownload/win-x64 -OutFile .\devtunnel.exe
-.\devtunnel.exe user login -d
+python .\bridge\run.py start --transport devtunnel
 ```
 
-Create or reuse a tunnel, add the bridge port, and get a short-lived connect token:
+Startup behavior:
+
+1. Finds `devtunnel` on `PATH`, or downloads `bridge\.tools\devtunnel.exe` on Windows.
+2. Starts device-code login if the CLI is not already logged in.
+3. Creates or reuses the `agentlink` tunnel.
+4. Adds port `4317` with HTTP forwarding if needed.
+5. Issues a short-lived `connect` token.
+6. Starts `devtunnel host agentlink`.
+7. Starts the bridge on `127.0.0.1:4317`.
+8. Prints a pairing QR containing the `wss://*.devtunnels.ms` endpoint and `X-Tunnel-Authorization: tunnel <token>` header.
+
+Optional overrides:
 
 ```powershell
-.\devtunnel.exe create agentlink
-.\devtunnel.exe port create agentlink -p 4317 --protocol http
-.\devtunnel.exe token agentlink --scopes connect
+python .\bridge\run.py start --transport devtunnel --devtunnel-id my-agentlink --port 4317
+python .\bridge\run.py start --transport devtunnel --devtunnel-cli C:\tools\devtunnel.exe
 ```
 
-Start the tunnel host in one terminal and copy the `https://...devtunnels.ms/` URL it prints:
+Android stores the `X-Tunnel-Authorization` header with that machine and sends it on bridge requests. Dev Tunnel connect tokens are short-lived, so re-run the command and re-scan a fresh pairing QR when the token expires.
 
-```powershell
-.\devtunnel.exe host agentlink
-```
-
-In another terminal, start the bridge on localhost but put the Dev Tunnel URL and token in the Android pairing QR. Convert the printed URL from `https://...devtunnels.ms/` to `wss://...devtunnels.ms`:
+Manual mode is still available for debugging:
 
 ```powershell
 python .\bridge\run.py start `
@@ -80,8 +85,6 @@ python .\bridge\run.py start `
   --pairing-endpoint wss://<copied-devtunnel-host> `
   --connection-header "X-Tunnel-Authorization=tunnel <connect-token>"
 ```
-
-Android stores the `X-Tunnel-Authorization` header with that machine and sends it on bridge requests. Dev Tunnel connect tokens are short-lived, so re-scan a fresh pairing QR when the token expires.
 
 ### Option 3: Localhost/manual testing only
 
