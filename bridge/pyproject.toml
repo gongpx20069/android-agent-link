@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "android-acp-bridge"
 version = "0.1.0"
-description = "Remote bridge for the Android ACP Client"
+description = "Remote bridge for AgentLink"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

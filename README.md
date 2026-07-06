@@ -1,4 +1,4 @@
-# Android ACP Client
+# AgentLink
 
 Android-first client for controlling multiple remote ACP coding-agent environments.
 

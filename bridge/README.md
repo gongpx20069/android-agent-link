@@ -1,6 +1,6 @@
-# Android ACP Bridge
+# AgentLink Bridge
 
-Python MVP bridge for pairing Android ACP Client with a remote developer machine.
+Python MVP bridge for pairing AgentLink with a remote developer machine.
 
 ## Development
 

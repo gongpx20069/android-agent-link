@@ -103,9 +103,9 @@ Response:
 {
   "workspaces": [
     {
-      "id": "android-acp-client",
-      "displayName": "android-acp-client",
-      "absolutePath": "D:\\repos\\android-acp-client"
+      "id": "android-agent-link",
+      "displayName": "android-agent-link",
+      "absolutePath": "D:\\repos\\android-agent-link"
     }
   ]
 }
@@ -164,7 +164,7 @@ Android sends:
   "id": "req_001",
   "chatId": "chat_123",
   "agentId": "claude-code",
-  "workspacePath": "D:\\repos\\android-acp-client",
+  "workspacePath": "D:\\repos\\android-agent-link",
   "permissionMode": "manual_approval"
 }
 ```
@@ -225,7 +225,7 @@ Bridge sends:
   "summary": "Run Gradle tests",
   "details": {
     "command": ".\\gradlew testDebugUnitTest",
-    "cwd": "D:\\repos\\android-acp-client"
+    "cwd": "D:\\repos\\android-agent-link"
   }
 }
 ```

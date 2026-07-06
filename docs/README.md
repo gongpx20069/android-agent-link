@@ -1,6 +1,6 @@
 # Documentation Map
 
-This folder defines the project memory layer for the Android ACP Client.
+This folder defines the project memory layer for AgentLink.
 
 ## Documents
 

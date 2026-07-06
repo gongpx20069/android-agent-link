@@ -22,7 +22,7 @@ class PairingRedeemRequest(BaseModel):
 
 
 def create_app(runtime: BridgeRuntime) -> FastAPI:
-    app = FastAPI(title="Android ACP Bridge", version=__version__)
+    app = FastAPI(title="AgentLink Bridge", version=__version__)
 
     @app.get("/health")
     def health() -> dict[str, Any]:

@@ -1,6 +1,6 @@
 # Android App
 
-This document describes the current Android client implementation.
+This document describes the current AgentLink Android client implementation.
 
 ## Current Scope
 

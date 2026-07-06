@@ -1,4 +1,4 @@
-# CLAUDE.md - Android ACP Client
+# CLAUDE.md - AgentLink
 
 This file is the primary agent harness for this repository. It is intentionally prescriptive: agents should follow it before making code, documentation, dependency, or workflow changes.
 

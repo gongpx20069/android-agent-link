@@ -1,6 +1,6 @@
 # Machine Pairing
 
-This document defines how a developer machine becomes available to the Android ACP Client.
+This document defines how a developer machine becomes available to AgentLink.
 
 ## Goal
 
@@ -58,7 +58,7 @@ Bridge behavior:
 - If supported, use `tailscale up --qr` to show a Tailscale login QR code for the developer machine.
 - Poll `tailscale status --json` until the backend state becomes running or the user cancels.
 
-This is a Tailscale login QR code, not the Android ACP Client pairing QR code.
+This is a Tailscale login QR code, not the AgentLink pairing QR code.
 
 ### `tailscale_stopped`
 

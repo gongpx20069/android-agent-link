@@ -83,7 +83,7 @@ private enum class AppTab(val label: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AndroidAcpClientApp(incomingPairingLink: MutableState<String?>) {
+fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     val context = LocalContext.current
     val store = remember { MachineStore(context.applicationContext) }
     val bridgeClient = remember { BridgeClient() }
@@ -160,7 +160,7 @@ fun AndroidAcpClientApp(incomingPairingLink: MutableState<String?>) {
                         TopAppBar(
                             title = {
                                 Column {
-                                    Text("Android ACP", fontWeight = FontWeight.SemiBold)
+                                    Text("AgentLink", fontWeight = FontWeight.SemiBold)
                                     Text("Remote agent control", style = MaterialTheme.typography.labelMedium)
                                 }
                             },

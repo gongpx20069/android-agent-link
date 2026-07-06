@@ -5,10 +5,12 @@
 
     <application
         android:allowBackup="true"
-        android:label="Android ACP"
+        android:icon="@drawable/ic_agentlink"
+        android:label="@string/app_name"
+        android:roundIcon="@drawable/ic_agentlink"
         android:usesCleartextTraffic="true"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AndroidAcpClient">
+        android:theme="@style/Theme.AgentLink">
         <activity
             android:name=".MainActivity"
             android:exported="true">

@@ -14,6 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AndroidAcpClient"
+rootProject.name = "AgentLink"
 include(":app")
-

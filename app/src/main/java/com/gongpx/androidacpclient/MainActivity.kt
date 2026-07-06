@@ -5,7 +5,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.mutableStateOf
-import com.gongpx.androidacpclient.ui.AndroidAcpClientApp
+import com.gongpx.androidacpclient.ui.AgentLinkApp
 
 class MainActivity : ComponentActivity() {
     private val incomingPairingLink = mutableStateOf<String?>(null)
@@ -14,7 +14,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         incomingPairingLink.value = intent?.dataString
         setContent {
-            AndroidAcpClientApp(incomingPairingLink = incomingPairingLink)
+            AgentLinkApp(incomingPairingLink = incomingPairingLink)
         }
     }
 
@@ -24,4 +24,3 @@ class MainActivity : ComponentActivity() {
         incomingPairingLink.value = intent.dataString
     }
 }
-

@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build AgentLink APK
 
 on:
   workflow_dispatch:
@@ -52,17 +52,17 @@ jobs:
 
           release_name="$RELEASE_NAME_INPUT"
           if [ -z "$release_name" ]; then
-            release_name="Android ACP Client debug APK ${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+            release_name="AgentLink debug APK ${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
           fi
 
           apk_path="app/build/outputs/apk/debug/app-debug.apk"
           test -f "$apk_path"
-          cp "$apk_path" android-acp-client-debug.apk
+          cp "$apk_path" agentlink-debug.apk
 
           {
             echo "tag_name=$tag_name"
             echo "release_name=$release_name"
-            echo "apk_path=android-acp-client-debug.apk"
+            echo "apk_path=agentlink-debug.apk"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release with APK
