@@ -145,6 +145,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(responses[0]["update"]["sessionUpdate"], "agent_message_chunk")
         self.assertEqual(responses[-1]["type"], "bridge.done")
 
+    def test_session_set_config_option_returns_config_update(self) -> None:
+        runtime = BridgeRuntime(
+            config=BridgeConfig(machine_name="devbox"),
+            pairing_store=PairingStore(),
+            require_local_pairing_confirmation=False,
+            agent_manager=FakeAgentManager(),
+        )
+
+        responses = runtime.websocket_responses({"type": "session.setConfigOption", "chatId": "chat_1", "configId": "model", "value": "gpt-5.4"})
+
+        self.assertEqual(responses[0]["update"]["sessionUpdate"], "config_option_update")
+        self.assertEqual(responses[0]["update"]["configOptions"][0]["currentValue"], "gpt-5.4")
+        self.assertEqual(responses[-1]["type"], "bridge.done")
+
 
 class FakeAgentManager:
     def prompt(self, request: AcpPromptRequest):
@@ -187,6 +201,26 @@ class FakeAgentManager:
                 "update": {
                     "sessionUpdate": "agent_message_chunk",
                     "content": {"type": "text", "text": f"Loaded {session_id}"},
+                },
+            }
+        ]
+
+    def set_config_option(self, chat_id: str, config_id: str, value: str):
+        return [
+            {
+                "type": "session/update",
+                "update": {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": [
+                        {
+                            "id": config_id,
+                            "name": "Model",
+                            "category": "model",
+                            "type": "select",
+                            "currentValue": value,
+                            "options": [{"value": value, "name": value}],
+                        }
+                    ],
                 },
             }
         ]

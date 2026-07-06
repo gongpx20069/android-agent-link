@@ -18,6 +18,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Chat list and WhatsApp-style chat detail view with full conversation history.
 - Fixed bottom prompt box for sending chat messages.
 - Horizontally scrollable command chips above the prompt box.
+- Built-in `model` chip that opens a model picker from ACP session config options.
 - Collapsible agent activity cards for ACP `tool_call` and `tool_call_update` events.
 - Approval list with approve/deny actions.
 
@@ -70,7 +71,8 @@ The app maps these bridge/ACP events:
 - `session/update` + `agent_message_chunk` -> normal agent chat bubble. Streaming chunks are merged into one bubble instead of one word per message.
 - Empty `agent_thought_chunk` updates are ignored; non-empty thought chunks appear as expandable activity.
 - `available_commands_update` -> command chips above the prompt box.
-- `config_option_update` and `usage_update` are suppressed in chat to avoid noisy setup cards on every prompt.
+- `config_option_update` -> powers the built-in `model` picker and is hidden from the chat timeline.
+- `usage_update` is suppressed in chat to avoid noisy setup cards on every prompt.
 - `bridge.done` -> ends the current one-shot WebSocket request.
 
 ## Workspace Selection
@@ -86,6 +88,8 @@ ACP slash commands are not the same as Copilot CLI's interactive slash commands.
 AgentLink displays advertised commands as chips without the slash prefix. Tapping a command chip sends `/<command>` as a prompt.
 
 `resume` is a built-in AgentLink chip rather than a prompt command. It opens a session picker backed by ACP `session/list`; choosing a session calls `session/load` for the current chat and workspace. Typing `/resume` in the prompt is still treated as plain prompt text unless the ACP agent explicitly advertises a `resume` slash command.
+
+`model` is also a built-in AgentLink chip. It appears after the agent sends a `config_option_update` containing a select option with `id == "model"` or `category == "model"`. Selecting a model sends ACP `session/set_config_option` through the bridge and updates the picker with the returned `configOptions`.
 
 ## Validation
 

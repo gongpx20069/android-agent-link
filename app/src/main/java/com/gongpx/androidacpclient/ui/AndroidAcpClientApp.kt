@@ -78,6 +78,8 @@ import com.gongpx.androidacpclient.data.model.AvailableCommand
 import com.gongpx.androidacpclient.data.model.Chat
 import com.gongpx.androidacpclient.data.model.ChatMessage
 import com.gongpx.androidacpclient.data.model.ChatMessageKind
+import com.gongpx.androidacpclient.data.model.ConfigOption
+import com.gongpx.androidacpclient.data.model.ConfigOptionValue
 import com.gongpx.androidacpclient.data.model.ConnectionState
 import com.gongpx.androidacpclient.data.model.Machine
 import com.gongpx.androidacpclient.data.model.MessageRole
@@ -117,6 +119,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var scannerOpen by remember { mutableStateOf(false) }
     var resumeDialogState by remember { mutableStateOf<ResumeDialogState?>(null) }
+    var modelDialogState by remember { mutableStateOf<ModelDialogState?>(null) }
     val scope = rememberCoroutineScope()
 
     fun upsertMachine(machine: Machine) {
@@ -228,6 +231,34 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                     upsertChat(loading.withMessage(MessageRole.System, "Resume failed: ${it.message}"))
                 }
         }
+
+        fun showModelDialog(chat: Chat, option: ConfigOption) {
+                modelDialogState = ModelDialogState(chat = chat, option = option)
+        }
+
+        fun setModel(chat: Chat, option: ConfigOption, value: ConfigOptionValue) {
+                val machine = machines.firstOrNull { it.id == chat.machineId }
+                if (machine == null) {
+                    upsertChat(chat.withMessage(MessageRole.System, "Machine is not available."))
+                    return
+                }
+                modelDialogState = null
+                val changing = chat.withActivity(
+                    title = "Set model",
+                    summary = value.name,
+                    details = "configId=${option.id}\nvalue=${value.value}\n${value.description.orEmpty()}",
+                )
+                upsertChat(changing)
+                scope.launch {
+                    bridgeClient.setConfigOption(machine, chat.id, chat.agentId, chat.workspacePath, option.id, value.value)
+                        .onSuccess { events ->
+                            upsertChat(changing.copy(messages = changing.messages + events))
+                        }
+                        .onFailure {
+                            upsertChat(changing.withMessage(MessageRole.System, "Model change failed: ${it.message}"))
+                        }
+                }
+        }
     }
 
     fun pairFromLink(link: String) {
@@ -316,6 +347,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                             onOpenChat = { selectedChatId = it.id },
                             onBackToList = { selectedChatId = null },
                             onResume = ::showResumeDialog,
+                            onModel = ::showModelDialog,
                             onSendMessage = { chat, message ->
                                 val machine = machines.firstOrNull { it.id == chat.machineId }
                                 if (machine == null) {
@@ -370,6 +402,13 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                 onSelect = { loadResumeSession(state.chat, it) },
             )
         }
+        modelDialogState?.let { state ->
+            ModelDialog(
+                state = state,
+                onDismiss = { modelDialogState = null },
+                onSelect = { setModel(state.chat, state.option, it) },
+            )
+        }
     }
 }
 
@@ -383,6 +422,7 @@ private fun ChatsScreen(
     onOpenChat: (Chat) -> Unit,
     onBackToList: () -> Unit,
     onResume: (Chat) -> Unit,
+    onModel: (Chat, ConfigOption) -> Unit,
     onSendMessage: (Chat, String) -> Unit,
     onRequestApproval: (Chat) -> Unit,
 ) {
@@ -396,6 +436,8 @@ private fun ChatsScreen(
             onCommand = { command ->
                 if (command.name == BUILT_IN_RESUME_COMMAND.name) {
                     onResume(selectedChat)
+                } else if (command.name == BUILT_IN_MODEL_COMMAND.name) {
+                    selectedChat.modelConfigOption()?.let { onModel(selectedChat, it) }
                 } else {
                     onSendMessage(selectedChat, "/" + command.name)
                 }
@@ -521,7 +563,11 @@ private fun ChatDetailScreen(
 ) {
     var message by remember { mutableStateOf("") }
     val commands = remember(chat.messages) {
-        listOf(BUILT_IN_RESUME_COMMAND) + chat.availableCommands().filterNot { it.name == BUILT_IN_RESUME_COMMAND.name }
+        buildList {
+            add(BUILT_IN_RESUME_COMMAND)
+            if (chat.modelConfigOption() != null) add(BUILT_IN_MODEL_COMMAND)
+            addAll(chat.availableCommands().filterNot { it.name in setOf(BUILT_IN_RESUME_COMMAND.name, BUILT_IN_MODEL_COMMAND.name) })
+        }
     }
     Column(
         modifier = Modifier
@@ -608,6 +654,44 @@ private fun ChatDetailScreen(
 }
 
 @Composable
+private fun ModelDialog(state: ModelDialogState, onDismiss: () -> Unit, onSelect: (ConfigOptionValue) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(state.option.name) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                state.option.options.forEach { option ->
+                    val selected = option.value == state.option.currentValue
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(option) },
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f),
+                        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Text(option.name, fontWeight = FontWeight.SemiBold)
+                                if (selected) Text("Current", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                            option.description?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        },
+    )
+}
+
+@Composable
 private fun ResumeDialog(state: ResumeDialogState, onDismiss: () -> Unit, onSelect: (AgentSessionInfo) -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -652,6 +736,9 @@ private fun ResumeDialog(state: ResumeDialogState, onDismiss: () -> Unit, onSele
 
 @Composable
 private fun ChatTimelineItem(item: ChatMessage) {
+    if (item.kind == ChatMessageKind.CommandUpdate || item.kind == ChatMessageKind.ConfigUpdate) {
+        return
+    }
     if (item.kind == ChatMessageKind.Activity) {
         AgentActivityItem(item)
         return
@@ -1065,13 +1152,50 @@ private fun Chat.availableCommands(): List<AvailableCommand> {
     }
 }
 
+private fun Chat.modelConfigOption(): ConfigOption? {
+    val latest = messages.lastOrNull { it.kind == ChatMessageKind.ConfigUpdate && !it.details.isNullOrBlank() } ?: return null
+    val configDetails = latest.details ?: return null
+    val array = runCatching { JSONArray(configDetails) }.getOrNull() ?: return null
+    val options = List(array.length()) { index -> array.getJSONObject(index) }
+    val model = options.firstOrNull { item ->
+        item.optString("id") == "model" || item.optString("category") == "model"
+    } ?: return null
+    if (model.optString("type") != "select") return null
+    val values = model.optJSONArray("options") ?: JSONArray()
+    return ConfigOption(
+        id = model.getString("id"),
+        name = model.optString("name").ifBlank { "Model" },
+        category = model.optString("category").ifBlank { null },
+        type = model.optString("type"),
+        currentValue = model.optString("currentValue").ifBlank { null },
+        options = List(values.length()) { index ->
+            val item = values.getJSONObject(index)
+            ConfigOptionValue(
+                value = item.getString("value"),
+                name = item.optString("name").ifBlank { item.getString("value") },
+                description = item.optString("description").ifBlank { null },
+            )
+        },
+    )
+}
+
 private val BUILT_IN_RESUME_COMMAND = AvailableCommand(
     name = "resume",
     description = "Load a previous ACP session for this workspace.",
+)
+
+private val BUILT_IN_MODEL_COMMAND = AvailableCommand(
+    name = "model",
+    description = "Select the model for this ACP session.",
 )
 
 private data class ResumeDialogState(
     val chat: Chat,
     val sessions: List<AgentSessionInfo>?,
     val error: String?,
+)
+
+private data class ModelDialogState(
+    val chat: Chat,
+    val option: ConfigOption,
 )

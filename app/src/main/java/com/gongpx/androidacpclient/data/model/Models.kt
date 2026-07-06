@@ -63,6 +63,21 @@ data class AvailableCommand(
     val inputHint: String? = null,
 )
 
+data class ConfigOption(
+    val id: String,
+    val name: String,
+    val category: String?,
+    val type: String,
+    val currentValue: String?,
+    val options: List<ConfigOptionValue> = emptyList(),
+)
+
+data class ConfigOptionValue(
+    val value: String,
+    val name: String,
+    val description: String?,
+)
+
 data class AgentSessionInfo(
     val sessionId: String,
     val title: String?,
@@ -90,6 +105,7 @@ enum class ChatMessageKind {
     Message,
     Activity,
     CommandUpdate,
+    ConfigUpdate,
 }
 
 data class Approval(

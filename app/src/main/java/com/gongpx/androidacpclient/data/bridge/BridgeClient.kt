@@ -121,6 +121,26 @@ class BridgeClient {
         )
     }
 
+    suspend fun setConfigOption(
+        machine: Machine,
+        chatId: String,
+        agentId: String,
+        workspacePath: String,
+        configId: String,
+        value: String,
+    ): Result<List<ChatMessage>> {
+        return sendBridgeMessage(
+            machine,
+            JSONObject()
+                .put("type", "session.setConfigOption")
+                .put("chatId", chatId)
+                .put("agentId", agentId)
+                .put("workspacePath", workspacePath)
+                .put("configId", configId)
+                .put("value", value),
+        )
+    }
+
     private fun getJson(endpoint: String, path: String, headers: Map<String, String>): JSONObject {
         val connection = URL(toHttpBase(endpoint) + path).openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
@@ -257,7 +277,17 @@ class BridgeClient {
     private fun JSONObject.toChatMessage(): ChatMessage? {
         val sessionUpdate = optString("sessionUpdate")
         return when (sessionUpdate) {
-            "config_option_update", "usage_update" -> null
+            "usage_update" -> null
+            "config_option_update" -> {
+                ChatMessage(
+                    role = MessageRole.System,
+                    text = "Config updated",
+                    timestampMillis = System.currentTimeMillis(),
+                    kind = ChatMessageKind.ConfigUpdate,
+                    details = optJSONArray("configOptions")?.toString().orEmpty(),
+                    activityId = "config_options",
+                )
+            }
             "available_commands_update" -> {
                 ChatMessage(
                     role = MessageRole.System,

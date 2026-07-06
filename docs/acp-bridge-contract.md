@@ -266,6 +266,21 @@ Android loads a selected session into the current chat:
 
 The bridge calls ACP `session/load`, forwards replayed `session/update` notifications, then sends `bridge.done`.
 
+### Set Config Option
+
+Android changes session-level options such as model selection through the bridge WebSocket:
+
+```json
+{
+  "type": "session.setConfigOption",
+  "chatId": "chat_123",
+  "configId": "model",
+  "value": "gpt-5.4"
+}
+```
+
+The bridge calls ACP `session/set_config_option` for the active chat session and forwards the returned `config_option_update`.
+
 ### Agent Update
 
 Bridge sends:

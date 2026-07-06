@@ -48,6 +48,12 @@ class AcpAgentManager:
         self._sessions[chat_id] = session
         return updates
 
+    def set_config_option(self, chat_id: str, config_id: str, value: str) -> list[dict[str, Any]]:
+        session = self._sessions.get(chat_id)
+        if session is None:
+            raise AcpAgentError("No active ACP session exists for this chat. Send a prompt before changing model.")
+        return session.set_config_option(config_id, value)
+
 
 class AcpAgentSession:
     def __init__(self, process: subprocess.Popen[str], output_queue: queue.Queue[dict[str, Any]], session_id: str) -> None:
@@ -148,6 +154,27 @@ class AcpAgentSession:
         )
         sessions = result.get("sessions", [])
         return sessions if isinstance(sessions, list) else []
+
+    def set_config_option(self, config_id: str, value: str) -> list[dict[str, Any]]:
+        result, _updates = self._request(
+            "session/set_config_option",
+            {
+                "sessionId": self._session_id,
+                "configId": config_id,
+                "value": value,
+            },
+            timeout_seconds=60,
+        )
+        config_options = result.get("configOptions", [])
+        return [
+            {
+                "type": "session/update",
+                "update": {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": config_options if isinstance(config_options, list) else [],
+                },
+            }
+        ]
 
     def stop(self) -> None:
         if self._process.poll() is None:
