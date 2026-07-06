@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -299,7 +300,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                                     selected = selectedTab == tab,
                                     onClick = { selectedTab = tab },
                                     label = { Text(tab.label) },
-                                    icon = { Text(tab.icon, fontWeight = FontWeight.SemiBold) },
+                                    icon = { Text(tab.icon, fontSize = 24.sp, fontWeight = FontWeight.Bold) },
                                 )
                             }
                         }
@@ -429,9 +430,9 @@ private fun ChatsScreen(
                         }
                     }
                     if (newChatExpanded) {
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(10.dp))
                         Text("Machine", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             machines.forEach { machine ->
                                 SelectableOptionCard(
                                     selected = selectedMachine?.id == machine.id,
@@ -447,7 +448,7 @@ private fun ChatsScreen(
                                 Text("Pair a machine first from the Machines tab.", color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                         }
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(8.dp))
                         OutlinedTextField(
                             value = workspacePath,
                             onValueChange = { workspacePath = it },
@@ -455,9 +456,9 @@ private fun ChatsScreen(
                             label = { Text("Remote workspace path") },
                             placeholder = { Text("D:\\repos\\project-a or /home/me/project-a") },
                         )
-                        Spacer(Modifier.height(12.dp))
+                        Spacer(Modifier.height(8.dp))
                         Text("Agent", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             selectedMachine?.agents.orEmpty().forEach { agent ->
                                 SelectableOptionCard(
                                     selected = selectedAgent?.id == agent.id,
@@ -470,7 +471,7 @@ private fun ChatsScreen(
                                 Text("No agent discovered on this machine yet.", color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                         }
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(10.dp))
                         Button(
                             enabled = selectedMachine != null && selectedAgent != null && workspacePath.isNotBlank(),
                             onClick = { onCreateChat(selectedMachine!!, workspacePath, selectedAgent!!) },
