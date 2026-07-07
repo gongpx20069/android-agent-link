@@ -96,11 +96,11 @@ ACP slash commands are not the same as Copilot CLI's interactive slash commands.
 
 AgentLink displays advertised commands as chips without the slash prefix. Tapping a command chip sends `/<command>` as a prompt.
 
-`resume` is a built-in AgentLink chip rather than a prompt command. It opens a session picker backed by ACP `session/list`; choosing a session calls `session/load` for the current chat and workspace. Typing `/resume` in the prompt is still treated as plain prompt text unless the ACP agent explicitly advertises a `resume` slash command.
+`resume` is a built-in AgentLink chip rather than a prompt command. It opens a session picker backed by ACP `session/list`; choosing a session calls `session/load` for the current chat and workspace. AgentLink appends at most the latest 50 loaded chat messages from a resumed session. Typing `/resume` in the prompt is still treated as plain prompt text unless the ACP agent explicitly advertises a `resume` slash command.
 
-`model` is also a built-in AgentLink chip. It appears after the agent sends a `config_option_update` containing a select option with `id == "model"` or `category == "model"`. Selecting a model sends ACP `session/set_config_option` through the bridge and updates the picker with the returned `configOptions`.
+`model` is also a built-in AgentLink chip. It opens a model picker backed by the latest ACP `config_option_update` option with `id == "model"`, `category == "model"`, or a model-like name. Selecting a model sends ACP `session/set_config_option` through the bridge and updates the picker with the returned `configOptions`. If options have not arrived yet, the picker explains that config options are still loading instead of sending `/model` as a prompt.
 
-`allow-all` is a built-in AgentLink chip backed by the ACP `allow_all` config option. It opens a small on/off picker and sends ACP `session/set_config_option` when changed.
+`allow-all` is a built-in AgentLink chip backed by ACP config options such as `allow_all`, `allowAll`, or `Allow All`. It opens a small on/off picker and sends ACP `session/set_config_option` when changed; boolean config options are normalized into On/Off choices.
 
 ## Approval Flow
 

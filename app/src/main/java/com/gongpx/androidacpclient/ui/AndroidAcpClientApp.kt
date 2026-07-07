@@ -179,6 +179,9 @@ private data class AppStrings(
     val prompt: String,
     val current: String,
     val close: String,
+    val on: String,
+    val off: String,
+    val configOptionsNotLoaded: String,
     val resumeSession: String,
     val loadingSessionsFrom: (String) -> String,
     val noResumableSessionsWorkspace: String,
@@ -285,6 +288,9 @@ private data class AppStrings(
             prompt = "Prompt",
             current = "Current",
             close = "Close",
+            on = "On",
+            off = "Off",
+            configOptionsNotLoaded = "Options are not loaded yet. Send a prompt or wait for the Agent to publish config options.",
             resumeSession = "Resume session",
             loadingSessionsFrom = { "Loading sessions from $it..." },
             noResumableSessionsWorkspace = "No resumable sessions found for this Workspace.",
@@ -376,6 +382,9 @@ private data class AppStrings(
             prompt = "输入 Prompt",
             current = "当前",
             close = "关闭",
+            on = "On",
+            off = "Off",
+            configOptionsNotLoaded = "选项尚未加载。请先发送一个 prompt，或等待 Agent 发布 config options。",
             resumeSession = "恢复 session",
             loadingSessionsFrom = { "正在从 $it 加载 sessions..." },
             noResumableSessionsWorkspace = "当前 Workspace 没有可恢复 sessions。",
@@ -547,7 +556,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
         scope.launch {
             bridgeClient.loadSession(machine, chat.id, agent.id, path, session.sessionId)
                 .onSuccess { events ->
-                    upsertChat(chat.copy(messages = chat.messages + events))
+                    upsertChat(chat.copy(messages = chat.messages + events.takeLast(MAX_RESUMED_CHAT_MESSAGES)))
                 }
                 .onFailure {
                     upsertChat(chat.withMessage(MessageRole.System, strings.openSessionFailed(it.message)))
@@ -633,7 +642,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
         scope.launch {
             bridgeClient.loadSession(machine, chat.id, chat.agentId, chat.workspacePath, session.sessionId)
                 .onSuccess { events ->
-                    upsertChat(loading.copy(messages = loading.messages + events))
+                    upsertChat(loading.copy(messages = loading.messages + events.takeLast(MAX_RESUMED_CHAT_MESSAGES)))
                 }
                 .onFailure {
                     upsertChat(loading.withMessage(MessageRole.System, strings.resumeFailed(it.message)))
@@ -691,22 +700,22 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     }
 
     fun checkForUpdate(manual: Boolean) {
-        updateState = updateState.copy(checking = true, message = if (manual) strings.checkingForUpdates else updateState.message)
+        updateState = updateState.copy(checking = true, status = if (manual) UpdateStatus.Checking else updateState.status, errorMessage = null)
         scope.launch {
             updateClient.checkForUpdate()
                 .onSuccess { update ->
                     updateState = UpdateUiState(
                         checking = false,
                         update = update,
-                        message = when {
-                            update == null -> strings.noReleasesFound
-                            update.isNewer -> strings.updateAvailable(update.version)
-                            else -> strings.latestVersion
+                        status = when {
+                            update == null -> UpdateStatus.NoReleases
+                            update.isNewer -> UpdateStatus.UpdateAvailable
+                            else -> UpdateStatus.Latest
                         },
                     )
                 }
                 .onFailure {
-                    updateState = updateState.copy(checking = false, message = strings.updateCheckFailed(it.message))
+                    updateState = updateState.copy(checking = false, status = UpdateStatus.Failed, errorMessage = it.message)
                 }
         }
     }
@@ -947,7 +956,7 @@ private fun SettingsScreen(
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(strings.updates, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(strings.currentVersion(BuildConfig.VERSION_NAME), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    updateState.message?.let {
+                    updateState.localizedMessage(strings)?.let {
                         Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)) {
                             Text(it, modifier = Modifier.padding(12.dp))
                         }
@@ -999,9 +1008,9 @@ private fun ChatsScreen(
             onSendMessage = { onSendMessage(selectedChat, it) },
             onCommand = { command ->
                 when (command.name) {
-                    BUILT_IN_MODEL_COMMAND.name -> selectedChat.modelConfigOption()?.let { onModel(selectedChat, it) } ?: onSendMessage(selectedChat, "/" + command.name)
+                    BUILT_IN_MODEL_COMMAND.name -> onModel(selectedChat, selectedChat.modelConfigOption() ?: fallbackModelConfigOption())
                     BUILT_IN_RESUME_COMMAND.name -> onResume(selectedChat)
-                    BUILT_IN_ALLOW_ALL_COMMAND.name -> selectedChat.allowAllConfigOption()?.let { onModel(selectedChat, it) } ?: onSendMessage(selectedChat, "/" + command.name)
+                    BUILT_IN_ALLOW_ALL_COMMAND.name -> onModel(selectedChat, selectedChat.allowAllConfigOption() ?: fallbackAllowAllConfigOption(strings))
                     else -> onSendMessage(selectedChat, "/" + command.name)
                 }
             },
@@ -1199,11 +1208,10 @@ private fun ChatDetailScreen(
     val listState = rememberLazyListState()
     val commands = remember(chat.messages) {
         val advertisedCommands = chat.availableCommands()
-        val advertisedNames = advertisedCommands.map { it.name }.toSet()
         buildList {
-            if (chat.modelConfigOption() != null || BUILT_IN_MODEL_COMMAND.name in advertisedNames) add(BUILT_IN_MODEL_COMMAND)
+            add(BUILT_IN_MODEL_COMMAND)
             add(BUILT_IN_RESUME_COMMAND)
-            if (chat.allowAllConfigOption() != null || BUILT_IN_ALLOW_ALL_COMMAND.name in advertisedNames) add(BUILT_IN_ALLOW_ALL_COMMAND)
+            add(BUILT_IN_ALLOW_ALL_COMMAND)
             val builtIns = setOf(BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name, BUILT_IN_ALLOW_ALL_COMMAND.name)
             addAll(advertisedCommands.filterNot { it.name in builtIns }.sortedBy { COMMON_COMMAND_ORDER.indexOf(it.name).let { index -> if (index < 0) Int.MAX_VALUE else index } })
         }
@@ -1350,23 +1358,27 @@ private fun ModelDialog(state: ModelDialogState, onDismiss: () -> Unit, onSelect
         title = { Text(state.option.name) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                state.option.options.forEach { option ->
-                    val selected = option.value == state.option.currentValue
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelect(option) },
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f),
-                        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-                    ) {
-                        Column(Modifier.padding(12.dp)) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text(option.name, fontWeight = FontWeight.SemiBold)
-                                if (selected) Text(strings.current, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                            }
-                            option.description?.let {
-                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (state.option.options.isEmpty()) {
+                    Text(strings.configOptionsNotLoaded, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    state.option.options.forEach { option ->
+                        val selected = option.value == state.option.currentValue
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelect(option) },
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f),
+                            border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+                        ) {
+                            Column(Modifier.padding(12.dp)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text(option.name, fontWeight = FontWeight.SemiBold)
+                                    if (selected) Text(strings.current, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                }
+                                option.description?.let {
+                                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
                         }
                     }
@@ -1773,6 +1785,13 @@ private fun NewChatTogglePill(expanded: Boolean, onClick: () -> Unit) {
                     .height(2.dp)
                     .background(strokeColor, RoundedCornerShape(999.dp)),
             )
+            if (!expanded) {
+                Box(
+                    Modifier
+                        .size(width = 2.dp, height = 13.dp)
+                        .background(strokeColor, RoundedCornerShape(999.dp)),
+                )
+            }
         }
     }
 }
@@ -2074,6 +2093,8 @@ private fun Chat.withActivity(title: String, summary: String, details: String): 
     )
 }
 
+private const val MAX_RESUMED_CHAT_MESSAGES = 50
+
 private fun Chat.availableCommands(): List<AvailableCommand> {
     val latest = messages.lastOrNull { it.kind == ChatMessageKind.CommandUpdate && !it.details.isNullOrBlank() } ?: return emptyList()
     val commandDetails = latest.details ?: return emptyList()
@@ -2091,13 +2112,15 @@ private fun Chat.availableCommands(): List<AvailableCommand> {
 
 private fun Chat.modelConfigOption(): ConfigOption? {
     return configOptions().firstOrNull { option ->
-        option.id == "model" || option.category == "model"
+        option.id.normalizedKey() == "model" || option.category?.normalizedKey() == "model" || option.name.normalizedKey() == "model"
     }
 }
 
 private fun Chat.allowAllConfigOption(): ConfigOption? {
     return configOptions().firstOrNull { option ->
-        option.id == "allow_all" || option.name.equals("Allow All", ignoreCase = true)
+        option.id.normalizedKey() in ALLOW_ALL_KEYS ||
+            option.category?.normalizedKey() in ALLOW_ALL_KEYS ||
+            option.name.normalizedKey() in ALLOW_ALL_KEYS
     }
 }
 
@@ -2107,13 +2130,23 @@ private fun Chat.configOptions(): List<ConfigOption> {
     val array = runCatching { JSONArray(configDetails) }.getOrNull() ?: return emptyList()
     val options = List(array.length()) { index -> array.getJSONObject(index) }
     return options.mapNotNull { option ->
-        if (option.optString("type") != "select") return@mapNotNull null
-        val values = option.optJSONArray("options") ?: JSONArray()
+        val id = option.getString("id")
+        val name = option.optString("name").ifBlank { id }
+        val category = option.optString("category").ifBlank { null }
+        val type = option.optString("type")
+        val key = id.normalizedKey()
+        val values = when {
+            type == "select" -> option.optJSONArray("options") ?: JSONArray()
+            type == "boolean" || key in ALLOW_ALL_KEYS -> JSONArray()
+                .put(JSONObject().put("value", "true").put("name", "On"))
+                .put(JSONObject().put("value", "false").put("name", "Off"))
+            else -> return@mapNotNull null
+        }
         ConfigOption(
-            id = option.getString("id"),
-            name = option.optString("name").ifBlank { option.getString("id") },
-            category = option.optString("category").ifBlank { null },
-            type = option.optString("type"),
+            id = id,
+            name = name,
+            category = category,
+            type = type,
             currentValue = option.optString("currentValue").ifBlank { null },
             options = List(values.length()) { index ->
                 val item = values.getJSONObject(index)
@@ -2126,6 +2159,35 @@ private fun Chat.configOptions(): List<ConfigOption> {
         )
     }
 }
+
+private fun fallbackModelConfigOption(): ConfigOption {
+    return ConfigOption(
+        id = "model",
+        name = "Model",
+        category = "model",
+        type = "select",
+        currentValue = null,
+        options = emptyList(),
+    )
+}
+
+private fun fallbackAllowAllConfigOption(strings: AppStrings): ConfigOption {
+    return ConfigOption(
+        id = "allow_all",
+        name = "Allow All",
+        category = "approval",
+        type = "boolean",
+        currentValue = null,
+        options = listOf(
+            ConfigOptionValue("true", strings.on, null),
+            ConfigOptionValue("false", strings.off, null),
+        ),
+    )
+}
+
+private val ALLOW_ALL_KEYS = setOf("allowall", "allowallpermissions", "autoapprove", "autoapproval")
+
+private fun String.normalizedKey(): String = lowercase().filter { it.isLetterOrDigit() }
 
 private val BUILT_IN_RESUME_COMMAND = AvailableCommand(
     name = "resume",
@@ -2166,5 +2228,26 @@ private data class ModelDialogState(
 private data class UpdateUiState(
     val checking: Boolean = false,
     val update: AppUpdate? = null,
-    val message: String? = null,
+    val status: UpdateStatus = UpdateStatus.Idle,
+    val errorMessage: String? = null,
 )
+
+private enum class UpdateStatus {
+    Idle,
+    Checking,
+    NoReleases,
+    UpdateAvailable,
+    Latest,
+    Failed,
+}
+
+private fun UpdateUiState.localizedMessage(strings: AppStrings): String? {
+    return when (status) {
+        UpdateStatus.Idle -> null
+        UpdateStatus.Checking -> strings.checkingForUpdates
+        UpdateStatus.NoReleases -> strings.noReleasesFound
+        UpdateStatus.UpdateAvailable -> update?.let { strings.updateAvailable(it.version) }
+        UpdateStatus.Latest -> strings.latestVersion
+        UpdateStatus.Failed -> strings.updateCheckFailed(errorMessage)
+    }
+}
