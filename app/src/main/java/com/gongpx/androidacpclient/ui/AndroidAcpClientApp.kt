@@ -439,12 +439,11 @@ private fun ChatsScreen(
             onBack = onBackToList,
             onSendMessage = { onSendMessage(selectedChat, it) },
             onCommand = { command ->
-                if (command.name == BUILT_IN_RESUME_COMMAND.name) {
-                    onResume(selectedChat)
-                } else if (command.name == BUILT_IN_MODEL_COMMAND.name) {
-                    selectedChat.modelConfigOption()?.let { onModel(selectedChat, it) }
-                } else {
-                    onSendMessage(selectedChat, "/" + command.name)
+                when (command.name) {
+                    BUILT_IN_MODEL_COMMAND.name -> selectedChat.modelConfigOption()?.let { onModel(selectedChat, it) }
+                    BUILT_IN_RESUME_COMMAND.name -> onResume(selectedChat)
+                    BUILT_IN_ALLOW_ALL_COMMAND.name -> selectedChat.allowAllConfigOption()?.let { onModel(selectedChat, it) }
+                    else -> onSendMessage(selectedChat, "/" + command.name)
                 }
             },
             onRequestApproval = { onRequestApproval(selectedChat) },
@@ -569,9 +568,11 @@ private fun ChatDetailScreen(
     var message by remember { mutableStateOf("") }
     val commands = remember(chat.messages) {
         buildList {
-            add(BUILT_IN_RESUME_COMMAND)
             if (chat.modelConfigOption() != null) add(BUILT_IN_MODEL_COMMAND)
-            addAll(chat.availableCommands().filterNot { it.name in setOf(BUILT_IN_RESUME_COMMAND.name, BUILT_IN_MODEL_COMMAND.name) })
+            add(BUILT_IN_RESUME_COMMAND)
+            if (chat.allowAllConfigOption() != null) add(BUILT_IN_ALLOW_ALL_COMMAND)
+            val builtIns = setOf(BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name, BUILT_IN_ALLOW_ALL_COMMAND.name)
+            addAll(chat.availableCommands().filterNot { it.name in builtIns }.sortedBy { COMMON_COMMAND_ORDER.indexOf(it.name).let { index -> if (index < 0) Int.MAX_VALUE else index } })
         }
     }
     Column(
@@ -1291,30 +1292,41 @@ private fun Chat.availableCommands(): List<AvailableCommand> {
 }
 
 private fun Chat.modelConfigOption(): ConfigOption? {
-    val latest = messages.lastOrNull { it.kind == ChatMessageKind.ConfigUpdate && !it.details.isNullOrBlank() } ?: return null
-    val configDetails = latest.details ?: return null
-    val array = runCatching { JSONArray(configDetails) }.getOrNull() ?: return null
+    return configOptions().firstOrNull { option ->
+        option.id == "model" || option.category == "model"
+    }
+}
+
+private fun Chat.allowAllConfigOption(): ConfigOption? {
+    return configOptions().firstOrNull { option ->
+        option.id == "allow_all" || option.name.equals("Allow All", ignoreCase = true)
+    }
+}
+
+private fun Chat.configOptions(): List<ConfigOption> {
+    val latest = messages.lastOrNull { it.kind == ChatMessageKind.ConfigUpdate && !it.details.isNullOrBlank() } ?: return emptyList()
+    val configDetails = latest.details ?: return emptyList()
+    val array = runCatching { JSONArray(configDetails) }.getOrNull() ?: return emptyList()
     val options = List(array.length()) { index -> array.getJSONObject(index) }
-    val model = options.firstOrNull { item ->
-        item.optString("id") == "model" || item.optString("category") == "model"
-    } ?: return null
-    if (model.optString("type") != "select") return null
-    val values = model.optJSONArray("options") ?: JSONArray()
-    return ConfigOption(
-        id = model.getString("id"),
-        name = model.optString("name").ifBlank { "Model" },
-        category = model.optString("category").ifBlank { null },
-        type = model.optString("type"),
-        currentValue = model.optString("currentValue").ifBlank { null },
-        options = List(values.length()) { index ->
-            val item = values.getJSONObject(index)
-            ConfigOptionValue(
-                value = item.getString("value"),
-                name = item.optString("name").ifBlank { item.getString("value") },
-                description = item.optString("description").ifBlank { null },
+    return options.mapNotNull { option ->
+        if (option.optString("type") != "select") return@mapNotNull null
+        val values = option.optJSONArray("options") ?: JSONArray()
+        ConfigOption(
+            id = option.getString("id"),
+            name = option.optString("name").ifBlank { option.getString("id") },
+            category = option.optString("category").ifBlank { null },
+            type = option.optString("type"),
+            currentValue = option.optString("currentValue").ifBlank { null },
+            options = List(values.length()) { index ->
+                val item = values.getJSONObject(index)
+                ConfigOptionValue(
+                    value = item.getString("value"),
+                    name = item.optString("name").ifBlank { item.getString("value") },
+                    description = item.optString("description").ifBlank { null },
+                )
             )
-        },
-    )
+        )
+    }
 }
 
 private val BUILT_IN_RESUME_COMMAND = AvailableCommand(
@@ -1325,6 +1337,21 @@ private val BUILT_IN_RESUME_COMMAND = AvailableCommand(
 private val BUILT_IN_MODEL_COMMAND = AvailableCommand(
     name = "model",
     description = "Select the model for this ACP session.",
+)
+
+private val BUILT_IN_ALLOW_ALL_COMMAND = AvailableCommand(
+    name = "allow-all",
+    description = "Toggle automatic permission approval for this session.",
+)
+
+private val COMMON_COMMAND_ORDER = listOf(
+    "plan",
+    "review",
+    "init",
+    "model",
+    "allow-all",
+    "usage",
+    "context",
 )
 
 private data class ResumeDialogState(

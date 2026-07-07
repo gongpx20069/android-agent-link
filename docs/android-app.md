@@ -19,6 +19,8 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Fixed bottom prompt box for sending chat messages.
 - Horizontally scrollable command chips above the prompt box.
 - Built-in `model` chip that opens a model picker from ACP session config options.
+- Common command chips are prioritized before other ACP-advertised commands: `model`, `resume`, and `allow-all`.
+- Built-in `allow-all` opens an on/off picker when the ACP agent exposes the `allow_all` session config option.
 - Agent/system message bubbles render basic Markdown: headings, bullets, quotes, fenced code blocks, bold, italic, inline code, and link-style text.
 - Collapsible agent activity cards for ACP `tool_call` and `tool_call_update` events.
 - Approval list with approve/deny actions.
@@ -91,6 +93,8 @@ AgentLink displays advertised commands as chips without the slash prefix. Tappin
 `resume` is a built-in AgentLink chip rather than a prompt command. It opens a session picker backed by ACP `session/list`; choosing a session calls `session/load` for the current chat and workspace. Typing `/resume` in the prompt is still treated as plain prompt text unless the ACP agent explicitly advertises a `resume` slash command.
 
 `model` is also a built-in AgentLink chip. It appears after the agent sends a `config_option_update` containing a select option with `id == "model"` or `category == "model"`. Selecting a model sends ACP `session/set_config_option` through the bridge and updates the picker with the returned `configOptions`.
+
+`allow-all` is a built-in AgentLink chip backed by the ACP `allow_all` config option. It opens a small on/off picker and sends ACP `session/set_config_option` when changed.
 
 ## Validation
 
