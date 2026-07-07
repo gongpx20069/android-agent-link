@@ -244,7 +244,7 @@ def _agent_command(agent_id: str, workspace: Path) -> list[str]:
 
 
 def _resolve_workspace(workspace_path: str) -> Path:
-    workspace = Path(workspace_path).expanduser().resolve()
+    workspace = Path.home() if not workspace_path.strip() else Path(workspace_path).expanduser().resolve()
     if not workspace.exists() or not workspace.is_dir():
         raise AcpAgentError(f"Workspace does not exist or is not a directory: {workspace}")
     return workspace

@@ -81,7 +81,7 @@ The app maps these bridge/ACP events:
 
 ## Workspace Selection
 
-The bridge does not bind a workspace at startup. Workspace is selected per chat in the New Chat form by entering the remote absolute project path. That path maps to ACP `cwd` when the bridge creates the Copilot ACP session.
+The bridge does not bind a workspace at startup. Workspace is selected per chat in the New Chat form by entering the remote absolute project path. Leaving the field blank uses `~`, which the bridge resolves to the remote machine user's home directory. The selected path maps to ACP `cwd` when the bridge creates the Copilot ACP session.
 
 The workspace does not have to be a Git repository, but Copilot's coding workflows work best inside a repository. If a parent folder such as `D:\peixianws` is selected instead of `D:\peixianws\android-agent-link`, Git-aware commands may report that the current directory is not a Git repository.
 

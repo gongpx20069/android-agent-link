@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
-from android_acp_bridge.acp_agent import AcpPromptRequest
+from android_acp_bridge.acp_agent import AcpPromptRequest, _resolve_workspace
 from android_acp_bridge.config import BridgeConfig, WorkspaceConfig
 from android_acp_bridge.pairing import PairingStore
 from android_acp_bridge.runtime import BridgeRuntime, DeviceInfo, InvalidPairingTokenError, parse_device_info
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_empty_workspace_resolves_to_home(self) -> None:
+        self.assertEqual(_resolve_workspace(""), Path.home().resolve())
+
     def test_default_runtime_has_no_startup_workspaces(self) -> None:
         runtime = BridgeRuntime(
             config=BridgeConfig(machine_name="devbox"),

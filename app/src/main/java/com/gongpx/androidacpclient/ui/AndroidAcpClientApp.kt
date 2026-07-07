@@ -141,12 +141,12 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     }
 
     fun createChat(machine: Machine, workspacePath: String, agent: Agent) {
-        val path = workspacePath.trim()
-        if (path.isBlank()) {
-            statusMessage = "Enter a remote workspace path before creating a chat."
-            return
+        val path = workspacePath.trim().ifBlank { "~" }
+        val workspaceName = if (path == "~") {
+            "Home"
+        } else {
+            path.trimEnd('\\', '/').substringAfterLast('\\').substringAfterLast('/').ifBlank { path }
         }
-        val workspaceName = path.trimEnd('\\', '/').substringAfterLast('\\').substringAfterLast('/').ifBlank { path }
         val chat = Chat(
             id = "chat_" + UUID.randomUUID(),
             title = "$workspaceName · ${agent.displayName}",
@@ -506,8 +506,8 @@ private fun ChatsScreen(
                             value = workspacePath,
                             onValueChange = { workspacePath = it },
                             modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Remote workspace path") },
-                            placeholder = { Text("D:\\repos\\project-a or /home/me/project-a") },
+                            label = { Text("Remote workspace path (optional)") },
+                            placeholder = { Text("Leave blank for remote home, or enter D:\\repos\\project-a") },
                         )
                         Spacer(Modifier.height(8.dp))
                         Text("Agent", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -526,7 +526,7 @@ private fun ChatsScreen(
                         }
                         Spacer(Modifier.height(10.dp))
                         Button(
-                            enabled = selectedMachine != null && selectedAgent != null && workspacePath.isNotBlank(),
+                            enabled = selectedMachine != null && selectedAgent != null,
                             onClick = { onCreateChat(selectedMachine!!, workspacePath, selectedAgent!!) },
                         ) {
                             Text("Create Chat")
