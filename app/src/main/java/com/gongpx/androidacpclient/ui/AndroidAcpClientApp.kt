@@ -999,9 +999,9 @@ private fun ChatsScreen(
             onSendMessage = { onSendMessage(selectedChat, it) },
             onCommand = { command ->
                 when (command.name) {
-                    BUILT_IN_MODEL_COMMAND.name -> selectedChat.modelConfigOption()?.let { onModel(selectedChat, it) }
+                    BUILT_IN_MODEL_COMMAND.name -> selectedChat.modelConfigOption()?.let { onModel(selectedChat, it) } ?: onSendMessage(selectedChat, "/" + command.name)
                     BUILT_IN_RESUME_COMMAND.name -> onResume(selectedChat)
-                    BUILT_IN_ALLOW_ALL_COMMAND.name -> selectedChat.allowAllConfigOption()?.let { onModel(selectedChat, it) }
+                    BUILT_IN_ALLOW_ALL_COMMAND.name -> selectedChat.allowAllConfigOption()?.let { onModel(selectedChat, it) } ?: onSendMessage(selectedChat, "/" + command.name)
                     else -> onSendMessage(selectedChat, "/" + command.name)
                 }
             },
@@ -1198,12 +1198,14 @@ private fun ChatDetailScreen(
     var message by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val commands = remember(chat.messages) {
+        val advertisedCommands = chat.availableCommands()
+        val advertisedNames = advertisedCommands.map { it.name }.toSet()
         buildList {
-            if (chat.modelConfigOption() != null) add(BUILT_IN_MODEL_COMMAND)
+            if (chat.modelConfigOption() != null || BUILT_IN_MODEL_COMMAND.name in advertisedNames) add(BUILT_IN_MODEL_COMMAND)
             add(BUILT_IN_RESUME_COMMAND)
-            if (chat.allowAllConfigOption() != null) add(BUILT_IN_ALLOW_ALL_COMMAND)
+            if (chat.allowAllConfigOption() != null || BUILT_IN_ALLOW_ALL_COMMAND.name in advertisedNames) add(BUILT_IN_ALLOW_ALL_COMMAND)
             val builtIns = setOf(BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name, BUILT_IN_ALLOW_ALL_COMMAND.name)
-            addAll(chat.availableCommands().filterNot { it.name in builtIns }.sortedBy { COMMON_COMMAND_ORDER.indexOf(it.name).let { index -> if (index < 0) Int.MAX_VALUE else index } })
+            addAll(advertisedCommands.filterNot { it.name in builtIns }.sortedBy { COMMON_COMMAND_ORDER.indexOf(it.name).let { index -> if (index < 0) Int.MAX_VALUE else index } })
         }
     }
     LaunchedEffect(chat.id, chat.messages.size) {
