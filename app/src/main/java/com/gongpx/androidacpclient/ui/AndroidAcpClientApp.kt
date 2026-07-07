@@ -1033,23 +1033,46 @@ private fun MachinesScreen(
 
 @Composable
 private fun NewChatTogglePill(expanded: Boolean, onClick: () -> Unit) {
-    Surface(
-        modifier = Modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(999.dp),
-        color = if (expanded) {
-            MaterialTheme.colorScheme.surface.copy(alpha = 0.72f)
-        } else {
-            MaterialTheme.colorScheme.primary
-        },
-        tonalElevation = 3.dp,
+    val strokeColor = MaterialTheme.colorScheme.primary
+    val fillColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.18f)
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(
-            text = if (expanded) "Hide" else "+ New",
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            color = if (expanded) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onPrimary,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-        )
+        if (expanded) {
+            Surface(
+                modifier = Modifier.size(width = 54.dp, height = 13.dp),
+                shape = RoundedCornerShape(topStart = 999.dp, topEnd = 999.dp, bottomStart = 5.dp, bottomEnd = 5.dp),
+                color = fillColor,
+                border = BorderStroke(2.dp, strokeColor),
+            ) {}
+            Spacer(Modifier.height(5.dp))
+            Surface(
+                modifier = Modifier.size(width = 54.dp, height = 13.dp),
+                shape = RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp, bottomStart = 999.dp, bottomEnd = 999.dp),
+                color = fillColor,
+                border = BorderStroke(2.dp, strokeColor),
+            ) {}
+        } else {
+            Surface(
+                modifier = Modifier.size(width = 58.dp, height = 32.dp),
+                shape = RoundedCornerShape(999.dp),
+                color = fillColor,
+                border = BorderStroke(2.dp, strokeColor),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(0.62f)
+                            .height(2.dp)
+                            .background(strokeColor, RoundedCornerShape(999.dp)),
+                    )
+                }
+            }
+        }
     }
 }
 
