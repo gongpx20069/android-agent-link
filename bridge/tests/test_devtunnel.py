@@ -17,6 +17,9 @@ from android_acp_bridge.devtunnel import (
     issue_connect_token,
     parse_connect_token,
     parse_host_url,
+    parse_list_tunnel_ids,
+    parse_tunnel_id,
+    setup_devtunnel,
     to_websocket_endpoint,
 )
 
@@ -31,6 +34,22 @@ class DevTunnelTests(unittest.TestCase):
         output = "Available at https://abc123.usw2.devtunnels.ms/"
 
         self.assertEqual(parse_host_url(output, 4317), "https://abc123.usw2.devtunnels.ms")
+
+    def test_parse_tunnel_id_from_show_output(self) -> None:
+        output = "Tunnel service cluster    : jpe1\nTunnel ID             : agentlink.jpe1\nPorts                 : 0"
+
+        self.assertEqual(parse_tunnel_id(output), "agentlink.jpe1")
+
+    def test_parse_list_tunnel_ids(self) -> None:
+        output = """
+Found 2 tunnels.
+
+Tunnel ID                           Host Connections     Labels                    Ports                Expiration                Description
+agentlink.jpe1                      0                                              1                    29.4 days
+agentlink-cpc-peixi-3hwbj.jpe1      0                                              0                    30 days
+        """
+
+        self.assertEqual(parse_list_tunnel_ids(output), ["agentlink.jpe1", "agentlink-cpc-peixi-3hwbj.jpe1"])
 
     def test_to_websocket_endpoint_converts_https(self) -> None:
         self.assertEqual(to_websocket_endpoint("https://abc123-4317.usw2.devtunnels.ms/"), "wss://abc123-4317.usw2.devtunnels.ms")
@@ -52,10 +71,11 @@ class DevTunnelTests(unittest.TestCase):
 
         def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
             commands.append(args)
-            return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(args, 0, "Tunnel ID             : agentlink.jpe1", "")
 
-        create_or_reuse_tunnel("devtunnel", "agentlink", runner)
+        tunnel_id = create_or_reuse_tunnel("devtunnel", "agentlink", runner)
 
+        self.assertEqual(tunnel_id, "agentlink.jpe1")
         self.assertEqual(commands, [["devtunnel", "show", "agentlink"]])
 
     def test_create_or_reuse_tunnel_creates_missing_tunnel(self) -> None:
@@ -63,11 +83,89 @@ class DevTunnelTests(unittest.TestCase):
 
         def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
             commands.append(args)
-            return subprocess.CompletedProcess(args, 1 if args[1] == "show" else 0, "", "")
+            if args[1] == "show":
+                stdout = "Tunnel ID             : agentlink.jpe1" if len(commands) > 2 else ""
+                return subprocess.CompletedProcess(args, 1 if len(commands) == 1 else 0, stdout, "")
+            return subprocess.CompletedProcess(args, 0, "", "")
 
-        create_or_reuse_tunnel("devtunnel", "agentlink", runner)
+        tunnel_id = create_or_reuse_tunnel("devtunnel", "agentlink", runner)
 
-        self.assertEqual(commands, [["devtunnel", "show", "agentlink"], ["devtunnel", "create", "agentlink"]])
+        self.assertEqual(tunnel_id, "agentlink.jpe1")
+        self.assertEqual(commands, [["devtunnel", "show", "agentlink"], ["devtunnel", "list"], ["devtunnel", "create", "agentlink"], ["devtunnel", "show", "agentlink"]])
+
+    def test_create_or_reuse_tunnel_uses_visible_cluster_id_from_list(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            commands.append(args)
+            if args[1] == "show":
+                return subprocess.CompletedProcess(args, 1, "", "Tunnel not found")
+            if args[1] == "list":
+                return subprocess.CompletedProcess(args, 0, "agentlink-cpc-peixi-3hwbj.jpe1      0      0      30 days", "")
+            raise AssertionError(f"unexpected command: {args}")
+
+        tunnel_id = create_or_reuse_tunnel("devtunnel", "agentlink-cpc-peixi-3hwbj", runner)
+
+        self.assertEqual(tunnel_id, "agentlink-cpc-peixi-3hwbj.jpe1")
+        self.assertEqual(commands, [["devtunnel", "show", "agentlink-cpc-peixi-3hwbj"], ["devtunnel", "list"]])
+
+    def test_create_or_reuse_tunnel_does_not_trust_zero_exit_without_tunnel_id(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            commands.append(args)
+            if args[1] == "show":
+                return subprocess.CompletedProcess(args, 0, "Tunnel not found in jpe1: agentlink-cpc-peixi-3hwbj", "")
+            if args[1] == "list":
+                return subprocess.CompletedProcess(args, 0, "agentlink-cpc-peixi-3hwbj.jpe1      0      0      30 days", "")
+            raise AssertionError(f"unexpected command: {args}")
+
+        tunnel_id = create_or_reuse_tunnel("devtunnel", "agentlink-cpc-peixi-3hwbj", runner)
+
+        self.assertEqual(tunnel_id, "agentlink-cpc-peixi-3hwbj.jpe1")
+
+    def test_setup_devtunnel_uses_resolved_cluster_tunnel_id(self) -> None:
+        commands: list[list[str]] = []
+
+        def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            commands.append(args)
+            if args[1:] == ["user", "show"]:
+                return subprocess.CompletedProcess(args, 0, "User: test", "")
+            if args[1:] == ["show", "agentlink"]:
+                return subprocess.CompletedProcess(args, 0, "Tunnel ID             : agentlink.jpe1", "")
+            if args[1:4] == ["port", "create", "agentlink.jpe1"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args[1:] == ["token", "agentlink.jpe1", "--scopes", "connect"]:
+                return subprocess.CompletedProcess(args, 0, "aaa.bbb.ccc", "")
+            raise AssertionError(f"unexpected command: {args}")
+
+        import android_acp_bridge.devtunnel as devtunnel
+
+        original_start_host = devtunnel.start_devtunnel_host
+        try:
+            devtunnel.start_devtunnel_host = lambda **kwargs: type(  # type: ignore[assignment]
+                "FakeHost",
+                (),
+                {
+                    "config": type(
+                        "FakeConfig",
+                        (),
+                        {
+                            "connect_token": kwargs["connect_token"],
+                            "websocket_endpoint": "wss://agentlink-4317.jpe1.devtunnels.ms",
+                        },
+                    )(),
+                    "process": None,
+                    "output_thread": None,
+                    "stop": lambda self: None,
+                },
+            )()
+            setup_devtunnel(bridge_root=Path("."), tunnel_id="agentlink", local_port=4317, cli_path="devtunnel", runner=runner)
+        finally:
+            devtunnel.start_devtunnel_host = original_start_host  # type: ignore[assignment]
+
+        self.assertIn(["devtunnel", "port", "create", "agentlink.jpe1", "-p", "4317", "--protocol", "http"], commands)
+        self.assertIn(["devtunnel", "token", "agentlink.jpe1", "--scopes", "connect"], commands)
 
     def test_create_or_reuse_tunnel_reports_anonymous_create_denial(self) -> None:
         def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
@@ -88,7 +186,7 @@ class DevTunnelTests(unittest.TestCase):
             create_or_reuse_tunnel("devtunnel", "agentlink", runner)
 
     def test_default_tunnel_id_is_agentlink_prefixed(self) -> None:
-        self.assertTrue(default_tunnel_id().startswith("agentlink"))
+        self.assertEqual(default_tunnel_id(), "agentlink")
 
     def test_ensure_devtunnel_login_treats_anonymous_show_as_logged_out(self) -> None:
         commands: list[list[str]] = []
@@ -129,7 +227,30 @@ class DevTunnelTests(unittest.TestCase):
             local_cli.parent.mkdir()
             local_cli.write_text("", encoding="utf-8")
 
-            self.assertEqual(ensure_devtunnel_cli(bridge_root, command_exists=lambda _command: None), str(local_cli))
+            self.assertEqual(ensure_devtunnel_cli(bridge_root, command_exists=lambda _command: None), str(local_cli.resolve()))
+
+    def test_ensure_devtunnel_cli_prefers_repo_root_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            bridge_root = repo_root / "bridge"
+            bridge_root.mkdir()
+            repo_cli = repo_root / ("devtunnel.exe" if sys.platform == "win32" else "devtunnel")
+            repo_cli.write_text("", encoding="utf-8")
+
+            self.assertEqual(ensure_devtunnel_cli(bridge_root, command_exists=lambda _command: None), str(repo_cli.resolve()))
+
+    def test_ensure_devtunnel_cli_prefers_repo_root_over_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir)
+            bridge_root = repo_root / "bridge"
+            bridge_root.mkdir()
+            repo_cli = repo_root / ("devtunnel.exe" if sys.platform == "win32" else "devtunnel")
+            repo_cli.write_text("", encoding="utf-8")
+
+            self.assertEqual(
+                ensure_devtunnel_cli(bridge_root, command_exists=lambda _command: "devtunnel.exe"),
+                str(repo_cli.resolve()),
+            )
 
 
 if __name__ == "__main__":

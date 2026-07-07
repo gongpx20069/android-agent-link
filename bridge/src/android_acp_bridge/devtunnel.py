@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -67,9 +66,7 @@ def default_runner(args: list[str], timeout: int) -> subprocess.CompletedProcess
 
 
 def default_tunnel_id() -> str:
-    host = socket.gethostname().lower()
-    suffix = re.sub(r"[^a-z0-9-]+", "-", host).strip("-")
-    return f"{DEFAULT_TUNNEL_ID}-{suffix}" if suffix else DEFAULT_TUNNEL_ID
+    return DEFAULT_TUNNEL_ID
 
 
 def ensure_devtunnel_cli(
@@ -77,13 +74,23 @@ def ensure_devtunnel_cli(
     runner: CommandRunner = default_runner,
     command_exists: CommandExists = shutil.which,
 ) -> str:
+    repo_cli = bridge_root.parent / ("devtunnel.exe" if sys.platform == "win32" else "devtunnel")
+    if repo_cli.exists():
+        return str(repo_cli.resolve())
+
     existing = command_exists("devtunnel")
     if existing:
+        existing_path = Path(existing)
+        if existing_path.is_absolute():
+            return str(existing_path)
+        cwd_cli = Path.cwd() / existing_path
+        if cwd_cli.exists():
+            return str(cwd_cli.resolve())
         return existing
 
     local_cli = bridge_root / ".tools" / ("devtunnel.exe" if sys.platform == "win32" else "devtunnel")
     if local_cli.exists():
-        return str(local_cli)
+        return str(local_cli.resolve())
 
     if sys.platform != "win32":
         raise RuntimeError("Install the devtunnel CLI first: https://learn.microsoft.com/azure/developer/dev-tunnels/get-started")
@@ -106,10 +113,15 @@ def ensure_devtunnel_login(cli_path: str, runner: CommandRunner = default_runner
         raise RuntimeError("devtunnel user login failed.")
 
 
-def create_or_reuse_tunnel(cli_path: str, tunnel_id: str, runner: CommandRunner = default_runner) -> None:
+def create_or_reuse_tunnel(cli_path: str, tunnel_id: str, runner: CommandRunner = default_runner) -> str:
     show = runner([cli_path, "show", tunnel_id], 30)
-    if show.returncode == 0:
-        return
+    shown_id = parse_tunnel_id(show.stdout)
+    if show.returncode == 0 and shown_id is not None:
+        return shown_id
+
+    visible_id = find_visible_tunnel_id(cli_path, tunnel_id, runner)
+    if visible_id is not None:
+        return visible_id
 
     create = runner([cli_path, "create", tunnel_id], 60)
     if create.returncode != 0:
@@ -122,12 +134,33 @@ def create_or_reuse_tunnel(cli_path: str, tunnel_id: str, runner: CommandRunner 
                 "Then retry `python .\\bridge\\run.py start --transport devtunnel`."
             )
         if "conflict with existing entity" in output or "already exists" in output:
+            visible_id = find_visible_tunnel_id(cli_path, tunnel_id, runner)
+            if visible_id is not None:
+                return visible_id
             raise DevTunnelConflictError(
                 f"Dev Tunnel ID `{tunnel_id}` is already taken but is not visible to this account. "
                 "Retry with a unique ID, for example "
                 "`python .\\bridge\\run.py start --transport devtunnel --devtunnel-id agentlink-myname-devbox`."
             )
         raise RuntimeError(_command_error("devtunnel create", create))
+    created_id = parse_tunnel_id(create.stdout)
+    if created_id is not None:
+        return created_id
+
+    show_created = runner([cli_path, "show", tunnel_id], 30)
+    if show_created.returncode != 0:
+        raise RuntimeError(_command_error("devtunnel show", show_created))
+    return parse_tunnel_id(show_created.stdout) or tunnel_id
+
+
+def find_visible_tunnel_id(cli_path: str, tunnel_id: str, runner: CommandRunner = default_runner) -> str | None:
+    tunnels = runner([cli_path, "list"], 30)
+    if tunnels.returncode != 0:
+        return None
+    for visible_id in parse_list_tunnel_ids(tunnels.stdout):
+        if visible_id == tunnel_id or visible_id.startswith(f"{tunnel_id}."):
+            return visible_id
+    return None
 
 
 def ensure_tunnel_port(cli_path: str, tunnel_id: str, port: int, runner: CommandRunner = default_runner) -> None:
@@ -212,13 +245,13 @@ def setup_devtunnel(
 ) -> DevTunnelHost:
     resolved_cli = cli_path or ensure_devtunnel_cli(bridge_root, runner)
     ensure_devtunnel_login(resolved_cli, runner)
-    create_or_reuse_tunnel(resolved_cli, tunnel_id, runner)
-    ensure_tunnel_port(resolved_cli, tunnel_id, local_port, runner)
-    connect_token = issue_connect_token(resolved_cli, tunnel_id, runner)
+    resolved_tunnel_id = create_or_reuse_tunnel(resolved_cli, tunnel_id, runner)
+    ensure_tunnel_port(resolved_cli, resolved_tunnel_id, local_port, runner)
+    connect_token = issue_connect_token(resolved_cli, resolved_tunnel_id, runner)
     print("Starting private Dev Tunnel host...", flush=True)
     return start_devtunnel_host(
         cli_path=resolved_cli,
-        tunnel_id=tunnel_id,
+        tunnel_id=resolved_tunnel_id,
         local_port=local_port,
         connect_token=connect_token,
     )
@@ -231,6 +264,26 @@ def parse_host_url(output: str, port: int) -> str | None:
         return match.group(0).rstrip("/")
     fallback = re.search(r"https://[^\s]+\.devtunnels\.ms/?", output)
     return fallback.group(0).rstrip("/") if fallback else None
+
+
+def parse_tunnel_id(output: str) -> str | None:
+    for line in output.splitlines():
+        match = re.match(r"\s*Tunnel ID\s*:\s*(\S+)", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def parse_list_tunnel_ids(output: str) -> list[str]:
+    ids: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("Found ") or stripped.startswith("Tunnel ID") or set(stripped) == {"-"}:
+            continue
+        first_column = stripped.split(maxsplit=1)[0]
+        if "." in first_column:
+            ids.append(first_column)
+    return ids
 
 
 def to_websocket_endpoint(https_url: str) -> str:
