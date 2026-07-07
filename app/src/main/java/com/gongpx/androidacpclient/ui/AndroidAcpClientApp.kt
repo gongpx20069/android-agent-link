@@ -658,25 +658,19 @@ private fun ChatsScreen(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                             )
                         }
-                        NewChatTogglePill(
-                            expanded = newChatExpanded,
-                            onClick = { newChatExpanded = !newChatExpanded },
-                        )
+                        if (!newChatExpanded) {
+                            NewChatTogglePill(onClick = { newChatExpanded = true })
+                        }
                     }
                     if (newChatExpanded) {
                         Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            NewChatMode.entries.forEach { mode ->
-                                FilterChip(
-                                    selected = newChatMode == mode,
-                                    onClick = {
-                                        newChatMode = mode
-                                        existingSessionsError = null
-                                    },
-                                    label = { Text(mode.label) },
-                                )
-                            }
-                        }
+                        NewChatModeSelector(
+                            selectedMode = newChatMode,
+                            onSelect = {
+                                newChatMode = it
+                                existingSessionsError = null
+                            },
+                        )
                         Spacer(Modifier.height(10.dp))
                         Text("Machine", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1282,43 +1276,68 @@ private fun MachinesScreen(
 }
 
 @Composable
-private fun NewChatTogglePill(expanded: Boolean, onClick: () -> Unit) {
+private fun NewChatTogglePill(onClick: () -> Unit) {
     val strokeColor = MaterialTheme.colorScheme.primary
     val fillColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.18f)
-    Column(
+    Surface(
         modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .size(width = 58.dp, height = 32.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(999.dp),
+        color = fillColor,
+        border = BorderStroke(2.dp, strokeColor),
     ) {
-        if (expanded) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier
+                    .fillMaxWidth(0.62f)
+                    .height(2.dp)
+                    .background(strokeColor, RoundedCornerShape(999.dp)),
+            )
+        }
+    }
+}
+
+@Composable
+private fun NewChatModeSelector(selectedMode: NewChatMode, onSelect: (NewChatMode) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        NewChatMode.entries.forEach { mode ->
+            val selected = selectedMode == mode
+            val contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
             Surface(
-                modifier = Modifier.size(width = 54.dp, height = 13.dp),
-                shape = RoundedCornerShape(topStart = 999.dp, topEnd = 999.dp, bottomStart = 5.dp, bottomEnd = 5.dp),
-                color = fillColor,
-                border = BorderStroke(2.dp, strokeColor),
-            ) {}
-            Spacer(Modifier.height(5.dp))
-            Surface(
-                modifier = Modifier.size(width = 54.dp, height = 13.dp),
-                shape = RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp, bottomStart = 999.dp, bottomEnd = 999.dp),
-                color = fillColor,
-                border = BorderStroke(2.dp, strokeColor),
-            ) {}
-        } else {
-            Surface(
-                modifier = Modifier.size(width = 58.dp, height = 32.dp),
-                shape = RoundedCornerShape(999.dp),
-                color = fillColor,
-                border = BorderStroke(2.dp, strokeColor),
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onSelect(mode) },
+                shape = RoundedCornerShape(16.dp),
+                color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface.copy(alpha = 0.58f),
+                border = BorderStroke(
+                    if (selected) 2.dp else 1.dp,
+                    if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                ),
+                tonalElevation = if (selected) 4.dp else 0.dp,
             ) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth(0.62f)
-                            .height(2.dp)
-                            .background(strokeColor, RoundedCornerShape(999.dp)),
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(mode.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = contentColor)
+                        if (selected) {
+                            Surface(shape = RoundedCornerShape(999.dp), color = MaterialTheme.colorScheme.primary) {
+                                Text(
+                                    "✓",
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        if (mode == NewChatMode.NewSession) "Start from workspace" else "Resume from agent",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (selected) contentColor.copy(alpha = 0.78f) else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
