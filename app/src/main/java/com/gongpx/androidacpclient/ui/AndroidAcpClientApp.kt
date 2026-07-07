@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -104,7 +105,7 @@ import org.json.JSONArray
 private enum class AppTab(val label: String, val icon: String) {
     Chats("Chats", "✦"),
     Approvals("Approvals", "✓"),
-    Machines("Machines", "⌁"),
+    Machines("Machines", "▣"),
     Settings("Settings", "⚙"),
 }
 
@@ -566,6 +567,7 @@ private fun ChatDetailScreen(
     onRequestApproval: () -> Unit,
 ) {
     var message by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
     val commands = remember(chat.messages) {
         buildList {
             if (chat.modelConfigOption() != null) add(BUILT_IN_MODEL_COMMAND)
@@ -573,6 +575,11 @@ private fun ChatDetailScreen(
             if (chat.allowAllConfigOption() != null) add(BUILT_IN_ALLOW_ALL_COMMAND)
             val builtIns = setOf(BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name, BUILT_IN_ALLOW_ALL_COMMAND.name)
             addAll(chat.availableCommands().filterNot { it.name in builtIns }.sortedBy { COMMON_COMMAND_ORDER.indexOf(it.name).let { index -> if (index < 0) Int.MAX_VALUE else index } })
+        }
+    }
+    LaunchedEffect(chat.id, chat.messages.size) {
+        if (chat.messages.isNotEmpty()) {
+            listState.scrollToItem(chat.messages.lastIndex)
         }
     }
     Column(
@@ -600,6 +607,7 @@ private fun ChatDetailScreen(
         }
 
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()

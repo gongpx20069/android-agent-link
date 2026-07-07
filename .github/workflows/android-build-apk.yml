@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag. Defaults to debug-apk-<run_number>-<run_attempt>."
+        description: "Release tag. Defaults to next 0.0.x tag."
         required: false
         type: string
       release_name:
-        description: "Release title. Defaults to the generated debug APK release name."
+        description: "Release title. Defaults to AgentLink <tag>."
         required: false
         type: string
 
@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -47,12 +49,17 @@ jobs:
         run: |
           tag_name="$RELEASE_TAG_INPUT"
           if [ -z "$tag_name" ]; then
-            tag_name="debug-apk-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+            latest_patch="$(git tag --list '0.0.*' | sed -E 's/^0\.0\.([0-9]+)$/\1/' | sort -n | tail -1)"
+            if [ -z "$latest_patch" ]; then
+              latest_patch=0
+            fi
+            next_patch=$((latest_patch + 1))
+            tag_name="0.0.${next_patch}"
           fi
 
           release_name="$RELEASE_NAME_INPUT"
           if [ -z "$release_name" ]; then
-            release_name="AgentLink debug APK ${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+            release_name="AgentLink ${tag_name}"
           fi
 
           apk_path="app/build/outputs/apk/debug/app-debug.apk"

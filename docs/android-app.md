@@ -16,6 +16,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Health, agents, and workspaces loading from the bridge.
 - New Chat form with machine, per-chat workspace path, and agent selection.
 - Chat list and WhatsApp-style chat detail view with full conversation history.
+- Opening a chat automatically scrolls to the newest message.
 - Fixed bottom prompt box for sending chat messages.
 - Horizontally scrollable command chips above the prompt box.
 - Built-in `model` chip that opens a model picker from ACP session config options.
@@ -106,3 +107,5 @@ gradle :app:compileDebugKotlin
 ```
 
 Local Android validation requires Gradle and Android SDK. If those are not installed locally, rely on PR prechecks for Android compilation and unit tests.
+
+Manual APK builds are defined in `.github/workflows/android-build-apk.yml`. Triggering the workflow creates a prerelease with the next `0.0.x` tag by default and uploads the debug APK.
