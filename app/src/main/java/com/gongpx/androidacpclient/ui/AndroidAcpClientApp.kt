@@ -1036,9 +1036,10 @@ private fun ChatsScreen(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                             )
                         }
-                        if (!newChatExpanded) {
-                            NewChatTogglePill(onClick = { newChatExpanded = true })
-                        }
+                        NewChatTogglePill(
+                            expanded = newChatExpanded,
+                            onClick = { newChatExpanded = !newChatExpanded },
+                        )
                     }
                     if (newChatExpanded) {
                         Spacer(Modifier.height(10.dp))
@@ -1748,12 +1749,12 @@ private fun SwipeToDeleteItem(onDelete: () -> Unit, content: @Composable () -> U
 }
 
 @Composable
-private fun NewChatTogglePill(onClick: () -> Unit) {
+private fun NewChatTogglePill(expanded: Boolean, onClick: () -> Unit) {
     val strokeColor = MaterialTheme.colorScheme.primary
-    val fillColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.18f)
+    val fillColor = if (expanded) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.18f)
     Surface(
         modifier = Modifier
-            .size(width = 48.dp, height = 30.dp)
+            .size(width = 58.dp, height = 32.dp)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(999.dp),
         color = fillColor,
@@ -1762,13 +1763,8 @@ private fun NewChatTogglePill(onClick: () -> Unit) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Box(
                 Modifier
-                    .fillMaxWidth(0.42f)
+                    .fillMaxWidth(if (expanded) 0.50f else 0.62f)
                     .height(2.dp)
-                    .background(strokeColor, RoundedCornerShape(999.dp)),
-            )
-            Box(
-                Modifier
-                    .size(width = 2.dp, height = 13.dp)
                     .background(strokeColor, RoundedCornerShape(999.dp)),
             )
         }
