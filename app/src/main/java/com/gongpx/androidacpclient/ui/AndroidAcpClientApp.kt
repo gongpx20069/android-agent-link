@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
@@ -496,7 +497,6 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                                     }
                                 }
                             },
-                            onRequestApproval = ::addApproval,
                         )
                         AppTab.Approvals -> ApprovalsScreen(padding, approvals, ::updateApproval)
                         AppTab.Machines -> MachinesScreen(
@@ -614,7 +614,6 @@ private fun ChatsScreen(
     onResume: (Chat) -> Unit,
     onModel: (Chat, ConfigOption) -> Unit,
     onSendMessage: (Chat, String) -> Unit,
-    onRequestApproval: (Chat) -> Unit,
 ) {
     val selectedChat = chats.firstOrNull { it.id == selectedChatId }
     if (selectedChat != null) {
@@ -631,7 +630,6 @@ private fun ChatsScreen(
                     else -> onSendMessage(selectedChat, "/" + command.name)
                 }
             },
-            onRequestApproval = { onRequestApproval(selectedChat) },
         )
         return
     }
@@ -816,7 +814,6 @@ private fun ChatDetailScreen(
     onBack: () -> Unit,
     onSendMessage: (String) -> Unit,
     onCommand: (AvailableCommand) -> Unit,
-    onRequestApproval: () -> Unit,
 ) {
     var message by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -873,48 +870,91 @@ private fun ChatDetailScreen(
         }
 
         Surface(tonalElevation = 4.dp) {
-            Column(Modifier.padding(12.dp)) {
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 if (commands.isNotEmpty()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         commands.forEach { command ->
-                            FilterChip(
-                                selected = false,
-                                onClick = { onCommand(command) },
-                                label = { Text(command.name) },
-                            )
+                            CommandPill(command = command, onClick = { onCommand(command) })
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(5.dp))
                 }
-                OutlinedTextField(
-                    value = message,
-                    onValueChange = { message = it },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Prompt") },
-                    minLines = 1,
-                    maxLines = 4,
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CompactPromptField(
+                        value = message,
+                        onValueChange = { message = it },
+                        modifier = Modifier.weight(1f),
+                    )
                     Button(
                         enabled = message.isNotBlank(),
                         onClick = {
                             onSendMessage(message)
                             message = ""
                         },
+                        modifier = Modifier.defaultMinSize(minWidth = 68.dp, minHeight = 42.dp),
                     ) {
                         Text("Send")
                     }
-                    OutlinedButton(onClick = onRequestApproval) {
-                        Text("Test Approval")
-                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CommandPill(command: AvailableCommand, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.76f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Text(
+            command.name,
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun CompactPromptField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.defaultMinSize(minHeight = 42.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (value.isBlank()) {
+                Text(
+                    "Prompt",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                singleLine = true,
+            )
         }
     }
 }
