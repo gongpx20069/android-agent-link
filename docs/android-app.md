@@ -25,6 +25,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Agent/system message bubbles render basic Markdown: headings, bullets, quotes, fenced code blocks, bold, italic, inline code, and link-style text.
 - Collapsible agent activity cards for ACP `tool_call` and `tool_call_update` events.
 - Approval list with approve/deny actions.
+- Automatic update checks on app startup and manual update checks from Settings.
 
 GitHub Copilot CLI ACP execution is wired through the bridge when `copilot --acp` is available on the developer machine. The chat shell sends prompts through the bridge WebSocket and displays ACP `session/update` responses as agent messages and expandable activity cards. Claude Code requires the `claude` CLI to be installed and expose an ACP server command.
 
@@ -108,4 +109,17 @@ gradle :app:compileDebugKotlin
 
 Local Android validation requires Gradle and Android SDK. If those are not installed locally, rely on PR prechecks for Android compilation and unit tests.
 
-Manual APK builds are defined in `.github/workflows/android-build-apk.yml`. Triggering the workflow creates a prerelease with the next `0.0.x` tag by default and uploads the debug APK.
+Manual APK builds are defined in `.github/workflows/android-build-apk.yml`. Triggering the workflow creates a prerelease with the next `0.0.x` tag by default and uploads the signed release APK.
+
+## Signed APK Releases and Updates
+
+Android requires updates to be signed with the same key as the installed app. The release workflow builds `assembleRelease` and signs it with these GitHub Secrets:
+
+- `AGENTLINK_RELEASE_KEYSTORE_BASE64`
+- `AGENTLINK_RELEASE_KEYSTORE_PASSWORD`
+- `AGENTLINK_RELEASE_KEY_ALIAS`
+- `AGENTLINK_RELEASE_KEY_PASSWORD`
+
+Generate a keystore once, keep it private, and store the base64-encoded `.jks` file in `AGENTLINK_RELEASE_KEYSTORE_BASE64`. After one uninstall/reinstall from the signed release APK, future signed releases can update in-place.
+
+The app checks `https://api.github.com/repos/gongpx20069/android-agent-link/releases` for the newest `0.0.x` release. Settings also provides a manual update check and opens the APK asset or release page in the browser/system installer.

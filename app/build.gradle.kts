@@ -12,19 +12,39 @@ android {
         applicationId = "com.gongpx.androidacpclient"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = (findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 1
+        versionName = (findProperty("VERSION_NAME") as String?) ?: "0.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("AGENTLINK_KEYSTORE_PATH")
+            if (!keystorePath.isNullOrBlank()) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("AGENTLINK_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("AGENTLINK_KEY_ALIAS")
+                keyPassword = System.getenv("AGENTLINK_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+        }
     }
 }
 

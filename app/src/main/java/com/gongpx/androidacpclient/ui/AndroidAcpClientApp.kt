@@ -1,7 +1,9 @@
 package com.gongpx.androidacpclient.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -75,6 +77,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.gongpx.androidacpclient.BuildConfig
 import com.gongpx.androidacpclient.data.bridge.BridgeClient
 import com.gongpx.androidacpclient.data.model.Agent
 import com.gongpx.androidacpclient.data.model.AgentSessionInfo
@@ -92,6 +95,8 @@ import com.gongpx.androidacpclient.data.model.MessageRole
 import com.gongpx.androidacpclient.data.pairing.PairingLinkParser
 import com.gongpx.androidacpclient.data.store.ChatStore
 import com.gongpx.androidacpclient.data.store.MachineStore
+import com.gongpx.androidacpclient.data.update.AppUpdate
+import com.gongpx.androidacpclient.data.update.UpdateClient
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -116,6 +121,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     val machineStore = remember { MachineStore(context.applicationContext) }
     val chatStore = remember { ChatStore(context.applicationContext) }
     val bridgeClient = remember { BridgeClient() }
+    val updateClient = remember { UpdateClient() }
     val parser = remember { PairingLinkParser() }
     val machines = remember { mutableStateListOf<Machine>() }
     val chats = remember { mutableStateListOf<Chat>() }
@@ -126,6 +132,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     var scannerOpen by remember { mutableStateOf(false) }
     var resumeDialogState by remember { mutableStateOf<ResumeDialogState?>(null) }
     var modelDialogState by remember { mutableStateOf<ModelDialogState?>(null) }
+    var updateState by remember { mutableStateOf(UpdateUiState()) }
     val scope = rememberCoroutineScope()
 
     fun upsertMachine(machine: Machine) {
@@ -288,11 +295,38 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
         }
     }
 
+    fun checkForUpdate(manual: Boolean) {
+        updateState = updateState.copy(checking = true, message = if (manual) "Checking for updates..." else updateState.message)
+        scope.launch {
+            updateClient.checkForUpdate()
+                .onSuccess { update ->
+                    updateState = UpdateUiState(
+                        checking = false,
+                        update = update,
+                        message = when {
+                            update == null -> "No releases found."
+                            update.isNewer -> "Update ${update.version} is available."
+                            else -> "You're on the latest version."
+                        },
+                    )
+                }
+                .onFailure {
+                    updateState = updateState.copy(checking = false, message = "Update check failed: ${it.message}")
+                }
+        }
+    }
+
+    fun openUpdate(update: AppUpdate) {
+        val url = update.apkUrl ?: update.releaseUrl
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    }
+
     LaunchedEffect(Unit) {
         machines.clear()
         machines.addAll(machineStore.load())
         chats.clear()
         chats.addAll(chatStore.load())
+        checkForUpdate(manual = false)
     }
 
     LaunchedEffect(incomingPairingLink.value) {
@@ -395,7 +429,64 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                                 }
                             },
                         )
-                        AppTab.Settings -> PlaceholderScreen(padding, "Settings", "Settings will manage security and bridge defaults.")
+                        AppTab.Settings -> SettingsScreen(
+                            padding = padding,
+                            updateState = updateState,
+                            onCheckForUpdate = { checkForUpdate(manual = true) },
+                            onOpenUpdate = ::openUpdate,
+                        )
+                    }
+
+                    @Composable
+                    private fun SettingsScreen(
+                        padding: PaddingValues,
+                        updateState: UpdateUiState,
+                        onCheckForUpdate: () -> Unit,
+                        onOpenUpdate: (AppUpdate) -> Unit,
+                    ) {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(padding),
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            item {
+                                PageHero(
+                                    title = "Settings",
+                                    subtitle = "Manage AgentLink app behavior and releases.",
+                                    metric = "v${BuildConfig.VERSION_NAME}",
+                                )
+                            }
+                            item {
+                                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Text("Updates", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                                        Text("Current version: ${BuildConfig.VERSION_NAME}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        updateState.message?.let {
+                                            Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)) {
+                                                Text(it, modifier = Modifier.padding(12.dp))
+                                            }
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Button(enabled = !updateState.checking, onClick = onCheckForUpdate) {
+                                                Text(if (updateState.checking) "Checking..." else "Check for updates")
+                                            }
+                                            updateState.update?.takeIf { it.isNewer }?.let { update ->
+                                                OutlinedButton(onClick = { onOpenUpdate(update) }) {
+                                                    Text("Download ${update.version}")
+                                                }
+                                            }
+                                        }
+                                        Text(
+                                            "APK downloads open in the browser/system installer. Signed release APKs can update in-place after the signing key is configured.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1394,4 +1485,10 @@ private data class ResumeDialogState(
 private data class ModelDialogState(
     val chat: Chat,
     val option: ConfigOption,
+)
+
+private data class UpdateUiState(
+    val checking: Boolean = false,
+    val update: AppUpdate? = null,
+    val message: String? = null,
 )
