@@ -116,6 +116,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import org.json.JSONObject
 
 private enum class AppTab(val icon: String) {
     Chats("✦"),
@@ -1348,6 +1349,16 @@ private fun CommandPill(command: AvailableCommand, onClick: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+@Composable
+private fun ChatStatusDot(isBusy: Boolean) {
+    val color = if (isBusy) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .background(color, RoundedCornerShape(999.dp)),
+    )
 }
 
 @Composable

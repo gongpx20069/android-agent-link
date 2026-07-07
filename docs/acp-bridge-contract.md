@@ -268,18 +268,33 @@ The bridge calls ACP `session/load`, forwards replayed `session/update` notifica
 
 ### Set Config Option
 
+Android can ask the bridge to refresh current ACP session config options before opening built-in pickers such as `model` or `allow-all`:
+
+```json
+{
+  "type": "session.refreshConfigOptions",
+  "chatId": "chat_123",
+  "agentId": "copilot-cli",
+  "workspacePath": "D:\\repos\\android-agent-link"
+}
+```
+
+The bridge ensures an ACP session exists for that chat, forwards the latest `config_option_update` messages, then sends `bridge.done`.
+
 Android changes session-level options such as model selection through the bridge WebSocket:
 
 ```json
 {
   "type": "session.setConfigOption",
   "chatId": "chat_123",
+  "agentId": "copilot-cli",
+  "workspacePath": "D:\\repos\\android-agent-link",
   "configId": "model",
   "value": "gpt-5.4"
 }
 ```
 
-The bridge calls ACP `session/set_config_option` for the active chat session and forwards the returned `config_option_update`.
+The bridge ensures an ACP session exists for that chat, calls ACP `session/set_config_option`, and forwards the returned `config_option_update`.
 
 ### Agent Update
 
