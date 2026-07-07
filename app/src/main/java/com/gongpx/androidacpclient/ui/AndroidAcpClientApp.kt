@@ -57,6 +57,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -64,6 +65,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -98,6 +100,8 @@ import com.gongpx.androidacpclient.data.model.ConnectionState
 import com.gongpx.androidacpclient.data.model.Machine
 import com.gongpx.androidacpclient.data.model.MessageRole
 import com.gongpx.androidacpclient.data.pairing.PairingLinkParser
+import com.gongpx.androidacpclient.data.store.AppLanguageMode
+import com.gongpx.androidacpclient.data.store.AppSettingsStore
 import com.gongpx.androidacpclient.data.store.ChatStore
 import com.gongpx.androidacpclient.data.store.MachineStore
 import com.gongpx.androidacpclient.data.update.AppUpdate
@@ -106,22 +110,325 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 
-private enum class AppTab(val label: String, val icon: String) {
-    Chats("Chats", "✦"),
-    Approvals("Approvals", "✓"),
-    Machines("Machines", "▣"),
-    Settings("Settings", "⚙"),
+private enum class AppTab(val icon: String) {
+    Chats("✦"),
+    Approvals("✓"),
+    Machines("▣"),
+    Settings("⚙"),
 }
 
-private enum class NewChatMode(val label: String) {
-    NewSession("New session"),
-    ExistingSession("Existing session"),
+private enum class NewChatMode {
+    NewSession,
+    ExistingSession,
+}
+
+private val LocalAppStrings = staticCompositionLocalOf { AppStrings.English }
+
+private data class AppStrings(
+    val mobileControlSubtitle: String,
+    val settings: String,
+    val updates: String,
+    val language: String,
+    val languageSystem: String,
+    val languageEnglish: String,
+    val languageChinese: String,
+    val languageDescription: String,
+    val manageSettings: String,
+    val currentVersion: (String) -> String,
+    val checking: String,
+    val checkForUpdates: String,
+    val downloadVersion: (String) -> String,
+    val updateInstallNote: String,
+    val noReleasesFound: String,
+    val updateAvailable: (String) -> String,
+    val latestVersion: String,
+    val updateCheckFailed: (String?) -> String,
+    val checkingForUpdates: String,
+    val chats: String,
+    val approvals: String,
+    val machines: String,
+    val newChat: String,
+    val newSession: String,
+    val existingSession: String,
+    val chooseMachineWorkspaceAgent: String,
+    val tapCreateAgentSession: String,
+    val pairMachineFirst: String,
+    val noAgentDiscovered: String,
+    val remoteWorkspacePath: String,
+    val remoteWorkspacePlaceholder: String,
+    val createChat: String,
+    val loadingSessions: String,
+    val loadSessions: String,
+    val couldNotLoadSessions: (String?) -> String,
+    val noResumableSessions: String,
+    val noResumableSessionsForAgent: String,
+    val openSession: String,
+    val conversations: (Int) -> String,
+    val noChatsYet: String,
+    val createChatAfterPairing: String,
+    val messages: (Int) -> String,
+    val back: String,
+    val send: String,
+    val prompt: String,
+    val current: String,
+    val close: String,
+    val resumeSession: String,
+    val loadingSessionsFrom: (String) -> String,
+    val noResumableSessionsWorkspace: String,
+    val agentActivity: String,
+    val hide: String,
+    val details: String,
+    val approvalsSubtitle: String,
+    val pending: (Int) -> String,
+    val noApprovalRequests: String,
+    val approvalRequestsAppear: String,
+    val approve: String,
+    val deny: String,
+    val addMachine: String,
+    val addMachineSubtitle: String,
+    val scanQr: String,
+    val pairLink: String,
+    val pairingLinkFallback: String,
+    val machinesPaired: (Int) -> String,
+    val noMachinesPaired: String,
+    val startBridgePairMachine: String,
+    val testConnection: String,
+    val agents: String,
+    val delete: String,
+    val selected: String,
+    val scanPairingQr: String,
+    val pointCameraAtBridgeQr: String,
+    val cameraAccessNeeded: String,
+    val grantCameraPermission: String,
+    val invalidPairingLink: String,
+    val waitingBridgeApproval: (String) -> String,
+    val machineOnline: (String) -> String,
+    val pairedHealthFailed: (String?) -> String,
+    val pairingFailed: (String?) -> String,
+    val machineUnavailable: String,
+    val approvalRequired: (String) -> String,
+    val approvalRequiredTitle: String,
+    val bridgeWebSocketFailed: (String?) -> String,
+    val chatCreatedSystem: String,
+    val loadingExistingAcpSession: (String) -> String,
+    val openSessionFailed: (String?) -> String,
+    val resumeFailed: (String?) -> String,
+    val setModel: String,
+    val modelChangeFailed: (String?) -> String,
+    val connectionFailed: (String?) -> String,
+) {
+    fun tabLabel(tab: AppTab): String = when (tab) {
+        AppTab.Chats -> chats
+        AppTab.Approvals -> approvals
+        AppTab.Machines -> machines
+        AppTab.Settings -> settings
+    }
+
+    fun newChatModeLabel(mode: NewChatMode): String = when (mode) {
+        NewChatMode.NewSession -> newSession
+        NewChatMode.ExistingSession -> existingSession
+    }
+
+    companion object {
+        val English = AppStrings(
+            mobileControlSubtitle = "Mobile control for remote coding agents",
+            settings = "Settings",
+            updates = "Updates",
+            language = "Language",
+            languageSystem = "System",
+            languageEnglish = "English",
+            languageChinese = "中文",
+            languageDescription = "System uses Chinese when the device language is Chinese; otherwise it uses English.",
+            manageSettings = "Manage AgentLink app behavior and releases.",
+            currentVersion = { "Current version: $it" },
+            checking = "Checking...",
+            checkForUpdates = "Check for updates",
+            downloadVersion = { "Download $it" },
+            updateInstallNote = "APK downloads open in the browser/system installer. Signed release APKs can update in-place after the signing key is configured.",
+            noReleasesFound = "No releases found.",
+            updateAvailable = { "Update $it is available." },
+            latestVersion = "You're on the latest version.",
+            updateCheckFailed = { "Update check failed: $it" },
+            checkingForUpdates = "Checking for updates...",
+            chats = "Chats",
+            approvals = "Approvals",
+            machines = "Machines",
+            newChat = "New Chat",
+            newSession = "New session",
+            existingSession = "Existing session",
+            chooseMachineWorkspaceAgent = "Choose Machine, Workspace, and Agent",
+            tapCreateAgentSession = "Tap to create another Agent session",
+            pairMachineFirst = "Pair a Machine first from the Machines tab.",
+            noAgentDiscovered = "No Agent discovered on this Machine yet.",
+            remoteWorkspacePath = "Remote Workspace path (optional)",
+            remoteWorkspacePlaceholder = "Leave blank for remote home, or enter D:\\repos\\project-a",
+            createChat = "Create Chat",
+            loadingSessions = "Loading sessions...",
+            loadSessions = "Load sessions",
+            couldNotLoadSessions = { "Could not load sessions: $it" },
+            noResumableSessions = "No resumable sessions",
+            noResumableSessionsForAgent = "This Agent did not return resumable sessions for the selected Machine.",
+            openSession = "Open Session",
+            conversations = { "$it conversation${if (it == 1) "" else "s"}" },
+            noChatsYet = "No Chats yet",
+            createChatAfterPairing = "Create a Chat above after pairing a Machine.",
+            messages = { "$it messages" },
+            back = "Back",
+            send = "Send",
+            prompt = "Prompt",
+            current = "Current",
+            close = "Close",
+            resumeSession = "Resume session",
+            loadingSessionsFrom = { "Loading sessions from $it..." },
+            noResumableSessionsWorkspace = "No resumable sessions found for this Workspace.",
+            agentActivity = "Agent activity",
+            hide = "Hide",
+            details = "Details",
+            approvalsSubtitle = "Review commands, file changes, and risky actions before they run.",
+            pending = { "$it pending" },
+            noApprovalRequests = "No Approval requests",
+            approvalRequestsAppear = "Agent requests that need your decision will appear here.",
+            approve = "Approve",
+            deny = "Deny",
+            addMachine = "Add Machine",
+            addMachineSubtitle = "Scan the bridge QR code, or paste the acpclient://pair link.",
+            scanQr = "Scan QR",
+            pairLink = "Pair Link",
+            pairingLinkFallback = "Pairing link fallback",
+            machinesPaired = { "$it paired" },
+            noMachinesPaired = "No Machines paired",
+            startBridgePairMachine = "Start the bridge, scan the QR code, then test the connection.",
+            testConnection = "Test Connection",
+            agents = "Agents",
+            delete = "Delete",
+            selected = "Selected",
+            scanPairingQr = "Scan Pairing QR",
+            pointCameraAtBridgeQr = "Point the camera at the bridge QR code.",
+            cameraAccessNeeded = "Camera access is needed to scan pairing QR codes.",
+            grantCameraPermission = "Grant Camera Permission",
+            invalidPairingLink = "Invalid pairing link.",
+            waitingBridgeApproval = { "Waiting for bridge approval on $it..." },
+            machineOnline = { "$it is online." },
+            pairedHealthFailed = { "Paired, but health check failed: $it" },
+            pairingFailed = { "Pairing failed: $it" },
+            machineUnavailable = "Machine is not available.",
+            approvalRequired = { "Approval required · $it" },
+            approvalRequiredTitle = "Approval required",
+            bridgeWebSocketFailed = { "Bridge WebSocket failed: $it" },
+            chatCreatedSystem = "Chat created. Workspace is selected per Chat, not at bridge startup.",
+            loadingExistingAcpSession = { "Loading existing ACP session $it." },
+            openSessionFailed = { "Open session failed: $it" },
+            resumeFailed = { "Resume failed: $it" },
+            setModel = "Set model",
+            modelChangeFailed = { "Model change failed: $it" },
+            connectionFailed = { "Connection failed: $it" },
+        )
+
+        val Chinese = English.copy(
+            mobileControlSubtitle = "远程 coding agents 的移动控制端",
+            settings = "设置",
+            updates = "更新",
+            language = "语言",
+            languageSystem = "跟随系统",
+            languageEnglish = "English",
+            languageChinese = "中文",
+            languageDescription = "跟随系统时，系统语言为中文则使用中文，其他语言使用 English。",
+            manageSettings = "管理 AgentLink app 行为和版本更新。",
+            currentVersion = { "当前版本：$it" },
+            checking = "检查中...",
+            checkForUpdates = "检查更新",
+            downloadVersion = { "下载 $it" },
+            updateInstallNote = "APK 下载会通过浏览器或系统安装器打开。配置签名密钥后，signed release APK 可以原地升级。",
+            noReleasesFound = "未找到 release。",
+            updateAvailable = { "发现更新 $it。" },
+            latestVersion = "当前已是最新版本。",
+            updateCheckFailed = { "更新检查失败：$it" },
+            checkingForUpdates = "正在检查更新...",
+            newChat = "新建 Chat",
+            newSession = "新建 session",
+            existingSession = "已有 session",
+            chooseMachineWorkspaceAgent = "选择 Machine、Workspace 和 Agent",
+            tapCreateAgentSession = "点击创建另一个 Agent session",
+            pairMachineFirst = "请先在 Machines tab 配对一个 Machine。",
+            noAgentDiscovered = "当前 Machine 还没有发现 Agent。",
+            remoteWorkspacePath = "远程 Workspace 路径（可选）",
+            remoteWorkspacePlaceholder = "留空使用远端 home，或输入 D:\\repos\\project-a",
+            createChat = "创建 Chat",
+            loadingSessions = "正在加载 sessions...",
+            loadSessions = "加载 sessions",
+            couldNotLoadSessions = { "无法加载 sessions：$it" },
+            noResumableSessions = "没有可恢复 sessions",
+            noResumableSessionsForAgent = "所选 Machine 上的 Agent 没有返回可恢复 sessions。",
+            openSession = "打开 Session",
+            conversations = { "$it 个会话" },
+            noChatsYet = "还没有 Chats",
+            createChatAfterPairing = "配对 Machine 后，在上方创建 Chat。",
+            messages = { "$it 条消息" },
+            back = "返回",
+            send = "发送",
+            prompt = "输入 Prompt",
+            current = "当前",
+            close = "关闭",
+            resumeSession = "恢复 session",
+            loadingSessionsFrom = { "正在从 $it 加载 sessions..." },
+            noResumableSessionsWorkspace = "当前 Workspace 没有可恢复 sessions。",
+            agentActivity = "Agent activity",
+            hide = "收起",
+            details = "详情",
+            approvalsSubtitle = "在命令、文件变更和高风险操作执行前进行确认。",
+            pending = { "$it 个 pending" },
+            noApprovalRequests = "没有 Approval 请求",
+            approvalRequestsAppear = "需要你决策的 Agent 请求会显示在这里。",
+            approve = "批准",
+            deny = "拒绝",
+            addMachine = "添加 Machine",
+            addMachineSubtitle = "扫描 bridge QR code，或粘贴 acpclient://pair link。",
+            scanQr = "扫描 QR",
+            pairLink = "配对 Link",
+            pairingLinkFallback = "配对 link 备用输入",
+            machinesPaired = { "$it 个已配对" },
+            noMachinesPaired = "还没有配对 Machines",
+            startBridgePairMachine = "启动 bridge，扫描 QR code，然后测试连接。",
+            testConnection = "测试连接",
+            delete = "删除",
+            selected = "已选中",
+            scanPairingQr = "扫描配对 QR",
+            pointCameraAtBridgeQr = "将摄像头对准 bridge QR code。",
+            cameraAccessNeeded = "需要摄像头权限来扫描配对 QR code。",
+            grantCameraPermission = "授予摄像头权限",
+            invalidPairingLink = "无效的配对 link。",
+            waitingBridgeApproval = { "正在等待 $it 上的 bridge 确认..." },
+            machineOnline = { "$it 已在线。" },
+            pairedHealthFailed = { "已配对，但健康检查失败：$it" },
+            pairingFailed = { "配对失败：$it" },
+            machineUnavailable = "Machine 不可用。",
+            approvalRequired = { "需要 Approval · $it" },
+            approvalRequiredTitle = "需要 Approval",
+            bridgeWebSocketFailed = { "Bridge WebSocket 失败：$it" },
+            chatCreatedSystem = "Chat 已创建。Workspace 按 Chat 选择，不绑定在 bridge 启动时。",
+            loadingExistingAcpSession = { "正在加载已有 ACP session $it。" },
+            openSessionFailed = { "打开 session 失败：$it" },
+            resumeFailed = { "恢复失败：$it" },
+            setModel = "设置 model",
+            modelChangeFailed = { "Model 修改失败：$it" },
+            connectionFailed = { "连接失败：$it" },
+        )
+    }
+}
+
+private fun AppLanguageMode.resolveStrings(): AppStrings {
+    return when (this) {
+        AppLanguageMode.English -> AppStrings.English
+        AppLanguageMode.Chinese -> AppStrings.Chinese
+        AppLanguageMode.System -> if (Locale.getDefault().language.equals("zh", ignoreCase = true)) AppStrings.Chinese else AppStrings.English
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -130,6 +437,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     val context = LocalContext.current
     val machineStore = remember { MachineStore(context.applicationContext) }
     val chatStore = remember { ChatStore(context.applicationContext) }
+    val appSettingsStore = remember { AppSettingsStore(context.applicationContext) }
     val bridgeClient = remember { BridgeClient() }
     val updateClient = remember { UpdateClient() }
     val parser = remember { PairingLinkParser() }
@@ -143,6 +451,8 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     var resumeDialogState by remember { mutableStateOf<ResumeDialogState?>(null) }
     var modelDialogState by remember { mutableStateOf<ModelDialogState?>(null) }
     var updateState by remember { mutableStateOf(UpdateUiState()) }
+    var languageMode by remember { mutableStateOf(appSettingsStore.loadLanguageMode()) }
+    val strings = languageMode.resolveStrings()
     val scope = rememberCoroutineScope()
 
     fun upsertMachine(machine: Machine) {
@@ -190,7 +500,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
             messages = listOf(
                 ChatMessage(
                     role = MessageRole.System,
-                    text = "Chat created. Workspace is selected per chat, not at bridge startup.",
+                    text = strings.chatCreatedSystem,
                     timestampMillis = System.currentTimeMillis(),
                 ),
             ),
@@ -222,7 +532,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
             messages = listOf(
                 ChatMessage(
                     role = MessageRole.System,
-                    text = "Loading existing ACP session ${session.sessionId}.",
+                    text = strings.loadingExistingAcpSession(session.sessionId),
                     timestampMillis = System.currentTimeMillis(),
                 ),
             ),
@@ -236,7 +546,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                     upsertChat(chat.copy(messages = chat.messages + events))
                 }
                 .onFailure {
-                    upsertChat(chat.withMessage(MessageRole.System, "Open session failed: ${it.message}"))
+                    upsertChat(chat.withMessage(MessageRole.System, strings.openSessionFailed(it.message)))
                 }
         }
     }
@@ -288,7 +598,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     fun showResumeDialog(chat: Chat) {
         val machine = machines.firstOrNull { it.id == chat.machineId }
         if (machine == null) {
-            upsertChat(chat.withMessage(MessageRole.System, "Machine is not available."))
+            upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
             return
         }
         resumeDialogState = ResumeDialogState(chat = chat, sessions = null, error = null)
@@ -306,12 +616,12 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     fun loadResumeSession(chat: Chat, session: AgentSessionInfo) {
         val machine = machines.firstOrNull { it.id == chat.machineId }
         if (machine == null) {
-            upsertChat(chat.withMessage(MessageRole.System, "Machine is not available."))
+            upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
             return
         }
         resumeDialogState = null
         val loading = chat.withActivity(
-            title = "Resume session",
+            title = strings.resumeSession,
             summary = session.title ?: session.sessionId,
             details = "sessionId=${session.sessionId}\ncwd=${session.cwd.orEmpty()}\nupdatedAt=${session.updatedAt.orEmpty()}",
         )
@@ -322,7 +632,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                     upsertChat(loading.copy(messages = loading.messages + events))
                 }
                 .onFailure {
-                    upsertChat(loading.withMessage(MessageRole.System, "Resume failed: ${it.message}"))
+                    upsertChat(loading.withMessage(MessageRole.System, strings.resumeFailed(it.message)))
                 }
         }
     }
@@ -334,12 +644,12 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     fun setModel(chat: Chat, option: ConfigOption, value: ConfigOptionValue) {
         val machine = machines.firstOrNull { it.id == chat.machineId }
         if (machine == null) {
-            upsertChat(chat.withMessage(MessageRole.System, "Machine is not available."))
+            upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
             return
         }
         modelDialogState = null
         val changing = chat.withActivity(
-            title = "Set model",
+            title = strings.setModel,
             summary = value.name,
             details = "configId=${option.id}\nvalue=${value.value}\n${value.description.orEmpty()}",
         )
@@ -350,17 +660,17 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                     upsertChat(changing.copy(messages = changing.messages + events))
                 }
                 .onFailure {
-                    upsertChat(changing.withMessage(MessageRole.System, "Model change failed: ${it.message}"))
+                    upsertChat(changing.withMessage(MessageRole.System, strings.modelChangeFailed(it.message)))
                 }
         }
     }
 
     fun pairFromLink(link: String) {
         val payload = parser.parse(link).getOrElse {
-            statusMessage = it.message ?: "Invalid pairing link."
+            statusMessage = it.message ?: strings.invalidPairingLink
             return
         }
-        statusMessage = "Waiting for bridge approval on ${payload.machineName}..."
+        statusMessage = strings.waitingBridgeApproval(payload.machineName)
         scope.launch {
             bridgeClient.redeemPairing(payload)
                 .onSuccess { machine ->
@@ -368,16 +678,16 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                     bridgeClient.fetchMachineDetails(machine)
                         .onSuccess {
                             upsertMachine(it)
-                            statusMessage = "${it.displayName} is online."
+                            statusMessage = strings.machineOnline(it.displayName)
                         }
-                        .onFailure { statusMessage = "Paired, but health check failed: ${it.message}" }
+                        .onFailure { statusMessage = strings.pairedHealthFailed(it.message) }
                 }
-                .onFailure { statusMessage = "Pairing failed: ${it.message}" }
+                .onFailure { statusMessage = strings.pairingFailed(it.message) }
         }
     }
 
     fun checkForUpdate(manual: Boolean) {
-        updateState = updateState.copy(checking = true, message = if (manual) "Checking for updates..." else updateState.message)
+        updateState = updateState.copy(checking = true, message = if (manual) strings.checkingForUpdates else updateState.message)
         scope.launch {
             updateClient.checkForUpdate()
                 .onSuccess { update ->
@@ -385,14 +695,14 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                         checking = false,
                         update = update,
                         message = when {
-                            update == null -> "No releases found."
-                            update.isNewer -> "Update ${update.version} is available."
-                            else -> "You're on the latest version."
+                            update == null -> strings.noReleasesFound
+                            update.isNewer -> strings.updateAvailable(update.version)
+                            else -> strings.latestVersion
                         },
                     )
                 }
                 .onFailure {
-                    updateState = updateState.copy(checking = false, message = "Update check failed: ${it.message}")
+                    updateState = updateState.copy(checking = false, message = strings.updateCheckFailed(it.message))
                 }
         }
     }
@@ -419,6 +729,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
     }
 
     MaterialTheme {
+        CompositionLocalProvider(LocalAppStrings provides strings) {
         Surface(modifier = Modifier.fillMaxSize()) {
             if (scannerOpen) {
                 QrScannerScreen(
@@ -437,7 +748,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                                 Column {
                                     Text("AgentLink", fontWeight = FontWeight.SemiBold)
                                     Text(
-                                        "Mobile control for remote coding agents",
+                                        strings.mobileControlSubtitle,
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -458,7 +769,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                                             verticalArrangement = Arrangement.spacedBy(0.dp),
                                         ) {
                                             Text(tab.icon, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                                            Text(tab.label, style = MaterialTheme.typography.labelSmall)
+                                            Text(strings.tabLabel(tab), style = MaterialTheme.typography.labelSmall)
                                         }
                                     },
                                 )
@@ -483,7 +794,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                             onSendMessage = { chat, message ->
                                 val machine = machines.firstOrNull { it.id == chat.machineId }
                                 if (machine == null) {
-                                    upsertChat(chat.withMessage(MessageRole.System, "Machine is not available."))
+                                    upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
                                 } else {
                                     val updated = chat.withMessage(MessageRole.User, message)
                                     upsertChat(updated)
@@ -500,10 +811,10 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                                                     chat.id,
                                                     ChatMessage(
                                                         role = MessageRole.Agent,
-                                                        text = "Approval required · ${request.summary}",
+                                                        text = strings.approvalRequired(request.summary),
                                                         timestampMillis = System.currentTimeMillis(),
                                                         kind = ChatMessageKind.Activity,
-                                                        title = "Approval required",
+                                                        title = strings.approvalRequiredTitle,
                                                         details = request.details,
                                                         activityId = request.approvalId,
                                                     ),
@@ -515,7 +826,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                                                 // Stream callbacks update the timeline while the prompt is running.
                                             }
                                             .onFailure {
-                                                upsertChat(updated.withMessage(MessageRole.System, "Bridge WebSocket failed: ${it.message}"))
+                                                upsertChat(updated.withMessage(MessageRole.System, strings.bridgeWebSocketFailed(it.message)))
                                             }
                                     }
                                 }
@@ -533,11 +844,11 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                                     bridgeClient.fetchMachineDetails(machine)
                                         .onSuccess {
                                             upsertMachine(it)
-                                            statusMessage = "${it.displayName} is online."
+                                            statusMessage = strings.machineOnline(it.displayName)
                                         }
                                         .onFailure {
                                             upsertMachine(machine.copy(connectionState = ConnectionState.Offline))
-                                            statusMessage = "Connection failed: ${it.message}"
+                                            statusMessage = strings.connectionFailed(it.message)
                                         }
                                 }
                             },
@@ -546,6 +857,11 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                         AppTab.Settings -> SettingsScreen(
                             padding = padding,
                             updateState = updateState,
+                            languageMode = languageMode,
+                            onLanguageModeChange = {
+                                languageMode = it
+                                appSettingsStore.saveLanguageMode(it)
+                            },
                             onCheckForUpdate = { checkForUpdate(manual = true) },
                             onOpenUpdate = ::openUpdate,
                         )
@@ -569,6 +885,7 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
                 onSelect = { setModel(state.chat, state.option, it) },
             )
         }
+        }
     }
 }
 
@@ -576,9 +893,12 @@ fun AgentLinkApp(incomingPairingLink: MutableState<String?>) {
 private fun SettingsScreen(
     padding: PaddingValues,
     updateState: UpdateUiState,
+    languageMode: AppLanguageMode,
+    onLanguageModeChange: (AppLanguageMode) -> Unit,
     onCheckForUpdate: () -> Unit,
     onOpenUpdate: (AppUpdate) -> Unit,
 ) {
+    val strings = LocalAppStrings.current
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -588,16 +908,41 @@ private fun SettingsScreen(
     ) {
         item {
             PageHero(
-                title = "Settings",
-                subtitle = "Manage AgentLink app behavior and releases.",
+                title = strings.settings,
+                subtitle = strings.manageSettings,
                 metric = "v${BuildConfig.VERSION_NAME}",
             )
         }
         item {
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Updates", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text("Current version: ${BuildConfig.VERSION_NAME}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(strings.language, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(strings.languageDescription, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AppLanguageMode.entries.forEach { mode ->
+                            FilterChip(
+                                selected = languageMode == mode,
+                                onClick = { onLanguageModeChange(mode) },
+                                label = {
+                                    Text(
+                                        when (mode) {
+                                            AppLanguageMode.System -> strings.languageSystem
+                                            AppLanguageMode.English -> strings.languageEnglish
+                                            AppLanguageMode.Chinese -> strings.languageChinese
+                                        },
+                                    )
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(strings.updates, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(strings.currentVersion(BuildConfig.VERSION_NAME), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     updateState.message?.let {
                         Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)) {
                             Text(it, modifier = Modifier.padding(12.dp))
@@ -605,16 +950,16 @@ private fun SettingsScreen(
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Button(enabled = !updateState.checking, onClick = onCheckForUpdate) {
-                            Text(if (updateState.checking) "Checking..." else "Check for updates")
+                            Text(if (updateState.checking) strings.checking else strings.checkForUpdates)
                         }
                         updateState.update?.takeIf { it.isNewer }?.let { update ->
                             OutlinedButton(onClick = { onOpenUpdate(update) }) {
-                                Text("Download ${update.version}")
+                                Text(strings.downloadVersion(update.version))
                             }
                         }
                     }
                     Text(
-                        "APK downloads open in the browser/system installer. Signed release APKs can update in-place after the signing key is configured.",
+                        strings.updateInstallNote,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -640,6 +985,7 @@ private fun ChatsScreen(
     onModel: (Chat, ConfigOption) -> Unit,
     onSendMessage: (Chat, String) -> Unit,
 ) {
+    val strings = LocalAppStrings.current
     val selectedChat = chats.firstOrNull { it.id == selectedChatId }
     if (selectedChat != null) {
         ChatDetailScreen(
@@ -683,9 +1029,9 @@ private fun ChatsScreen(
                 Column(Modifier.padding(18.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column {
-                            Text("New Chat", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                            Text(strings.newChat, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                             Text(
-                                if (newChatExpanded) "Choose machine, workspace, and agent" else "Tap to create another agent session",
+                                if (newChatExpanded) strings.chooseMachineWorkspaceAgent else strings.tapCreateAgentSession,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                             )
@@ -718,7 +1064,7 @@ private fun ChatsScreen(
                                 )
                             }
                             if (machines.isEmpty()) {
-                                Text("Pair a machine first from the Machines tab.", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text(strings.pairMachineFirst, color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                         }
                         Spacer(Modifier.height(8.dp))
@@ -733,7 +1079,7 @@ private fun ChatsScreen(
                                 )
                             }
                             if (selectedMachine?.agents.orEmpty().isEmpty()) {
-                                Text("No agent discovered on this machine yet.", color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                Text(strings.noAgentDiscovered, color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                         }
                         if (newChatMode == NewChatMode.NewSession) {
@@ -742,15 +1088,15 @@ private fun ChatsScreen(
                                 value = workspacePath,
                                 onValueChange = { workspacePath = it },
                                 modifier = Modifier.fillMaxWidth(),
-                                label = { Text("Remote workspace path (optional)") },
-                                placeholder = { Text("Leave blank for remote home, or enter D:\\repos\\project-a") },
+                                label = { Text(strings.remoteWorkspacePath) },
+                                placeholder = { Text(strings.remoteWorkspacePlaceholder) },
                             )
                             Spacer(Modifier.height(10.dp))
                             Button(
                                 enabled = selectedMachine != null && selectedAgent != null,
                                 onClick = { onCreateChat(selectedMachine!!, workspacePath, selectedAgent!!) },
                             ) {
-                                Text("Create Chat")
+                                Text(strings.createChat)
                             }
                         } else {
                             Spacer(Modifier.height(10.dp))
@@ -775,16 +1121,16 @@ private fun ChatsScreen(
                                     }
                                 },
                             ) {
-                                Text(if (existingSessionsLoading) "Loading sessions..." else "Load sessions")
+                                Text(if (existingSessionsLoading) strings.loadingSessions else strings.loadSessions)
                             }
                             existingSessionsError?.let {
                                 Spacer(Modifier.height(8.dp))
-                                Text("Could not load sessions: $it", color = MaterialTheme.colorScheme.error)
+                                Text(strings.couldNotLoadSessions(it), color = MaterialTheme.colorScheme.error)
                             }
                             existingSessions?.let { sessions ->
                                 Spacer(Modifier.height(8.dp))
                                 if (sessions.isEmpty()) {
-                                    EmptyStateCard("No resumable sessions", "This agent did not return resumable sessions for the selected machine.")
+                                    EmptyStateCard(strings.noResumableSessions, strings.noResumableSessionsForAgent)
                                 } else {
                                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                         sessions.take(12).forEach { session ->
@@ -802,7 +1148,7 @@ private fun ChatsScreen(
                                         enabled = selectedMachine != null && selectedAgent != null && selectedSession != null,
                                         onClick = { onOpenExistingSession(selectedMachine!!, selectedAgent!!, selectedSession!!) },
                                     ) {
-                                        Text("Open Session")
+                                        Text(strings.openSession)
                                     }
                                 }
                             }
@@ -813,12 +1159,12 @@ private fun ChatsScreen(
         }
         item {
             SectionHeader(
-                title = "Chats",
-                subtitle = "${chats.size} conversation${if (chats.size == 1) "" else "s"}",
+                title = strings.chats,
+                subtitle = strings.conversations(chats.size),
             )
         }
         if (chats.isEmpty()) {
-            item { EmptyStateCard("No chats yet", "Create a chat above after pairing a machine.") }
+            item { EmptyStateCard(strings.noChatsYet, strings.createChatAfterPairing) }
         } else {
             items(chats, key = { it.id }) { chat ->
                 SwipeToDeleteItem(onDelete = { onDeleteChat(chat) }) {
@@ -826,7 +1172,7 @@ private fun ChatsScreen(
                         Column(Modifier.padding(16.dp)) {
                             Text(chat.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                             Text("${chat.machineName} · ${chat.workspacePath}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("${chat.messages.size} messages", style = MaterialTheme.typography.labelMedium)
+                            Text(strings.messages(chat.messages.size), style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
@@ -843,6 +1189,7 @@ private fun ChatDetailScreen(
     onSendMessage: (String) -> Unit,
     onCommand: (AvailableCommand) -> Unit,
 ) {
+    val strings = LocalAppStrings.current
     var message by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val commands = remember(chat.messages) {
@@ -873,7 +1220,7 @@ private fun ChatDetailScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OutlinedButton(onClick = onBack) {
-                    Text("Back")
+                    Text(strings.back)
                 }
                 Column {
                     Text(chat.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -930,7 +1277,7 @@ private fun ChatDetailScreen(
                         },
                         modifier = Modifier.defaultMinSize(minWidth = 68.dp, minHeight = 42.dp),
                     ) {
-                        Text("Send")
+                        Text(strings.send)
                     }
                 }
             }
@@ -957,6 +1304,7 @@ private fun CommandPill(command: AvailableCommand, onClick: () -> Unit) {
 
 @Composable
 private fun CompactPromptField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
+    val strings = LocalAppStrings.current
     Surface(
         modifier = modifier.defaultMinSize(minHeight = 42.dp),
         shape = RoundedCornerShape(16.dp),
@@ -971,7 +1319,7 @@ private fun CompactPromptField(value: String, onValueChange: (String) -> Unit, m
         ) {
             if (value.isBlank()) {
                 Text(
-                    "Prompt",
+                    strings.prompt,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
                 )
@@ -989,6 +1337,7 @@ private fun CompactPromptField(value: String, onValueChange: (String) -> Unit, m
 
 @Composable
 private fun ModelDialog(state: ModelDialogState, onDismiss: () -> Unit, onSelect: (ConfigOptionValue) -> Unit) {
+    val strings = LocalAppStrings.current
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(state.option.name) },
@@ -1007,7 +1356,7 @@ private fun ModelDialog(state: ModelDialogState, onDismiss: () -> Unit, onSelect
                         Column(Modifier.padding(12.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                 Text(option.name, fontWeight = FontWeight.SemiBold)
-                                if (selected) Text("Current", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                if (selected) Text(strings.current, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                             }
                             option.description?.let {
                                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1019,7 +1368,7 @@ private fun ModelDialog(state: ModelDialogState, onDismiss: () -> Unit, onSelect
         },
         confirmButton = {
             OutlinedButton(onClick = onDismiss) {
-                Text("Close")
+                Text(strings.close)
             }
         },
     )
@@ -1027,19 +1376,20 @@ private fun ModelDialog(state: ModelDialogState, onDismiss: () -> Unit, onSelect
 
 @Composable
 private fun ResumeDialog(state: ResumeDialogState, onDismiss: () -> Unit, onSelect: (AgentSessionInfo) -> Unit) {
+    val strings = LocalAppStrings.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Resume session") },
+        title = { Text(strings.resumeSession) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 state.error?.let {
-                    Text("Could not load sessions: $it", color = MaterialTheme.colorScheme.error)
+                    Text(strings.couldNotLoadSessions(it), color = MaterialTheme.colorScheme.error)
                 }
                 when (val sessions = state.sessions) {
-                    null -> Text("Loading sessions from ${state.chat.agentName}...")
+                    null -> Text(strings.loadingSessionsFrom(state.chat.agentName))
                     else -> {
                         if (sessions.isEmpty() && state.error == null) {
-                            Text("No resumable sessions found for this workspace.")
+                            Text(strings.noResumableSessionsWorkspace)
                         }
                         sessions.take(8).forEach { session ->
                             Surface(
@@ -1062,7 +1412,7 @@ private fun ResumeDialog(state: ResumeDialogState, onDismiss: () -> Unit, onSele
         },
         confirmButton = {
             OutlinedButton(onClick = onDismiss) {
-                Text("Close")
+                Text(strings.close)
             }
         },
     )
@@ -1244,6 +1594,7 @@ private fun parseInlineMarkdown(input: String): AnnotatedString {
 
 @Composable
 private fun AgentActivityItem(item: ChatMessage) {
+    val strings = LocalAppStrings.current
     var expanded by remember { mutableStateOf(false) }
     Surface(
         shape = RoundedCornerShape(14.dp),
@@ -1255,10 +1606,10 @@ private fun AgentActivityItem(item: ChatMessage) {
         Column(Modifier.padding(12.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
-                    Text(item.title ?: "Agent activity", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    Text(item.title ?: strings.agentActivity, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                     Text(item.text, style = MaterialTheme.typography.bodySmall)
                 }
-                Text(if (expanded) "Hide" else "Details", style = MaterialTheme.typography.labelMedium)
+                Text(if (expanded) strings.hide else strings.details, style = MaterialTheme.typography.labelMedium)
             }
             if (expanded && !item.details.isNullOrBlank()) {
                 Spacer(Modifier.height(8.dp))
@@ -1281,16 +1632,17 @@ private fun ApprovalsScreen(
     onDecision: (Approval, ApprovalStatus) -> Unit,
     onDeleteApproval: (Approval) -> Unit,
 ) {
+    val strings = LocalAppStrings.current
     LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             PageHero(
-                title = "Approvals",
-                subtitle = "Review commands, file changes, and risky actions before they run.",
-                metric = "${approvals.count { it.status == ApprovalStatus.Pending }} pending",
+                title = strings.approvals,
+                subtitle = strings.approvalsSubtitle,
+                metric = strings.pending(approvals.count { it.status == ApprovalStatus.Pending }),
             )
         }
         if (approvals.isEmpty()) {
-            item { EmptyStateCard("No approval requests", "Agent requests that need your decision will appear here.") }
+            item { EmptyStateCard(strings.noApprovalRequests, strings.approvalRequestsAppear) }
         } else {
             items(approvals, key = { it.id }) { approval ->
                 SwipeToDeleteItem(onDelete = { onDeleteApproval(approval) }) {
@@ -1303,8 +1655,8 @@ private fun ApprovalsScreen(
                             Text("${approval.machineName} · ${approval.workspacePath}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.height(10.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Button(enabled = approval.status == ApprovalStatus.Pending, onClick = { onDecision(approval, ApprovalStatus.Approved) }) { Text("Approve") }
-                                OutlinedButton(enabled = approval.status == ApprovalStatus.Pending, onClick = { onDecision(approval, ApprovalStatus.Denied) }) { Text("Deny") }
+                                Button(enabled = approval.status == ApprovalStatus.Pending, onClick = { onDecision(approval, ApprovalStatus.Approved) }) { Text(strings.approve) }
+                                OutlinedButton(enabled = approval.status == ApprovalStatus.Pending, onClick = { onDecision(approval, ApprovalStatus.Denied) }) { Text(strings.deny) }
                             }
                         }
                     }
@@ -1324,21 +1676,22 @@ private fun MachinesScreen(
     onRefreshMachine: (Machine) -> Unit,
     onDeleteMachine: (Machine) -> Unit,
 ) {
+    val strings = LocalAppStrings.current
     var pairingLink by remember { mutableStateOf("") }
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             ElevatedCard(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
                 Column(Modifier.padding(18.dp)) {
-                    Text("Add Machine", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                    Text("Scan the bridge QR code, or paste the acpclient://pair link.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(strings.addMachine, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    Text(strings.addMachineSubtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(onClick = onScanQr) { Text("Scan QR") }
-                        OutlinedButton(enabled = pairingLink.isNotBlank(), onClick = { onPairLink(pairingLink) }) { Text("Pair Link") }
+                        Button(onClick = onScanQr) { Text(strings.scanQr) }
+                        OutlinedButton(enabled = pairingLink.isNotBlank(), onClick = { onPairLink(pairingLink) }) { Text(strings.pairLink) }
                     }
                     Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(value = pairingLink, onValueChange = { pairingLink = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Pairing link fallback") }, minLines = 2)
+                    OutlinedTextField(value = pairingLink, onValueChange = { pairingLink = it }, modifier = Modifier.fillMaxWidth(), label = { Text(strings.pairingLinkFallback) }, minLines = 2)
                     statusMessage?.let {
                         Spacer(Modifier.height(10.dp))
                         Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
@@ -1348,9 +1701,9 @@ private fun MachinesScreen(
                 }
             }
         }
-        item { SectionHeader("Machines", "${machines.size} paired") }
+        item { SectionHeader(strings.machines, strings.machinesPaired(machines.size)) }
         if (machines.isEmpty()) {
-            item { EmptyStateCard("No machines paired", "Start the bridge, scan the QR code, then test the connection.") }
+            item { EmptyStateCard(strings.noMachinesPaired, strings.startBridgePairMachine) }
         } else {
             items(machines, key = { it.id }) { machine ->
                 SwipeToDeleteItem(onDelete = { onDeleteMachine(machine) }) {
@@ -1387,7 +1740,7 @@ private fun SwipeToDeleteItem(onDelete: () -> Unit, content: @Composable () -> U
                     .padding(horizontal = 18.dp),
                 contentAlignment = Alignment.CenterEnd,
             ) {
-                Text("Delete", color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.SemiBold)
+                Text(LocalAppStrings.current.delete, color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.SemiBold)
             }
         },
         content = { content() },
@@ -1424,6 +1777,7 @@ private fun NewChatTogglePill(onClick: () -> Unit) {
 
 @Composable
 private fun NewChatModeSelector(selectedMode: NewChatMode, onSelect: (NewChatMode) -> Unit) {
+    val strings = LocalAppStrings.current
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         NewChatMode.entries.forEach { mode ->
             val selected = selectedMode == mode
@@ -1447,7 +1801,7 @@ private fun NewChatModeSelector(selectedMode: NewChatMode, onSelect: (NewChatMod
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(mode.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = contentColor)
+                    Text(strings.newChatModeLabel(mode), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = contentColor)
                     if (selected) {
                         Surface(shape = RoundedCornerShape(999.dp), color = MaterialTheme.colorScheme.primary) {
                             Text(
@@ -1466,6 +1820,7 @@ private fun NewChatModeSelector(selectedMode: NewChatMode, onSelect: (NewChatMod
 
 @Composable
 private fun SelectableOptionCard(selected: Boolean, title: String, subtitle: String, onClick: () -> Unit) {
+    val strings = LocalAppStrings.current
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1486,7 +1841,7 @@ private fun SelectableOptionCard(selected: Boolean, title: String, subtitle: Str
             }
             if (selected) {
                 Surface(shape = RoundedCornerShape(999.dp), color = MaterialTheme.colorScheme.primary) {
-                    Text("Selected", modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelSmall)
+                    Text(strings.selected, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp), color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
@@ -1538,6 +1893,7 @@ private fun EmptyStateCard(title: String, subtitle: String) {
 
 @Composable
 private fun MachineCard(machine: Machine, onRefresh: () -> Unit) {
+    val strings = LocalAppStrings.current
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1547,10 +1903,10 @@ private fun MachineCard(machine: Machine, onRefresh: () -> Unit) {
             Text(machine.endpoint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             machine.bridgeVersion?.let { Text("Bridge: $it") }
             Spacer(Modifier.height(10.dp))
-            OutlinedButton(onClick = onRefresh) { Text("Test Connection") }
+            OutlinedButton(onClick = onRefresh) { Text(strings.testConnection) }
             if (machine.agents.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                Text("Agents", style = MaterialTheme.typography.titleSmall)
+                Text(strings.agents, style = MaterialTheme.typography.titleSmall)
                 machine.agents.forEach { agent -> Text("${agent.displayName}: ${agent.status}") }
             }
         }
@@ -1570,6 +1926,7 @@ private fun StateChip(state: ConnectionState) {
 @OptIn(ExperimentalGetImage::class)
 @Composable
 private fun QrScannerScreen(onLinkScanned: (String) -> Unit, onClose: () -> Unit) {
+    val strings = LocalAppStrings.current
     val context = LocalContext.current
     var hasCameraPermission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> hasCameraPermission = granted }
@@ -1582,19 +1939,19 @@ private fun QrScannerScreen(onLinkScanned: (String) -> Unit, onClose: () -> Unit
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
-                    Text("Scan Pairing QR", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                    Text("Point the camera at the bridge QR code.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(strings.scanPairingQr, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                    Text(strings.pointCameraAtBridgeQr, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                OutlinedButton(onClick = onClose) { Text("Close") }
+                OutlinedButton(onClick = onClose) { Text(strings.close) }
             }
             Spacer(Modifier.height(16.dp))
             if (hasCameraPermission) {
                 CameraScannerPreview(modifier = Modifier.fillMaxWidth().weight(1f), onQrFound = onLinkScanned)
             } else {
                 Column(modifier = Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Camera access is needed to scan pairing QR codes.")
+                    Text(strings.cameraAccessNeeded)
                     Spacer(Modifier.height(12.dp))
-                    Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text("Grant Camera Permission") }
+                    Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text(strings.grantCameraPermission) }
                 }
             }
         }

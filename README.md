@@ -1,5 +1,7 @@
 # AgentLink
 
+[English](README.md) | [中文](README.zh-CN.md)
+
 Android-first client for controlling multiple remote ACP coding-agent environments.
 
 The app is designed around **Chats**. Each chat belongs to a remote **Machine** and a selected **Workspace** on that machine. The remote machine runs an ACP bridge and one or more coding agents, while Android provides the mobile UI for prompts, streaming responses, approvals, diffs, and logs.
