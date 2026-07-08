@@ -136,15 +136,91 @@ Important fields:
 
 ## Connection Model
 
-The app should maintain one logical connection per active machine:
+The app uses machine-level HTTP calls for setup and discovery, and chat-scoped WebSocket channels for interactive agent work.
+
+Machine setup/discovery remains machine-scoped:
 
 ```text
-Machine A -> bridge WebSocket A
-Machine B -> bridge WebSocket B
-Machine C -> bridge WebSocket C
+Android -> Machine A bridge HTTP: pairing, health, agents, workspaces
+Android -> Machine B bridge HTTP: pairing, health, agents, workspaces
 ```
 
-Connections should reconnect independently. A failure on one machine must not affect chats on another machine.
+Interactive work is chat-scoped. The target architecture is one persistent logical WebSocket channel per active chat:
+
+```text
+Chat 1 -> Machine A bridge WebSocket -> Bridge ChatChannel(chat_1) -> ACP Agent Session
+Chat 2 -> Machine A bridge WebSocket -> Bridge ChatChannel(chat_2) -> ACP Agent Session
+Chat 3 -> Machine B bridge WebSocket -> Bridge ChatChannel(chat_3) -> ACP Agent Session
+```
+
+Each chat channel reconnects independently. A failure on one chat must not affect other chats on the same machine or chats on other machines.
+
+The previous one-shot request WebSocket model (`open WS -> send one prompt -> wait for bridge.done -> close`) is transitional only. It is not reliable enough for long-running agent turns, approvals, mobile network transitions, or replay after disconnect.
+
+## Persistent Chat Channel Target Design
+
+Each active chat has a bridge-side `ChatChannel` with:
+
+- `chatId`
+- `machineId`
+- `agentId`
+- `workspacePath`
+- `acpSessionId`
+- current status: `idle`, `busy`, `waitingApproval`, `disconnected`, or `failed`
+- active `operationId`, if any
+- recent event log / ring buffer
+- pending approval references
+
+Android has a matching `ChatConnection` with:
+
+- WebSocket state: connecting, connected, reconnecting, disconnected
+- last received `eventId`
+- local cached timeline
+- local input/composer state
+
+The bridge is authoritative for active execution status. Android may cache status for UI, but it must converge back to bridge state after reconnect.
+
+### Event Replay
+
+Bridge emits every chat-visible event with a monotonically increasing `eventId` scoped to `chatId`.
+
+On reconnect, Android sends `lastEventId`:
+
+```json
+{
+  "type": "chat.attach",
+  "chatId": "chat_123",
+  "lastEventId": 128
+}
+```
+
+The bridge replays cached events with `eventId > lastEventId`, then sends the current `chat.status`. This prevents lost tool updates, approval requests, and `done` events across mobile network interruptions.
+
+If Android's `lastEventId` is older than the bridge cache window, the bridge returns a resync-required event so Android can call `session/load` or ask the user to reopen the session.
+
+### Operation Lifecycle
+
+Prompt, session load, model changes, and approval decisions are operations inside the chat channel. Each operation has an `operationId`.
+
+```text
+Android -> chat.prompt(operationId)
+Bridge  -> operation.accepted(operationId)
+Bridge  -> chat.status(busy)
+Bridge  -> session/update(eventId, operationId)
+Bridge  -> operation.done(operationId)
+Bridge  -> chat.status(idle)
+```
+
+Android should not infer chat busy/idle from WebSocket open/closed state. WebSocket connectivity and agent execution status are separate state machines.
+
+### Implementation Phases
+
+1. **Current transitional model**: one-shot WebSocket requests with `bridge.accepted`, heartbeat, and ping/pong keepalive. This is only a mitigation for idle disconnects.
+2. **Persistent channel MVP**: Android opens `chat.attach` for the active chat, bridge maintains a `ChatChannel`, event IDs, replay buffer, and bridge-authoritative `chat.status`.
+3. **Multi-chat resilience**: Android can keep multiple chat channels attached, reconnect each independently, and replay missed approvals/tool updates.
+4. **Durable bridge state**: bridge persists event logs and pending approvals across bridge restarts where feasible.
+
+The persistent channel MVP is the next architectural milestone. New WebSocket work should move toward this model instead of adding more behavior to the one-shot request flow.
 
 ## ACP Boundary
 

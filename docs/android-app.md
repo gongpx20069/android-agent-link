@@ -23,6 +23,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - In Chat detail, the history list and prompt composer move above the Android soft keyboard while the header stays anchored; the composer does not keep the bottom navigation bar gap above the keyboard.
 - Horizontally scrollable command chips above the prompt box.
 - Chat prompt WebSocket calls disable the client read timeout, send WebSocket pings, and ignore bridge accepted/heartbeat events; the bridge responds to pings and sends heartbeat messages during long-running Agent turns so idle network paths do not abort the prompt while waiting for ACP updates.
+- Target chat communication uses a persistent WebSocket per open chat, with `chat.attach`, `lastEventId`, bridge event replay, operation IDs, and bridge-authoritative `chat.status`. The older one-shot WebSocket request flow is transitional.
 - Bilingual UI with a Settings language selector: System, English, or Chinese. System mode uses Chinese only when the device language is Chinese; otherwise it uses English.
 - Settings includes a Session load history limit. It defaults to 5 and controls how many recent messages are appended when opening or resuming an existing ACP session.
 - Built-in `model` chip that opens a model picker from ACP session config options.
@@ -76,6 +77,11 @@ The chat shell uses:
 
 The app maps these bridge/ACP events:
 
+- `chat.attached` -> current chat WebSocket is attached to the bridge-side chat channel.
+- `chat.status` -> authoritative chat status for busy/idle/waitingApproval/disconnected UI.
+- `operation.accepted` -> the bridge accepted a prompt/load/config operation.
+- `operation.done` -> the bridge completed a prompt/load/config operation.
+- `chat.resyncRequired` -> Android's last event is outside the bridge replay cache; reload or reopen the session.
 - `session/update` + `tool_call` -> collapsed Agent Activity card.
 - `session/update` + `tool_call_update` -> collapsed Agent Activity card with status/details.
 - Updates with the same `toolCallId` replace the existing activity card, so one tool call stays as one expandable row.
@@ -84,7 +90,33 @@ The app maps these bridge/ACP events:
 - `available_commands_update` -> command chips above the prompt box.
 - `config_option_update` -> powers the built-in `model` picker and is hidden from the chat timeline.
 - `usage_update` is suppressed in chat to avoid noisy setup cards on every prompt.
-- `bridge.done` -> ends the current one-shot WebSocket request.
+- `bridge.heartbeat` -> transport keepalive; ignored for chat history.
+- `bridge.done` -> legacy one-shot request terminator during the transition to persistent chat channels.
+
+## Persistent Chat Channel Design
+
+The target Android connection model is one `ChatConnection` per active chat. The connection opens when a chat detail screen is active or a background operation needs to keep the chat live.
+
+On connect or reconnect, Android sends:
+
+```json
+{
+  "type": "chat.attach",
+  "chatId": "chat_123",
+  "lastEventId": 128
+}
+```
+
+Android responsibilities:
+
+- Persist the latest `eventId` seen for each chat.
+- Apply replayed events idempotently.
+- Render busy/idle/waitingApproval from bridge `chat.status`, not from WebSocket open/closed state.
+- Treat WebSocket disconnect as transport state only; do not mark the agent idle unless the bridge sends `chat.status: idle`.
+- Retry `chat.attach` with exponential backoff while the user is viewing the chat.
+- Keep pending approvals visible after reconnect by replaying `approval.requested` events.
+
+The bridge is responsible for event ordering and replay. Android is responsible for caching applied events and avoiding duplicate timeline entries.
 
 ## Workspace Selection
 

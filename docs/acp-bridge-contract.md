@@ -141,12 +141,89 @@ The bridge must reject expired, reused, or unconfirmed pairing tokens.
 
 ## Interactive WebSocket Messages
 
-All messages should include:
+The target interactive transport is a persistent chat-scoped WebSocket. The older one-shot flow (`open socket`, send one request, wait for `bridge.done`, close socket) is transitional and should be replaced by the persistent channel design below.
+
+All chat-channel messages should include:
 
 - `type`
 - `id` when request/response correlation is needed
 - `chatId` when related to a chat
 - `timestamp` for events
+
+Bridge-to-Android chat events must include:
+
+- `eventId`: monotonically increasing integer scoped to `chatId`
+- `chatId`
+- `type`
+- `operationId` when related to a prompt/load/config operation
+- `timestamp`
+
+### Attach Chat Channel
+
+Android opens or reconnects a persistent chat WebSocket by sending:
+
+```json
+{
+  "type": "chat.attach",
+  "chatId": "chat_123",
+  "agentId": "copilot-cli",
+  "workspacePath": "D:\\repos\\android-agent-link",
+  "lastEventId": 128
+}
+```
+
+Bridge behavior:
+
+1. Authenticate the device token from the WebSocket URL.
+2. Attach the socket to `chatId`.
+3. Ensure the bridge has a `ChatChannel` for the chat.
+4. Replay cached events with `eventId > lastEventId`.
+5. Send current `chat.status`.
+
+Example response:
+
+```json
+{
+  "type": "chat.attached",
+  "chatId": "chat_123",
+  "latestEventId": 135,
+  "replayed": 7
+}
+```
+
+Then:
+
+```json
+{
+  "type": "chat.status",
+  "eventId": 136,
+  "chatId": "chat_123",
+  "status": "busy",
+  "operationId": "op_abc"
+}
+```
+
+If the requested `lastEventId` is older than the bridge cache window, the bridge returns:
+
+```json
+{
+  "type": "chat.resyncRequired",
+  "chatId": "chat_123",
+  "latestEventId": 220,
+  "reason": "event log no longer contains requested history"
+}
+```
+
+Android should then reload the ACP session or ask the user to reopen the chat.
+
+### Event Log and Replay Rules
+
+- `eventId` is scoped to one `chatId`.
+- Events are appended before they are sent to connected Android clients.
+- Replay must preserve original event order.
+- Bridge should keep a ring buffer per chat; the MVP target is at least 500 recent events per chat.
+- Approval requests and terminal operation events should remain replayable while they are still actionable.
+- Heartbeats are transport keepalive events and do not need to be replayed.
 
 ### Start Chat
 
@@ -172,11 +249,12 @@ Bridge behavior:
 
 ### Send Prompt
 
-Android sends a chat prompt through the bridge WebSocket:
+Android sends a chat prompt over the attached chat WebSocket:
 
 ```json
 {
   "type": "chat.prompt",
+  "operationId": "op_prompt_001",
   "chatId": "chat_123",
   "agentId": "copilot-cli",
   "workspacePath": "D:\\repos\\android-agent-link",
@@ -184,31 +262,38 @@ Android sends a chat prompt through the bridge WebSocket:
 }
 ```
 
-The bridge starts or reuses the ACP agent session for `chatId`, creates the session with `workspacePath` as ACP `cwd`, sends `session/prompt`, and streams ACP `session/update` messages back to Android. Tool call events are forwarded in the same shape produced by the ACP agent:
-
-Immediately after accepting a WebSocket request, the bridge sends an acknowledgement so Android knows the prompt reached the developer machine:
+The bridge starts or reuses the ACP agent session for `chatId`, creates the session with `workspacePath` as ACP `cwd`, sends `session/prompt`, and streams ACP `session/update` messages back to Android. Immediately after accepting the operation, the bridge appends and sends:
 
 ```json
 {
-  "type": "bridge.accepted",
-  "chatId": "chat_123"
+  "type": "operation.accepted",
+  "eventId": 137,
+  "chatId": "chat_123",
+  "operationId": "op_prompt_001",
+  "operationType": "chat.prompt"
 }
 ```
 
-While a long-running ACP turn is still processing and no ACP update is ready, the bridge may send heartbeat messages. Android must ignore these for chat history purposes:
+The bridge then sends:
 
 ```json
 {
-  "type": "bridge.heartbeat"
+  "type": "chat.status",
+  "eventId": 138,
+  "chatId": "chat_123",
+  "status": "busy",
+  "operationId": "op_prompt_001"
 }
 ```
 
-The stdlib bridge also handles WebSocket ping frames and responds with pong frames so OkHttp/client keepalive does not terminate the connection.
+ACP tool call events are forwarded in the same shape produced by the ACP agent, with bridge event metadata:
 
 ```json
 {
   "type": "session/update",
+  "eventId": 139,
   "chatId": "chat_123",
+  "operationId": "op_prompt_001",
   "update": {
     "sessionUpdate": "tool_call",
     "toolCallId": "tool_abc",
@@ -222,7 +307,9 @@ The stdlib bridge also handles WebSocket ping frames and responds with pong fram
 ```json
 {
   "type": "session/update",
+  "eventId": 140,
   "chatId": "chat_123",
+  "operationId": "op_prompt_001",
   "update": {
     "sessionUpdate": "tool_call_update",
     "toolCallId": "tool_abc",
@@ -234,12 +321,38 @@ The stdlib bridge also handles WebSocket ping frames and responds with pong fram
 }
 ```
 
+When the operation ends:
+
 ```json
 {
-  "type": "bridge.done",
-  "chatId": "chat_123"
+  "type": "operation.done",
+  "eventId": 141,
+  "chatId": "chat_123",
+  "operationId": "op_prompt_001",
+  "status": "completed"
 }
 ```
+
+```json
+{
+  "type": "chat.status",
+  "eventId": 142,
+  "chatId": "chat_123",
+  "status": "idle"
+}
+```
+
+### Transport Keepalive
+
+While a long-running ACP turn is still processing and no ACP update is ready, the bridge may send heartbeat messages. Android must ignore these for chat history and replay purposes:
+
+```json
+{
+  "type": "bridge.heartbeat"
+}
+```
+
+The stdlib bridge also handles WebSocket ping frames and responds with pong frames so OkHttp/client keepalive does not terminate the connection.
 
 ### List Sessions
 
@@ -276,6 +389,7 @@ Android loads a selected session into the current chat:
 ```json
 {
   "type": "session.load",
+  "operationId": "op_load_001",
   "chatId": "chat_123",
   "agentId": "copilot-cli",
   "workspacePath": "D:\\repos\\android-agent-link",
@@ -283,7 +397,7 @@ Android loads a selected session into the current chat:
 }
 ```
 
-The bridge calls ACP `session/load`, forwards replayed `session/update` notifications, then sends `bridge.done`.
+The bridge calls ACP `session/load`, forwards replayed `session/update` notifications as event-log entries, then sends `operation.done` and the current `chat.status`.
 
 ### Set Config Option
 
@@ -292,19 +406,21 @@ Android can ask the bridge to refresh current ACP session config options before 
 ```json
 {
   "type": "session.refreshConfigOptions",
+  "operationId": "op_config_001",
   "chatId": "chat_123",
   "agentId": "copilot-cli",
   "workspacePath": "D:\\repos\\android-agent-link"
 }
 ```
 
-The bridge ensures an ACP session exists for that chat, forwards the latest `config_option_update` messages, then sends `bridge.done`.
+The bridge ensures an ACP session exists for that chat, forwards the latest `config_option_update` messages as event-log entries, then sends `operation.done`.
 
 Android changes session-level options such as model selection through the bridge WebSocket:
 
 ```json
 {
   "type": "session.setConfigOption",
+  "operationId": "op_config_002",
   "chatId": "chat_123",
   "agentId": "copilot-cli",
   "workspacePath": "D:\\repos\\android-agent-link",
@@ -313,7 +429,7 @@ Android changes session-level options such as model selection through the bridge
 }
 ```
 
-The bridge ensures an ACP session exists for that chat, calls ACP `session/set_config_option`, and forwards the returned `config_option_update`.
+The bridge ensures an ACP session exists for that chat, calls ACP `session/set_config_option`, forwards the returned `config_option_update`, then sends `operation.done`.
 
 ### Agent Update
 
@@ -337,6 +453,7 @@ Bridge sends this when an ACP agent calls `session/request_permission`:
 ```json
 {
   "type": "approval.requested",
+  "eventId": 143,
   "approvalId": "approval_456",
   "chatId": "chat_123",
   "action": "run_command",
@@ -366,6 +483,7 @@ Android responds:
 ```json
 {
   "type": "approval.decide",
+  "operationId": "op_approval_001",
   "approvalId": "approval_456",
   "decision": "approved"
 }
@@ -373,11 +491,16 @@ Android responds:
 
 The bridge waits for this response and then replies to the ACP `session/request_permission` request using the matching allow/reject option.
 
+Approval requests must be written to the chat event log before they are sent to Android. If Android disconnects before seeing the request, `chat.attach` replay must show the pending approval.
+
 ## Contract Rules
 
 - Bridge APIs must not expose arbitrary filesystem browsing by default.
 - Bridge must validate that requested workspace paths are allowed.
 - Bridge must not execute commands after Android disconnects unless the user explicitly allowed background execution.
+- Android must not infer `busy` or `idle` from WebSocket connection state. It must use bridge `chat.status`.
+- Bridge must keep active chat status independent from WebSocket connectivity.
+- Every prompt/load/config operation should have an `operationId`; bridge events for that operation should echo it.
 - Bridge must send enough metadata for Android to show a safe approval screen.
 - Bridge must redact secrets from logs and approval summaries.
 - Bridge must not generate long-lived credentials directly in QR payloads.

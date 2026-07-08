@@ -53,6 +53,9 @@ Permission modes for MVP:
 - Stream agent updates when available.
 - Show tool calls inline with status.
 - Show current machine, workspace, and agent in the header.
+- Maintain a persistent chat connection while the chat is active.
+- Recover from mobile network drops by reconnecting and replaying missed bridge events.
+- Show busy, idle, waiting-for-approval, and disconnected states from bridge-reported chat status.
 - Provide quick access to approvals, diffs, logs, and chat settings.
 
 ### Approvals
@@ -100,3 +103,5 @@ Permission modes for MVP:
 - A user can distinguish where each chat is running.
 - A user can safely approve or deny command/file operations from Android.
 - A disconnected machine does not corrupt chat state or silently lose pending approvals.
+- A temporarily disconnected Android device can reconnect to an active chat and replay missed agent updates.
+- A chat's busy/idle state remains accurate even if its WebSocket reconnects while an agent turn is running.
