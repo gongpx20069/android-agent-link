@@ -2302,7 +2302,7 @@ private fun Chat.withActivity(title: String, summary: String, details: String): 
 }
 
 private fun List<ChatMessage>.latestVisibleHistory(limit: Int): List<ChatMessage> {
-    return filterNot { it.kind == ChatMessageKind.CommandUpdate || it.kind == ChatMessageKind.ConfigUpdate }
+    return filter { it.kind == ChatMessageKind.Message }
         .takeLast(limit.coerceAtLeast(1))
 }
 

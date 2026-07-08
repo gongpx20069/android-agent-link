@@ -25,7 +25,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Chat prompt WebSocket calls disable the client read timeout, send WebSocket pings, and ignore bridge accepted/heartbeat events; the bridge responds to pings and sends heartbeat messages during long-running Agent turns so idle network paths do not abort the prompt while waiting for ACP updates.
 - Target chat communication uses a persistent WebSocket per open chat, with `chat.attach`, `lastEventId`, bridge event replay, operation IDs, and bridge-authoritative `chat.status`. The older one-shot WebSocket request flow is transitional.
 - Bilingual UI with a Settings language selector: System, English, or Chinese. System mode uses Chinese only when the device language is Chinese; otherwise it uses English.
-- Settings includes a Session load history limit. It defaults to 5 and controls how many recent visible history messages are appended when opening or resuming an existing ACP session; hidden command/config control updates do not count toward this limit.
+- Settings includes a Session load history limit. It defaults to 5 and controls how many recent chat message bubbles are appended when opening or resuming an existing ACP session; tool/activity cards and hidden command/config control updates do not count toward this limit.
 - Built-in `model` chip that opens a model picker from ACP session config options.
 - Common command chips are prioritized before other ACP-advertised commands: `model`, `resume`, and `allow-all`.
 - Built-in `allow-all` opens an on/off picker when the ACP agent exposes the `allow_all` session config option.
@@ -132,7 +132,7 @@ ACP slash commands are not the same as Copilot CLI's interactive slash commands.
 
 AgentLink displays advertised commands as chips without the slash prefix. Tapping a command chip sends `/<command>` as a prompt.
 
-`resume` is a built-in AgentLink chip rather than a prompt command. It opens a session picker backed by ACP `session/list`; choosing a session calls `session/load` for the current chat and workspace. AgentLink appends at most the latest N visible loaded chat messages from a resumed session, where N is configured in Settings and defaults to 5. Hidden command/config control updates do not count toward N. Typing `/resume` in the prompt is still treated as plain prompt text unless the ACP agent explicitly advertises a `resume` slash command.
+`resume` is a built-in AgentLink chip rather than a prompt command. It opens a session picker backed by ACP `session/list`; choosing a session calls `session/load` for the current chat and workspace. AgentLink appends at most the latest N loaded chat message bubbles from a resumed session, where N is configured in Settings and defaults to 5. Tool/activity cards and hidden command/config control updates do not count toward N. Typing `/resume` in the prompt is still treated as plain prompt text unless the ACP agent explicitly advertises a `resume` slash command.
 
 `model` is also a built-in AgentLink chip. It opens a model picker backed by the latest ACP `config_option_update` option with `id == "model"`, `category == "model"`, or a model-like name. Opening the picker asks the bridge to refresh config options for the current chat, creating an ACP session first if needed. Selecting a model sends ACP `session/set_config_option` through the bridge and updates the picker with the returned `configOptions`. If options have not arrived yet, the picker explains that config options are still loading instead of sending `/model` as a prompt.
 
