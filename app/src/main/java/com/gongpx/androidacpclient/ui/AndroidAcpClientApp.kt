@@ -1310,10 +1310,11 @@ private fun ChatDetailScreen(
             listState.scrollToItem(chat.messages.lastIndex)
         }
     }
+    val chatPadding = PaddingValues(top = padding.calculateTopPadding())
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(padding),
+            .padding(chatPadding),
     ) {
         Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
             Row(
