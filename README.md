@@ -2,88 +2,149 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-Android-first client for controlling multiple remote ACP coding-agent environments.
+AgentLink lets you control remote coding agents from an Android phone. Your developer machine runs a small bridge and the agent CLI; your phone becomes the control surface for chats, approvals, session resume, model selection, and agent updates.
 
-The app is designed around **Chats**. Each chat belongs to a remote **Machine** and a selected **Workspace** on that machine. The remote machine runs an ACP bridge and one or more coding agents, while Android provides the mobile UI for prompts, streaming responses, approvals, diffs, and logs.
+## What you need
 
-## Current Status
+- An Android phone.
+- A developer machine with this repository checked out.
+- A coding agent installed on the developer machine. GitHub Copilot CLI with ACP support is currently the primary path.
+- One private connection method:
+  - **Microsoft Dev Tunnels**: easiest when VPN/mesh networking is blocked.
+  - **Tailscale**: best direct private-network experience when available.
 
-This repository currently contains the initial project harness, design documentation, a Python bridge MVP under `bridge/`, and an Android app skeleton under `app/`.
+AgentLink does not require opening inbound firewall ports on your developer machine.
 
-## Bridge startup options
+## Install the Android app
 
-Run bridge commands from the repository root unless noted otherwise. `bridge\run.py` creates `bridge\.venv`, installs `bridge\requirements.txt`, and runs the bridge CLI.
+Download the latest APK from this repository's **Releases** page and install it on Android.
 
-### Option 1: Tailscale private network (default)
+If you previously installed a debug build, Android may require uninstalling it once before installing the signed release APK. After that, signed releases can update in place.
 
-Use this when both the developer machine and Android device can sign in to the same Tailscale tailnet.
+## Start the bridge
 
-```powershell
-python .\bridge\run.py start
-```
+Run bridge commands from the repository root on your developer machine.
 
-Startup behavior:
+### Option A: Microsoft Dev Tunnels
 
-1. Checks whether the `tailscale` CLI exists.
-2. If missing, attempts automatic install with a supported package manager.
-3. If logged out or stopped, runs `tailscale up --qr`.
-4. Waits until a Tailscale IP is available.
-5. Binds the bridge to the Tailscale IP.
-6. Prints an AgentLink pairing link and compact CLI QR code.
-
-If Windows blocks `winget` with organization policy / exit code `1625`, install Tailscale through your company software portal, ask an administrator to approve `Tailscale.Tailscale`, or use the official installer from <https://tailscale.com/download/windows>.
-
-### Option 2: Microsoft Dev Tunnels private relay
-
-Use this when VPN/mesh networking is blocked but an authenticated Microsoft Dev Tunnel is acceptable. Do **not** use anonymous/public tunnels.
-
-One command handles the tunnel setup, starts the Dev Tunnel host, starts the bridge on localhost, and prints the Android pairing QR:
+Use this when you cannot install or use Tailscale/ZeroTier, but you can sign in to Microsoft Dev Tunnels.
 
 ```powershell
 python .\bridge\run.py start --transport devtunnel
 ```
 
-Startup behavior:
+The bridge will:
 
-1. Finds `devtunnel` on `PATH`, or downloads `bridge\.tools\devtunnel.exe` on Windows.
-2. Starts device-code login if the CLI is not already logged in.
-3. Creates or reuses the `agentlink` tunnel.
-4. Adds port `4317` with HTTP forwarding if needed.
-5. Issues a short-lived `connect` token.
-6. Starts `devtunnel host agentlink`.
-7. Starts the bridge on `127.0.0.1:4317`.
-8. Prints a pairing QR containing the `wss://*.devtunnels.ms` endpoint and `X-Tunnel-Authorization: tunnel <token>` header.
+1. Find `devtunnel` or download `bridge\.tools\devtunnel.exe` on Windows.
+2. Ask you to sign in with device-code login if needed.
+3. Create or reuse a private `agentlink` tunnel.
+4. Start the tunnel host and local bridge.
+5. Print a pairing link and QR code for Android.
 
-Optional overrides:
+Do **not** enable anonymous/public Dev Tunnel access. AgentLink uses a short-lived `X-Tunnel-Authorization` token in the pairing QR.
 
-```powershell
-python .\bridge\run.py start --transport devtunnel --devtunnel-id my-agentlink --port 4317
-python .\bridge\run.py start --transport devtunnel --devtunnel-cli C:\tools\devtunnel.exe
-```
+### Option B: Tailscale
 
-Android stores the `X-Tunnel-Authorization` header with that machine and sends it on bridge requests. Dev Tunnel connect tokens are short-lived, so re-run the command and re-scan a fresh pairing QR when the token expires.
-
-Manual mode is still available for debugging:
+Use this when your phone and developer machine can join the same Tailscale tailnet.
 
 ```powershell
-python .\bridge\run.py start `
-  --allow-non-tailscale `
-  --host 127.0.0.1 `
-  --port 4317 `
-  --pairing-endpoint wss://<copied-devtunnel-host> `
-  --connection-header "X-Tunnel-Authorization=tunnel <connect-token>"
+python .\bridge\run.py start
 ```
 
-### Option 3: Localhost/manual testing only
+The bridge checks Tailscale, runs `tailscale up --qr` if login is needed, waits for a Tailscale IP, then prints a pairing link and QR code.
 
-Use this only for local experiments. It does not make the developer machine reachable from a phone by itself.
+If Windows blocks Tailscale install with organization policy / exit code `1625`, install Tailscale through your company software portal, ask an administrator to approve `Tailscale.Tailscale`, or use the official installer from <https://tailscale.com/download/windows>.
+
+### Local testing only
 
 ```powershell
-python .\bridge\run.py start --allow-non-tailscale
+python .\bridge\run.py start --transport local
 ```
 
-QR pairing only transfers endpoint metadata and credentials; network reachability still depends on Tailscale, Dev Tunnels, LAN, USB forwarding, or another transport.
+This is only useful for local/manual tests. It does not make your developer machine reachable from your phone by itself.
 
-## Debug APK Release
+## Pair a machine
 
-Run the **Build Android APK** GitHub Actions workflow manually. It builds `app-debug.apk` and attaches the APK directly to a prerelease instead of requiring users to download a zipped workflow artifact.
+1. Open AgentLink on Android.
+2. Go to **Machines**.
+3. Tap **Scan QR**.
+4. Scan the QR printed by the bridge.
+5. Confirm pairing on the developer machine when prompted.
+6. Use **Test Connection** to verify the bridge is reachable.
+
+The QR contains a short-lived pairing token. If it expires, restart or re-run the bridge command and scan again.
+
+## Start a chat
+
+1. Go to **Chats**.
+2. Tap **New Chat**.
+3. Select the paired machine.
+4. Select an agent, such as Copilot CLI.
+5. Enter the remote workspace path, for example:
+
+```text
+C:\Repos\my-project
+```
+
+6. Create the chat and send a prompt.
+
+AgentLink shows streaming agent replies, tool activity cards, model/command chips, and approval requests.
+
+## Resume an existing session
+
+In **New Chat**, switch to **Existing session**, load sessions from the selected machine/agent, and open one.
+
+AgentLink asks the bridge for a recent-history snapshot instead of showing the full old replay. The number of recent messages can be adjusted in **Settings**.
+
+## Approvals
+
+When the agent requests permission for a command or risky operation, AgentLink shows it in the **Approvals** tab. Approve or deny from the phone; the bridge continues only after the decision is received.
+
+## Troubleshooting
+
+### Android cannot connect after scanning
+
+- Make sure the bridge process is still running.
+- For Dev Tunnels, re-run the bridge command if the connect token expired.
+- For Tailscale, make sure Android and the developer machine are in the same tailnet.
+- Check that the Android machine card uses the expected endpoint.
+
+### Dev Tunnel login or tunnel creation fails
+
+Run:
+
+```powershell
+.\bridge\.tools\devtunnel.exe user login -d
+```
+
+or, if `devtunnel` is on PATH:
+
+```powershell
+devtunnel user login -d
+```
+
+Then retry:
+
+```powershell
+python .\bridge\run.py start --transport devtunnel
+```
+
+### Copilot agent is not available
+
+Install and sign in to GitHub Copilot CLI on the developer machine, then confirm this works:
+
+```powershell
+copilot --acp
+```
+
+## For contributors
+
+This README is for users. Development and agent instructions live in:
+
+- `CLAUDE.md`
+- `docs/README.md`
+- `docs/architecture.md`
+- `docs/acp-bridge-contract.md`
+- `docs/android-app.md`
+- `docs/security-model.md`
+
