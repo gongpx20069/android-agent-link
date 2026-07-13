@@ -9,6 +9,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -34,9 +35,17 @@ class TailscaleStatus:
 
     @property
     def preferred_endpoint_host(self) -> str | None:
+        for candidate in self.tailscale_ips:
+            try:
+                if ip_address(candidate).version == 4:
+                    return candidate
+            except ValueError:
+                continue
+        if self.tailscale_ips:
+            return self.tailscale_ips[0]
         if self.dns_name:
             return self.dns_name.rstrip(".")
-        return self.tailscale_ips[0] if self.tailscale_ips else None
+        return None
 
 
 @dataclass(frozen=True)
@@ -296,6 +305,11 @@ def build_websocket_endpoint(status: TailscaleStatus, port: int) -> str | None:
     host = status.preferred_endpoint_host
     if not host:
         return None
+    try:
+        if ip_address(host).version == 6:
+            host = f"[{host}]"
+    except ValueError:
+        pass
     return f"ws://{host}:{port}"
 
 

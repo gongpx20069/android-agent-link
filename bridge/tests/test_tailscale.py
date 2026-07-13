@@ -9,6 +9,7 @@ from pathlib import Path
 
 from android_acp_bridge.tailscale import (
     TailscaleState,
+    TailscaleStatus,
     build_install_command,
     build_websocket_endpoint,
     default_runner,
@@ -59,7 +60,7 @@ class TailscaleTests(unittest.TestCase):
         self.assertEqual(status.cli_path, executable)
         self.assertEqual(commands, [[executable, "status", "--json"]])
 
-    def test_running_status_prefers_dns_name(self) -> None:
+    def test_running_status_prefers_ipv4_over_magic_dns(self) -> None:
         status = parse_status(
             {
                 "BackendState": "Running",
@@ -71,8 +72,17 @@ class TailscaleTests(unittest.TestCase):
         )
 
         self.assertEqual(status.state, TailscaleState.RUNNING)
-        self.assertEqual(status.preferred_endpoint_host, "devbox.tailnet.ts.net")
-        self.assertEqual(build_websocket_endpoint(status, 4317), "ws://devbox.tailnet.ts.net:4317")
+        self.assertEqual(status.preferred_endpoint_host, "100.64.0.10")
+        self.assertEqual(build_websocket_endpoint(status, 4317), "ws://100.64.0.10:4317")
+
+    def test_websocket_endpoint_brackets_ipv6_address(self) -> None:
+        status = TailscaleStatus(
+            state=TailscaleState.RUNNING,
+            tailscale_ips=("fd7a:115c:a1e0::1",),
+            dns_name="devbox.tailnet.ts.net.",
+        )
+
+        self.assertEqual(build_websocket_endpoint(status, 4317), "ws://[fd7a:115c:a1e0::1]:4317")
 
     def test_needs_login_when_auth_url_exists(self) -> None:
         status = parse_status({"BackendState": "NeedsLogin", "AuthURL": "https://login.tailscale.com/a/test"})

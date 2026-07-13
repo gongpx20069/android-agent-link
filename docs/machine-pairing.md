@@ -76,6 +76,7 @@ Tailscale is connected.
 Bridge behavior:
 
 - Read the Tailscale IP and machine DNS name when available.
+- Put the Tailscale IPv4 address in the pairing endpoint when available so Android connectivity does not depend on MagicDNS; use DNS only when no Tailscale IP is available.
 - Prefer a private-network endpoint over public endpoints.
 - Bind the bridge listener to a private interface when possible.
 
