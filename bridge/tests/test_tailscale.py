@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from android_acp_bridge.tailscale import (
     TailscaleState,
@@ -11,6 +13,7 @@ from android_acp_bridge.tailscale import (
     build_websocket_endpoint,
     default_runner,
     ensure_tailscale_ready,
+    find_command,
     get_status,
     install_failure_guidance,
     install_guidance,
@@ -26,6 +29,35 @@ class TailscaleTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.stdout, "安装完成")
+
+    def test_find_command_uses_standard_windows_install_location(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            executable = Path(temp_dir) / "Tailscale" / "tailscale.exe"
+            executable.parent.mkdir()
+            executable.touch()
+
+            resolved = find_command(
+                "tailscale",
+                which=lambda _command: None,
+                system="Windows",
+                environ={"ProgramFiles": temp_dir},
+            )
+
+        self.assertEqual(resolved, str(executable))
+
+    def test_get_status_uses_resolved_cli_path(self) -> None:
+        executable = r"C:\Program Files\Tailscale\tailscale.exe"
+        commands: list[list[str]] = []
+
+        def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            commands.append(args)
+            payload = {"BackendState": "Running", "Self": {"TailscaleIPs": ["100.64.0.10"]}}
+            return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+
+        status = get_status(runner=runner, command_exists=lambda _command: executable)
+
+        self.assertEqual(status.cli_path, executable)
+        self.assertEqual(commands, [[executable, "status", "--json"]])
 
     def test_running_status_prefers_dns_name(self) -> None:
         status = parse_status(

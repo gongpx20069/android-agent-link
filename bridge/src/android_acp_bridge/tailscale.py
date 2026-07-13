@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -21,6 +24,7 @@ class TailscaleState(StrEnum):
 @dataclass(frozen=True)
 class TailscaleStatus:
     state: TailscaleState
+    cli_path: str | None = None
     backend_state: str | None = None
     tailscale_ips: tuple[str, ...] = ()
     dns_name: str | None = None
@@ -68,19 +72,51 @@ def default_runner(args: list[str], timeout: int) -> subprocess.CompletedProcess
     )
 
 
+def default_command_exists(command: str) -> str | None:
+    return find_command(command)
+
+
+def find_command(
+    command: str,
+    *,
+    which: CommandExists = shutil.which,
+    system: str | None = None,
+    environ: Mapping[str, str] = os.environ,
+) -> str | None:
+    resolved = which(command)
+    if resolved is not None:
+        return resolved
+    if command != "tailscale" or (system or platform.system()).lower() != "windows":
+        return None
+
+    roots = (
+        environ.get("ProgramFiles"),
+        environ.get("ProgramFiles(x86)"),
+        environ.get("LOCALAPPDATA"),
+    )
+    for root in roots:
+        if not root:
+            continue
+        candidate = Path(root) / "Tailscale" / "tailscale.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def get_status(
     runner: CommandRunner = default_runner,
     timeout: int = 5,
-    command_exists: CommandExists = shutil.which,
+    command_exists: CommandExists = default_command_exists,
 ) -> TailscaleStatus:
-    if command_exists("tailscale") is None:
+    cli_path = command_exists("tailscale")
+    if cli_path is None:
         return TailscaleStatus(
             state=TailscaleState.CLI_MISSING,
             message="Tailscale CLI was not found. The bridge requires Tailscale by default.",
         )
 
     try:
-        completed = runner(["tailscale", "status", "--json"], timeout)
+        completed = runner([cli_path, "status", "--json"], timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return TailscaleStatus(state=TailscaleState.ERROR, message=str(exc))
 
@@ -95,12 +131,12 @@ def get_status(
     except json.JSONDecodeError as exc:
         return TailscaleStatus(state=TailscaleState.ERROR, message=f"Invalid tailscale JSON: {exc}")
 
-    return parse_status(payload)
+    return replace(parse_status(payload), cli_path=cli_path)
 
 
 def ensure_tailscale_ready(
     runner: CommandRunner = default_runner,
-    command_exists: CommandExists = shutil.which,
+    command_exists: CommandExists = default_command_exists,
     system: str | None = None,
     sleep: Sleep = time.sleep,
     poll_attempts: int = 12,
@@ -117,7 +153,8 @@ def ensure_tailscale_ready(
 
         steps.append(f"Tailscale CLI is missing. Installing with: {_format_command(install_command)}")
         install_result = runner(install_command, 900)
-        if install_result.returncode != 0:
+        status = get_status(runner=runner, command_exists=command_exists)
+        if install_result.returncode != 0 and status.state == TailscaleState.CLI_MISSING:
             message = (install_result.stderr or install_result.stdout or "Tailscale installation failed.").strip()
             return TailscaleSetupResult(
                 status=TailscaleStatus(
@@ -126,13 +163,12 @@ def ensure_tailscale_ready(
                 ),
                 steps=tuple(steps),
             )
-        status = get_status(runner=runner, command_exists=command_exists)
 
     if status.state in {TailscaleState.NEEDS_LOGIN, TailscaleState.STOPPED}:
         steps.append("Starting Tailscale login/connect flow with: tailscale up --qr")
         steps.append("Scan the Tailscale login QR or open the login URL, then sign in on this machine.")
         try:
-            up_result = runner(["tailscale", "up", "--qr"], 900)
+            up_result = runner([status.cli_path or "tailscale", "up", "--qr"], 900)
         except subprocess.TimeoutExpired:
             return TailscaleSetupResult(status=_with_message(status, "Tailscale login timed out. Re-run the bridge and complete `tailscale up --qr`."), steps=tuple(steps))
 
@@ -158,7 +194,7 @@ def ensure_tailscale_ready(
 
 def wait_until_running(
     runner: CommandRunner = default_runner,
-    command_exists: CommandExists = shutil.which,
+    command_exists: CommandExists = default_command_exists,
     sleep: Sleep = time.sleep,
     attempts: int = 12,
     interval_seconds: float = 5,
