@@ -57,7 +57,15 @@ class Sleep(Protocol):
 
 
 def default_runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+    )
 
 
 def get_status(
@@ -188,11 +196,11 @@ def build_install_command(system: str, command_exists: CommandExists = shutil.wh
 def install_guidance(system: str) -> str:
     normalized = system.lower()
     if normalized == "windows":
-        return "Install Tailscale with `winget install --id Tailscale.Tailscale --exact`, then re-run `python .\\bridge\\run.py start`."
+        return "Install Tailscale with `winget install --id Tailscale.Tailscale --exact`, then re-run `android-acp-bridge start`."
     if normalized == "darwin":
-        return "Install Tailscale with `brew install --cask tailscale`, then re-run `python bridge/run.py start`."
+        return "Install Tailscale with `brew install --cask tailscale`, then re-run `android-acp-bridge start`."
     if normalized == "linux":
-        return "Install Tailscale with `curl -fsSL https://tailscale.com/install.sh | sh`, then re-run `python bridge/run.py start`."
+        return "Install Tailscale with `curl -fsSL https://tailscale.com/install.sh | sh`, then re-run `android-acp-bridge start`."
     return "Install Tailscale from https://tailscale.com/download, then re-run the bridge."
 
 
@@ -203,7 +211,7 @@ def install_failure_guidance(system: str, returncode: int, detail: str) -> str:
         return (
             "Windows organization policy blocked the winget installer. The bridge will not bypass device policy. "
             "Install Tailscale from your company software portal, ask an administrator to approve Tailscale.Tailscale, "
-            "or use the official installer from https://tailscale.com/download/windows, then re-run `python .\\bridge\\run.py start`."
+            "or use the official installer from https://tailscale.com/download/windows, then re-run `android-acp-bridge start`."
         )
     return install_guidance(system)
 

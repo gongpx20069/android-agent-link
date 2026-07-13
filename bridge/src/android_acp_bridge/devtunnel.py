@@ -62,7 +62,15 @@ class DevTunnelConflictError(RuntimeError):
 
 
 def default_runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+    )
 
 
 def default_tunnel_id() -> str:
@@ -194,6 +202,8 @@ def start_devtunnel_host(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
     )
     if process.stdout is None:

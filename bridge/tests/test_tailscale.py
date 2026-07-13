@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import unittest
 
 from android_acp_bridge.tailscale import (
     TailscaleState,
     build_install_command,
     build_websocket_endpoint,
+    default_runner,
     ensure_tailscale_ready,
     get_status,
     install_failure_guidance,
@@ -17,6 +19,14 @@ from android_acp_bridge.tailscale import (
 
 
 class TailscaleTests(unittest.TestCase):
+    def test_default_runner_decodes_utf8_output_independent_of_system_locale(self) -> None:
+        completed = default_runner(
+            [sys.executable, "-c", "import os; os.write(1, '安装完成'.encode('utf-8'))"],
+            timeout=5,
+        )
+
+        self.assertEqual(completed.stdout, "安装完成")
+
     def test_running_status_prefers_dns_name(self) -> None:
         status = parse_status(
             {
