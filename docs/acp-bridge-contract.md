@@ -184,7 +184,7 @@ Bridge behavior:
 4. Replay cached events with `eventId > lastEventId`.
 5. Send current `chat.status`.
 
-For `chat.prompt`, the bridge must send `operation.accepted` and `chat.status=busy` before any streamed ACP `session/update`. Streamed events must be sent exactly once, followed by `operation.done`, `chat.status=idle`, and `bridge.done`.
+For `chat.prompt`, the bridge must send `operation.accepted` before execution or queueing. When execution begins it sends `operation.started` before any streamed ACP `session/update`. Streamed events must be sent exactly once, followed by `operation.done`. The bridge sends `chat.status=idle` only after the per-chat prompt queue drains.
 
 Example response:
 
@@ -310,7 +310,7 @@ Android sends a chat prompt over the attached chat WebSocket:
 }
 ```
 
-The bridge starts or reuses the ACP agent session for `chatId`, creates the session with `workspacePath` as ACP `cwd`, sends `session/prompt`, and streams ACP `session/update` messages back to Android. Immediately after accepting the operation, the bridge appends and sends:
+The bridge starts or reuses the ACP agent session for `chatId`, creates the session with `workspacePath` as ACP `cwd`, and serializes prompt turns through a per-chat FIFO. Different chats may execute concurrently, but one chat never has overlapping ACP `session/prompt` requests. Immediately after accepting the operation, the bridge appends and sends:
 
 ```json
 {
@@ -318,16 +318,32 @@ The bridge starts or reuses the ACP agent session for `chatId`, creates the sess
   "eventId": 137,
   "chatId": "chat_123",
   "operationId": "op_prompt_001",
-  "operationType": "chat.prompt"
+  "operationType": "chat.prompt",
+  "state": "starting",
+  "queuePosition": 0,
+  "content": "Run the tests"
 }
 ```
 
-The bridge then sends:
+If another prompt is already active, `state` is `queued` and `queuePosition` is one-based. When this prompt becomes active, the bridge sends:
+
+```json
+{
+  "type": "operation.started",
+  "eventId": 138,
+  "chatId": "chat_123",
+  "operationId": "op_prompt_001",
+  "operationType": "chat.prompt",
+  "content": "Run the tests"
+}
+```
+
+The bridge keeps the chat busy and sends:
 
 ```json
 {
   "type": "chat.status",
-  "eventId": 138,
+  "eventId": 139,
   "chatId": "chat_123",
   "status": "busy",
   "operationId": "op_prompt_001"
@@ -339,7 +355,7 @@ ACP tool call events are forwarded in the same shape produced by the ACP agent, 
 ```json
 {
   "type": "session/update",
-  "eventId": 139,
+  "eventId": 140,
   "chatId": "chat_123",
   "operationId": "op_prompt_001",
   "update": {
@@ -355,7 +371,7 @@ ACP tool call events are forwarded in the same shape produced by the ACP agent, 
 ```json
 {
   "type": "session/update",
-  "eventId": 140,
+  "eventId": 141,
   "chatId": "chat_123",
   "operationId": "op_prompt_001",
   "update": {
@@ -374,17 +390,30 @@ When the operation ends:
 ```json
 {
   "type": "operation.done",
-  "eventId": 141,
+  "eventId": 142,
   "chatId": "chat_123",
   "operationId": "op_prompt_001",
-  "status": "completed"
+  "status": "completed",
+  "queueRemaining": 0
 }
 ```
+
+If `queueRemaining` is greater than zero, the next queued operation starts without an intermediate idle state. A queued prompt may be removed before it starts:
+
+```json
+{
+  "type": "chat.prompt.remove",
+  "chatId": "chat_123",
+  "operationId": "op_prompt_002"
+}
+```
+
+The removed operation receives `operation.done` with `status=cancelled`. If it has already started, the bridge returns `status=already_started` and does not cancel the active ACP turn.
 
 ```json
 {
   "type": "chat.status",
-  "eventId": 142,
+  "eventId": 143,
   "chatId": "chat_123",
   "status": "idle"
 }

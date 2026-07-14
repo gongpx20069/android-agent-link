@@ -115,39 +115,53 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Sec-WebSocket-Accept", accept)
         self.end_headers()
 
-        while True:
-            message = _read_websocket_text(self.rfile, self.wfile)
-            if message is None:
-                return
-            try:
-                payload = json.loads(message)
-            except json.JSONDecodeError:
-                payload = message
-            if not _write_websocket_json(self.wfile, {"type": "bridge.accepted", "chatId": payload.get("chatId") if isinstance(payload, dict) else None}):
-                return
-            response_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        response_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        request_queue: queue.Queue[Any | None] = queue.Queue()
+        stopped = threading.Event()
+        write_lock = threading.Lock()
 
-            def emit(response: dict[str, Any]) -> None:
+        def emit(response: dict[str, Any]) -> None:
+            if not stopped.is_set():
                 response_queue.put(response)
+        setattr(emit, "_connection_id", id(response_queue))
 
-            def run_runtime() -> None:
-                try:
-                    for response in self.server.runtime.websocket_responses(payload, emit=emit):
-                        response_queue.put(response)
-                finally:
-                    response_queue.put(None)
-
-            threading.Thread(target=run_runtime, daemon=True).start()
-
-            while True:
+        def write_responses() -> None:
+            while not stopped.is_set():
                 try:
                     response = response_queue.get(timeout=WEBSOCKET_HEARTBEAT_SECONDS)
                 except queue.Empty:
                     response = {"type": "bridge.heartbeat"}
                 if response is None:
-                    break
-                if not _write_websocket_json(self.wfile, response):
                     return
+                if not _write_websocket_json(self.wfile, response, write_lock=write_lock):
+                    stopped.set()
+                    return
+
+        def dispatch_requests() -> None:
+            while not stopped.is_set():
+                request = request_queue.get()
+                if request is None:
+                    return
+                for response in self.server.runtime.websocket_responses(request, emit=emit):
+                    emit(response)
+
+        threading.Thread(target=write_responses, daemon=True).start()
+        threading.Thread(target=dispatch_requests, daemon=True).start()
+        try:
+            while not stopped.is_set():
+                message = _read_websocket_text(self.rfile, self.wfile, write_lock=write_lock)
+                if message is None:
+                    return
+                try:
+                    payload = json.loads(message)
+                except json.JSONDecodeError:
+                    payload = message
+                emit({"type": "bridge.accepted", "chatId": payload.get("chatId") if isinstance(payload, dict) else None})
+                request_queue.put(payload)
+        finally:
+            stopped.set()
+            request_queue.put(None)
+            response_queue.put(None)
 
 
 def run_server(runtime: BridgeRuntime) -> None:
@@ -164,7 +178,11 @@ def _websocket_accept(key: str) -> str:
     return base64.b64encode(digest).decode("ascii")
 
 
-def _read_websocket_text(stream: Any, output_stream: Any) -> str | None:
+def _read_websocket_text(
+    stream: Any,
+    output_stream: Any,
+    write_lock: threading.Lock | None = None,
+) -> str | None:
     while True:
         frame = _read_websocket_frame(stream)
         if frame is None:
@@ -173,10 +191,10 @@ def _read_websocket_text(stream: Any, output_stream: Any) -> str | None:
         if opcode == 0x1:
             return payload.decode("utf-8")
         if opcode == 0x8:
-            _write_websocket_frame(output_stream, 0x8, payload)
+            _write_websocket_frame(output_stream, 0x8, payload, write_lock=write_lock)
             return None
         if opcode == 0x9:
-            _write_websocket_frame(output_stream, 0xA, payload)
+            _write_websocket_frame(output_stream, 0xA, payload, write_lock=write_lock)
             continue
         if opcode == 0xA:
             continue
@@ -213,19 +231,32 @@ def _read_websocket_frame(stream: Any) -> tuple[int, bytes] | None:
     return opcode, payload
 
 
-def _write_websocket_json(stream: Any, payload: dict[str, Any]) -> bool:
+def _write_websocket_json(
+    stream: Any,
+    payload: dict[str, Any],
+    write_lock: threading.Lock | None = None,
+) -> bool:
     try:
-        _write_websocket_text(stream, json.dumps(payload, separators=(",", ":")))
+        _write_websocket_text(stream, json.dumps(payload, separators=(",", ":")), write_lock=write_lock)
         return True
     except OSError:
         return False
 
 
-def _write_websocket_text(stream: Any, message: str) -> None:
-    _write_websocket_frame(stream, 0x1, message.encode("utf-8"))
+def _write_websocket_text(
+    stream: Any,
+    message: str,
+    write_lock: threading.Lock | None = None,
+) -> None:
+    _write_websocket_frame(stream, 0x1, message.encode("utf-8"), write_lock=write_lock)
 
 
-def _write_websocket_frame(stream: Any, opcode: int, payload: bytes) -> None:
+def _write_websocket_frame(
+    stream: Any,
+    opcode: int,
+    payload: bytes,
+    write_lock: threading.Lock | None = None,
+) -> None:
     length = len(payload)
     if length < 126:
         header = struct.pack("!BB", 0x80 | opcode, length)
@@ -233,5 +264,10 @@ def _write_websocket_frame(stream: Any, opcode: int, payload: bytes) -> None:
         header = struct.pack("!BBH", 0x80 | opcode, 126, length)
     else:
         header = struct.pack("!BBQ", 0x80 | opcode, 127, length)
-    stream.write(header + payload)
-    stream.flush()
+    if write_lock is None:
+        stream.write(header + payload)
+        stream.flush()
+        return
+    with write_lock:
+        stream.write(header + payload)
+        stream.flush()

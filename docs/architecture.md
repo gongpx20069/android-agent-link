@@ -171,6 +171,7 @@ Each active chat has a bridge-side `ChatChannel` with:
 - active `operationId`, if any
 - recent event log / ring buffer
 - pending approval references
+- one active prompt operation and a FIFO of queued prompt operations
 
 Android has a matching `ChatConnection` with:
 
@@ -213,6 +214,26 @@ Bridge  -> chat.status(idle)
 ```
 
 Android should not infer chat busy/idle from WebSocket open/closed state. WebSocket connectivity and agent execution status are separate state machines.
+
+### Queued Prompt Operations
+
+ACP prompt turns are serial within one session. AgentLink therefore queues every `chat.prompt` at the bridge instead of issuing overlapping `session/prompt` requests. A per-chat worker runs one prompt at a time; workers for different chats remain independent.
+
+```text
+Android -> chat.prompt(op_1)
+Bridge  -> operation.accepted(op_1, state=starting)
+Bridge  -> operation.started(op_1)
+Android -> chat.prompt(op_2)
+Bridge  -> operation.accepted(op_2, state=queued, queuePosition=1)
+Bridge  -> operation.done(op_1, queueRemaining=1)
+Bridge  -> operation.started(op_2)
+Bridge  -> operation.done(op_2, queueRemaining=0)
+Bridge  -> chat.status(idle)
+```
+
+The chat stays `busy` between queued turns and becomes `idle` only after the queue drains. Prompt operation IDs are idempotency keys. A queued prompt can be removed before `operation.started`; an active prompt is not silently cancelled.
+
+The WebSocket reader and writer run independently so the bridge can accept queue and approval messages while an ACP prompt request is still running. Chat events are serialized through the connection writer and remain replayable by `eventId`.
 
 ### Implementation Phases
 

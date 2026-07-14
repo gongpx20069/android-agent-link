@@ -10,6 +10,7 @@ import com.gongpx.androidacpclient.data.model.ChatMessageKind
 import com.gongpx.androidacpclient.data.model.ConnectionState
 import com.gongpx.androidacpclient.data.model.Machine
 import com.gongpx.androidacpclient.data.model.MessageRole
+import com.gongpx.androidacpclient.data.model.QueuedPrompt
 import com.gongpx.androidacpclient.data.model.PairingPayload
 import com.gongpx.androidacpclient.data.model.Workspace
 import java.io.IOException
@@ -88,19 +89,48 @@ class BridgeClient {
         agentId: String,
         workspacePath: String,
         text: String,
+        operationId: String = "op_" + UUID.randomUUID(),
         onMessage: (ChatMessage) -> Unit = {},
         onApproval: (BridgeApprovalRequest) -> Unit = {},
+        onPromptAccepted: (String, String, String) -> Unit = { _, _, _ -> },
+        onPromptStarted: (String, String) -> Unit = { _, _ -> },
+        onOperationDone: (String, String, String, Int) -> Unit = { _, _, _, _ -> },
     ): BridgeSendResult<List<ChatMessage>> {
         return sendBridgeMessage(
             machine,
             JSONObject()
                 .put("type", "chat.prompt")
+                .put("operationId", operationId)
                 .put("chatId", chatId)
                 .put("agentId", agentId)
                 .put("workspacePath", workspacePath)
                 .put("content", text),
             onMessage = onMessage,
             onApproval = onApproval,
+            onEvent = { event ->
+                when (event.optString("type")) {
+                    "operation.accepted" -> if (event.optString("operationType") == "chat.prompt") {
+                        mainHandler.post {
+                            onPromptAccepted(
+                                event.optString("operationId"),
+                                event.optString("state"),
+                                event.optString("content"),
+                            )
+                        }
+                    }
+                    "operation.started" -> mainHandler.post {
+                        onPromptStarted(event.optString("operationId"), event.optString("content"))
+                    }
+                    "operation.done" -> mainHandler.post {
+                        onOperationDone(
+                            event.optString("operationType"),
+                            event.optString("status"),
+                            event.optString("operationId"),
+                            event.optInt("queueRemaining", 0),
+                        )
+                    }
+                }
+            },
             allowPartialOnFailure = true,
         )
     }
@@ -113,6 +143,22 @@ class BridgeClient {
                 .put("approvalId", approvalId)
                 .put("decision", decision),
         )
+    }
+
+    suspend fun removeQueuedPrompt(machine: Machine, chatId: String, operationId: String): BridgeSendResult<Boolean> {
+        return sendRawBridgeMessage(
+            machine,
+            JSONObject()
+                .put("type", "chat.prompt.remove")
+                .put("chatId", chatId)
+                .put("operationId", operationId),
+        ).map { events ->
+            events.any {
+                it.optString("type") == "operation.done" &&
+                    it.optString("operationId") == operationId &&
+                    it.optString("status") == "cancelled"
+            }
+        }
     }
 
     suspend fun listSessions(machine: Machine, agentId: String, workspacePath: String): Result<List<AgentSessionInfo>> {
@@ -200,10 +246,13 @@ class BridgeClient {
         agentId: String,
         workspacePath: String,
         lastEventId: Int,
+        queuedPrompts: List<QueuedPrompt> = emptyList(),
         onMessage: (ChatMessage) -> Unit = {},
         onApproval: (BridgeApprovalRequest) -> Unit = {},
-        onStatus: (String, Int?) -> Unit = { _, _ -> },
-        onOperationDone: (String, String) -> Unit = { _, _ -> },
+        onStatus: (String, Int?, Int) -> Unit = { _, _, _ -> },
+        onPromptAccepted: (String, String, String) -> Unit = { _, _, _ -> },
+        onPromptStarted: (String, String) -> Unit = { _, _ -> },
+        onOperationDone: (String, String, String, Int) -> Unit = { _, _, _, _ -> },
         onEventId: (Int) -> Unit = {},
         onResyncRequired: () -> Unit = {},
         onFailure: (Throwable) -> Unit = {},
@@ -213,8 +262,18 @@ class BridgeClient {
             requestBuilder.addHeader(name, value)
         }
         var socket: WebSocket? = null
+        val sendLock = Any()
+        val pendingPayloads = mutableListOf<JSONObject>()
+        var socketReady = false
         val connection = ChatConnection(chatId = chatId) { payload ->
-            socket?.send(payload.toString()) == true
+            synchronized(sendLock) {
+                if (socketReady) {
+                    socket?.send(payload.toString()) == true
+                } else {
+                    pendingPayloads.add(payload)
+                    true
+                }
+            }
         }
         socket = webSocketClient.newWebSocket(
             requestBuilder.build(),
@@ -229,6 +288,23 @@ class BridgeClient {
                             .put("lastEventId", lastEventId)
                             .toString(),
                     )
+                    queuedPrompts.forEach { queued ->
+                        webSocket.send(
+                            JSONObject()
+                                .put("type", "chat.prompt")
+                                .put("operationId", queued.operationId)
+                                .put("chatId", chatId)
+                                .put("agentId", agentId)
+                                .put("workspacePath", workspacePath)
+                                .put("content", queued.text)
+                                .toString(),
+                        )
+                    }
+                    synchronized(sendLock) {
+                        socketReady = true
+                        pendingPayloads.forEach { pending -> webSocket.send(pending.toString()) }
+                        pendingPayloads.clear()
+                    }
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
@@ -238,11 +314,34 @@ class BridgeClient {
                         mainHandler.post { onEventId(eventId) }
                     }
                     when (event.optString("type")) {
-                        "bridge.accepted", "bridge.heartbeat", "chat.attached", "operation.accepted" -> return
-                        "operation.done" -> mainHandler.post {
-                            onOperationDone(event.optString("operationType"), event.optString("status"))
+                        "bridge.accepted", "bridge.heartbeat", "chat.attached" -> return
+                        "operation.accepted" -> if (event.optString("operationType") == "chat.prompt") {
+                            mainHandler.post {
+                                onPromptAccepted(
+                                    event.optString("operationId"),
+                                    event.optString("state"),
+                                    event.optString("content"),
+                                )
+                            }
                         }
-                        "chat.status" -> mainHandler.post { onStatus(event.optString("status"), eventId.takeIf { it >= 0 }) }
+                        "operation.started" -> mainHandler.post {
+                            onPromptStarted(event.optString("operationId"), event.optString("content"))
+                        }
+                        "operation.done" -> mainHandler.post {
+                            onOperationDone(
+                                event.optString("operationType"),
+                                event.optString("status"),
+                                event.optString("operationId"),
+                                event.optInt("queueRemaining", 0),
+                            )
+                        }
+                        "chat.status" -> mainHandler.post {
+                            onStatus(
+                                event.optString("status"),
+                                eventId.takeIf { it >= 0 },
+                                event.optInt("queuedCount", 0),
+                            )
+                        }
                         "chat.resyncRequired" -> mainHandler.post { onResyncRequired() }
                         "approval.requested" -> event.toApprovalRequest()?.let { request -> mainHandler.post { onApproval(request) } }
                         else -> parseBridgeMessage(event.toString()).message?.let { message -> mainHandler.post { onMessage(message) } }
@@ -250,6 +349,9 @@ class BridgeClient {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    synchronized(sendLock) {
+                        socketReady = false
+                    }
                     mainHandler.post { onFailure(t.withReadableMessage()) }
                 }
             },
@@ -286,9 +388,11 @@ class BridgeClient {
         payload: JSONObject,
         onMessage: (ChatMessage) -> Unit = {},
         onApproval: (BridgeApprovalRequest) -> Unit = {},
+        onEvent: (JSONObject) -> Unit = {},
         allowPartialOnFailure: Boolean = false,
     ): BridgeSendResult<List<ChatMessage>> {
         return sendRawBridgeMessage(machine, payload, allowPartialOnFailure = allowPartialOnFailure) { event ->
+            onEvent(event)
             if (event.optString("type") == "approval.requested") {
                 event.toApprovalRequest()?.let { request ->
                     mainHandler.post { onApproval(request) }
@@ -648,15 +752,24 @@ class ChatConnection internal constructor(
 ) {
     private var closeHandler: (() -> Unit)? = null
 
-    fun sendPrompt(agentId: String, workspacePath: String, text: String): Boolean {
+    fun sendPrompt(operationId: String, agentId: String, workspacePath: String, text: String): Boolean {
         return sendJson(
             JSONObject()
                 .put("type", "chat.prompt")
-                .put("operationId", "op_" + UUID.randomUUID())
+                .put("operationId", operationId)
                 .put("chatId", chatId)
                 .put("agentId", agentId)
                 .put("workspacePath", workspacePath)
                 .put("content", text),
+        )
+    }
+
+    fun removeQueuedPrompt(operationId: String): Boolean {
+        return sendJson(
+            JSONObject()
+                .put("type", "chat.prompt.remove")
+                .put("chatId", chatId)
+                .put("operationId", operationId),
         )
     }
 

@@ -7,6 +7,7 @@ import com.gongpx.androidacpclient.data.model.Chat
 import com.gongpx.androidacpclient.data.model.ChatMessage
 import com.gongpx.androidacpclient.data.model.ChatMessageKind
 import com.gongpx.androidacpclient.data.model.MessageRole
+import com.gongpx.androidacpclient.data.model.QueuedPrompt
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -63,6 +64,7 @@ class ChatStore(context: Context) {
             .put("createdAtMillis", createdAtMillis)
             .put("acpSessionId", acpSessionId)
             .put("messages", JSONArray(messages.map { it.toJson() }))
+            .put("queuedPrompts", JSONArray(queuedPrompts.map { it.toJson() }))
     }
 
     private fun JSONObject.toChat(): Chat {
@@ -79,6 +81,22 @@ class ChatStore(context: Context) {
             createdAtMillis = getLong("createdAtMillis"),
             acpSessionId = optString("acpSessionId").ifBlank { null },
             messages = optJSONArray("messages").orEmpty().mapJsonObjects { it.toChatMessage() },
+            queuedPrompts = optJSONArray("queuedPrompts").orEmpty().mapJsonObjects { it.toQueuedPrompt() },
+        )
+    }
+
+    private fun QueuedPrompt.toJson(): JSONObject {
+        return JSONObject()
+            .put("operationId", operationId)
+            .put("text", text)
+            .put("createdAtMillis", createdAtMillis)
+    }
+
+    private fun JSONObject.toQueuedPrompt(): QueuedPrompt {
+        return QueuedPrompt(
+            operationId = getString("operationId"),
+            text = getString("text"),
+            createdAtMillis = getLong("createdAtMillis"),
         )
     }
 
@@ -91,6 +109,7 @@ class ChatStore(context: Context) {
             .put("title", title)
             .put("details", details)
             .put("activityId", activityId)
+            .put("operationId", operationId)
     }
 
     private fun JSONObject.toChatMessage(): ChatMessage {
@@ -102,6 +121,7 @@ class ChatStore(context: Context) {
             title = optString("title").ifBlank { null },
             details = optString("details").ifBlank { null },
             activityId = optString("activityId").ifBlank { null },
+            operationId = optString("operationId").ifBlank { null },
         )
     }
 

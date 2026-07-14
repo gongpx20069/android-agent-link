@@ -57,6 +57,8 @@ Permission modes for MVP:
 - Maintain a persistent chat connection while the chat is active.
 - Recover from mobile network drops by reconnecting and replaying missed bridge events.
 - Show busy, idle, waiting-for-approval, and disconnected states from bridge-reported chat status.
+- Allow prompts submitted while a chat is busy or waiting for approval to queue for later execution in FIFO order.
+- Show queued prompts separately from the conversation timeline and allow removing a prompt before it starts.
 - Provide quick access to approvals, diffs, logs, and chat settings.
 - When an Agent response completes while AgentLink is in the background, show a system notification with a response preview and a direct link to that chat.
 - Do not show completion notifications while AgentLink is in the foreground; use the chat-list unread indicator when the completed chat is not open.
@@ -110,3 +112,4 @@ Permission modes for MVP:
 - A disconnected machine does not corrupt chat state or silently lose pending approvals.
 - A temporarily disconnected Android device can reconnect to an active chat and replay missed agent updates.
 - A chat's busy/idle state remains accurate even if its WebSocket reconnects while an agent turn is running.
+- Queued prompts execute exactly once and in submission order without overlapping ACP prompt turns in one chat.

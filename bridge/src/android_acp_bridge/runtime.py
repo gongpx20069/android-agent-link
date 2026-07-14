@@ -4,6 +4,7 @@ import secrets
 import threading
 import json
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -40,6 +41,20 @@ class PendingApproval:
 class AgentChunkLogBuffer:
     text: str = ""
     suppressed: bool = False
+
+
+@dataclass
+class PromptOperation:
+    chat_id: str
+    operation_id: str
+    agent_id: str
+    workspace_path: str
+    content: str
+    emit: Callable[[dict[str, Any]], None] | None
+    responses: list[dict[str, Any]]
+    completed: threading.Event
+    state: str = "queued"
+    waiters: list[Callable[[dict[str, Any]], None]] | None = None
 
 
 class AgentManager(Protocol):
@@ -83,8 +98,11 @@ class BridgeRuntime:
         self._pending_approvals: dict[str, PendingApproval] = {}
         self._approval_lock = threading.Lock()
         self._agent_chunk_logs: dict[str, AgentChunkLogBuffer] = {}
-        self._busy_chats: set[str] = set()
-        self._busy_lock = threading.Lock()
+        self._prompt_queues: dict[str, deque[PromptOperation]] = {}
+        self._active_prompts: dict[str, PromptOperation] = {}
+        self._prompt_operations: dict[tuple[str, str], PromptOperation] = {}
+        self._prompt_lock = threading.RLock()
+        self._chat_emitters: dict[str, Callable[[dict[str, Any]], None]] = {}
         self._event_logs: dict[str, list[dict[str, Any]]] = {}
         self._next_event_ids: dict[str, int] = {}
         self._chat_status: dict[str, str] = {}
@@ -143,13 +161,19 @@ class BridgeRuntime:
             self._log_response(response)
             if emit is not None:
                 emit(response)
+        if emit is not None:
+            setattr(logging_emit, "_connection_id", getattr(emit, "_connection_id", id(emit)))
 
         if message_type == "chat.attach":
-            responses = self._chat_attach_response(payload)
+            responses = self._chat_attach_response(payload, logging_emit if emit is not None else None)
             self._log_responses(responses)
             return responses
         if message_type == "chat.prompt":
             responses = self._chat_prompt_updates(payload, logging_emit if emit is not None else None)
+            self._log_responses(responses)
+            return responses
+        if message_type == "chat.prompt.remove":
+            responses = self._remove_queued_prompt(payload, logging_emit if emit is not None else None)
             self._log_responses(responses)
             return responses
         if message_type == "session.list":
@@ -197,74 +221,113 @@ class BridgeRuntime:
         prompt = _string_or_default(payload.get("content"), "")
         agent_id = _string_or_default(payload.get("agentId"), "copilot-cli")
         workspace_path = _string_or_default(payload.get("workspacePath"), "")
-        if not self._try_mark_chat_busy(chat_id):
-            failed = self._append_event(
-                chat_id,
-                {
-                    "type": "session/update",
-                    "chatId": chat_id,
-                    "operationId": operation_id,
-                    "update": {
-                        "sessionUpdate": "tool_call_update",
-                        "toolCallId": "chat_busy",
-                        "title": "Chat prompt",
-                        "kind": "other",
-                        "status": "failed",
-                        "content": {"error": "Chat is already processing a prompt."},
-                    },
-                },
-            )
-            done = self._append_event(
-                chat_id,
-                {
-                    "type": "operation.done",
+        responses: list[dict[str, Any]] = []
+        operation = PromptOperation(
+            chat_id=chat_id,
+            operation_id=operation_id,
+            agent_id=agent_id,
+            workspace_path=workspace_path,
+            content=prompt,
+            emit=emit,
+            responses=responses,
+            completed=threading.Event(),
+            waiters=[],
+        )
+        with self._prompt_lock:
+            existing = self._prompt_operations.get((chat_id, operation_id))
+            if existing is not None:
+                duplicate = {
+                    "type": "operation.accepted",
                     "chatId": chat_id,
                     "operationId": operation_id,
                     "operationType": "chat.prompt",
-                    "status": "failed",
+                    "state": existing.state,
+                    "duplicate": True,
+                }
+                if emit is None:
+                    responses.append(duplicate)
+                    if existing.completed.is_set():
+                        responses.append({"type": "bridge.done", "chatId": chat_id})
+                else:
+                    if not existing.completed.is_set() and not _same_emitter(emit, [existing.emit] if existing.emit is not None else []):
+                        existing.waiters = existing.waiters or []
+                        if not _same_emitter(emit, existing.waiters):
+                            existing.waiters.append(emit)
+                    emit(duplicate)
+                    if existing.completed.is_set():
+                        emit({"type": "bridge.done", "chatId": chat_id})
+                return responses
+
+            queue_for_chat = self._prompt_queues.setdefault(chat_id, deque())
+            starts_immediately = chat_id not in self._active_prompts
+            queue_position = 0 if starts_immediately else len(queue_for_chat) + 1
+            operation.state = "starting" if starts_immediately else "queued"
+            self._prompt_operations[(chat_id, operation_id)] = operation
+            if starts_immediately:
+                self._active_prompts[chat_id] = operation
+            else:
+                queue_for_chat.append(operation)
+            self._publish_prompt_event(
+                operation,
+                {
+                    "type": "operation.accepted",
+                    "chatId": chat_id,
+                    "operationId": operation_id,
+                    "operationType": "chat.prompt",
+                    "state": operation.state,
+                    "queuePosition": queue_position,
+                    "content": prompt,
                 },
             )
-            return [
-                failed,
-                done,
-                {"type": "bridge.done", "chatId": chat_id},
-            ]
-        responses: list[dict[str, Any]] = []
+            active_operation_id = self._active_prompts[chat_id].operation_id
+            self._publish_prompt_event(
+                operation,
+                self._chat_status_event(chat_id, "busy", active_operation_id, queued_count=queue_position),
+            )
+        if starts_immediately:
+            threading.Thread(target=self._run_prompt_queue, args=(chat_id,), daemon=True).start()
 
-        def publish(response: dict[str, Any]) -> None:
-            if emit is None:
-                responses.append(response)
-            else:
-                emit(response)
+        if emit is None:
+            operation.completed.wait(timeout=310)
+        return responses
 
-        try:
-            publish(
-                self._append_event(
-                    chat_id,
+    def _run_prompt_queue(self, chat_id: str) -> None:
+        while True:
+            with self._prompt_lock:
+                operation = self._active_prompts.get(chat_id)
+                if operation is None:
+                    return
+                operation.state = "running"
+                self._publish_prompt_event(
+                    operation,
                     {
-                        "type": "operation.accepted",
+                        "type": "operation.started",
                         "chatId": chat_id,
-                        "operationId": operation_id,
+                        "operationId": operation.operation_id,
                         "operationType": "chat.prompt",
+                        "content": operation.content,
                     },
                 )
-            )
-            publish(self._set_chat_status(chat_id, "busy", operation_id))
+
             try:
                 def emit_update(update: dict[str, Any]) -> None:
                     update.setdefault("chatId", chat_id)
-                    update.setdefault("operationId", operation_id)
-                    publish(self._append_event(chat_id, update))
+                    update.setdefault("operationId", operation.operation_id)
+                    self._publish_prompt_event(operation, update)
 
                 updates = self.agent_manager.prompt(
                     AcpPromptRequest(
                         chat_id=chat_id,
-                        agent_id=agent_id,
-                        workspace_path=workspace_path,
-                        prompt=prompt,
+                        agent_id=operation.agent_id,
+                        workspace_path=operation.workspace_path,
+                        prompt=operation.content,
                     ),
-                    permission_callback=lambda message: self._request_permission(chat_id, message, emit),
-                    update_callback=emit_update if emit is not None else None,
+                    permission_callback=lambda message: self._request_permission(
+                        chat_id,
+                        message,
+                        lambda event: self._publish_prompt_event(operation, event),
+                    ),
+                    update_callback=emit_update if operation.emit is not None or chat_id in self._chat_emitters else None,
                 )
                 operation_status = "completed"
             except AcpAgentError as exc:
@@ -272,7 +335,7 @@ class BridgeRuntime:
                     {
                         "type": "session/update",
                         "chatId": chat_id,
-                        "operationId": operation_id,
+                        "operationId": operation.operation_id,
                         "update": {
                             "sessionUpdate": "tool_call_update",
                             "toolCallId": "agent_start",
@@ -284,27 +347,161 @@ class BridgeRuntime:
                     }
                 ]
                 operation_status = "failed"
+
             for update in updates:
                 update.setdefault("chatId", chat_id)
-                update.setdefault("operationId", operation_id)
-                publish(self._append_event(chat_id, update))
-            publish(
-                self._append_event(
+                update.setdefault("operationId", operation.operation_id)
+                self._publish_prompt_event(operation, update)
+
+            with self._prompt_lock:
+                queue_for_chat = self._prompt_queues.setdefault(chat_id, deque())
+                next_operation = queue_for_chat.popleft() if queue_for_chat else None
+                queue_remaining = len(queue_for_chat)
+                if next_operation is None:
+                    self._active_prompts.pop(chat_id, None)
+                else:
+                    self._active_prompts[chat_id] = next_operation
+                    next_operation.state = "starting"
+                operation.state = operation_status
+                self._publish_prompt_event(
+                    operation,
+                    {
+                        "type": "operation.done",
+                        "chatId": chat_id,
+                        "operationId": operation.operation_id,
+                        "operationType": "chat.prompt",
+                        "status": operation_status,
+                        "queueRemaining": queue_remaining + (1 if next_operation is not None else 0),
+                    },
+                )
+                if next_operation is None:
+                    self._publish_prompt_event(operation, self._chat_status_event(chat_id, "idle"))
+                else:
+                    self._publish_prompt_event(
+                        next_operation,
+                        self._chat_status_event(chat_id, "busy", next_operation.operation_id, queued_count=queue_remaining),
+                    )
+                self._finish_prompt_transport(operation)
+                operation.completed.set()
+                operation.emit = None
+                operation.content = ""
+                operation.waiters = []
+                self._evict_prompt_operation_history()
+
+            if next_operation is None:
+                return
+
+    def _remove_queued_prompt(
+        self,
+        payload: dict[str, Any],
+        emit: Callable[[dict[str, Any]], None] | None,
+    ) -> list[dict[str, Any]]:
+        chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
+        operation_id = _string_or_default(payload.get("operationId"), "")
+        responses: list[dict[str, Any]] = []
+        removed: PromptOperation | None = None
+        with self._prompt_lock:
+            queue_for_chat = self._prompt_queues.setdefault(chat_id, deque())
+            for operation in queue_for_chat:
+                if operation.operation_id == operation_id:
+                    removed = operation
+                    break
+            if removed is not None:
+                queue_for_chat.remove(removed)
+                removed.state = "cancelled"
+                queue_remaining = len(queue_for_chat)
+            else:
+                queue_remaining = len(queue_for_chat)
+
+            with self._event_lock:
+                result = self._append_event(
                     chat_id,
                     {
                         "type": "operation.done",
                         "chatId": chat_id,
                         "operationId": operation_id,
                         "operationType": "chat.prompt",
-                        "status": operation_status,
+                        "status": "cancelled" if removed is not None else "already_started",
+                        "queueRemaining": queue_remaining,
                     },
                 )
-            )
-            publish(self._set_chat_status(chat_id, "idle", operation_id if operation_status != "completed" else None))
-            publish({"type": "bridge.done", "chatId": chat_id})
-            return responses
-        finally:
-            self._mark_chat_idle(chat_id)
+                targets: list[Callable[[dict[str, Any]], None]] = []
+                chat_emitter = self._chat_emitters.get(chat_id)
+                if chat_emitter is not None:
+                    targets.append(chat_emitter)
+                if removed is not None and removed.emit is not None and not _same_emitter(removed.emit, targets):
+                    targets.append(removed.emit)
+                if emit is not None and not _same_emitter(emit, targets):
+                    targets.append(emit)
+                if removed is not None:
+                    for waiter in removed.waiters or []:
+                        if not _same_emitter(waiter, targets):
+                            targets.append(waiter)
+                if emit is None:
+                    responses.extend([result, {"type": "bridge.done", "chatId": chat_id}])
+                for target in targets:
+                    target(result)
+                if removed is not None and removed.emit is not None:
+                    removed.emit({"type": "bridge.done", "chatId": chat_id})
+                elif removed is not None:
+                    removed.responses.extend([result, {"type": "bridge.done", "chatId": chat_id}])
+                if removed is not None:
+                    for waiter in removed.waiters or []:
+                        if removed.emit is None or not _same_emitter(waiter, [removed.emit]):
+                            waiter({"type": "bridge.done", "chatId": chat_id})
+                if emit is not None and (removed is None or not _same_emitter(emit, [removed.emit] if removed.emit is not None else [])):
+                    emit({"type": "bridge.done", "chatId": chat_id})
+                if removed is not None:
+                    removed.completed.set()
+                    removed.emit = None
+                    removed.content = ""
+                    removed.waiters = []
+                    self._evict_prompt_operation_history()
+        return responses
+
+    def _publish_prompt_event(self, operation: PromptOperation, event: dict[str, Any]) -> None:
+        with self._event_lock:
+            if event.get("type") == "chat.status":
+                self._chat_status[operation.chat_id] = _string_or_default(event.get("status"), "idle")
+            enriched = self._append_event(operation.chat_id, event)
+            self._publish_prompt_transport(operation, enriched)
+
+    def _publish_prompt_transport(self, operation: PromptOperation, event: dict[str, Any]) -> None:
+        targets: list[Callable[[dict[str, Any]], None]] = []
+        chat_emitter = self._chat_emitters.get(operation.chat_id)
+        if chat_emitter is not None:
+            targets.append(chat_emitter)
+        if operation.emit is not None and not _same_emitter(operation.emit, targets):
+            targets.append(operation.emit)
+        if event.get("type") == "operation.done":
+            for waiter in operation.waiters or []:
+                if not _same_emitter(waiter, targets):
+                    targets.append(waiter)
+        if operation.emit is None:
+            operation.responses.append(event)
+        for target in targets:
+            target(event)
+
+    def _finish_prompt_transport(self, operation: PromptOperation) -> None:
+        done = {"type": "bridge.done", "chatId": operation.chat_id}
+        if operation.emit is None:
+            operation.responses.append(done)
+        else:
+            operation.emit(done)
+        for waiter in operation.waiters or []:
+            if operation.emit is None or not _same_emitter(waiter, [operation.emit]):
+                waiter(done)
+
+    def _evict_prompt_operation_history(self) -> None:
+        overflow = len(self._prompt_operations) - PROMPT_OPERATION_HISTORY_LIMIT
+        if overflow <= 0:
+            return
+        for key, operation in list(self._prompt_operations.items()):
+            if overflow <= 0:
+                break
+            if operation.state in {"completed", "failed", "cancelled"}:
+                self._prompt_operations.pop(key, None)
+                overflow -= 1
 
     def _approval_decision_updates(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         approval_id = _string_or_default(payload.get("approvalId"), "unknown-approval")
@@ -413,11 +610,9 @@ class BridgeRuntime:
             "details": tool_call,
             "options": options,
         }
-        requested = self._append_event(chat_id, requested)
-        waiting_status = self._set_chat_status(chat_id, "waitingApproval")
         if emit is not None:
             emit(requested)
-            emit(waiting_status)
+            emit(self._chat_status_event(chat_id, "waitingApproval"))
 
         with pending.condition:
             pending.condition.wait(timeout=300)
@@ -426,26 +621,52 @@ class BridgeRuntime:
         with self._approval_lock:
             self._pending_approvals.pop(approval_id, None)
 
+        if emit is not None:
+            with self._prompt_lock:
+                active = self._active_prompts.get(chat_id)
+                queued_count = len(self._prompt_queues.get(chat_id, ()))
+            emit(self._chat_status_event(chat_id, "busy", active.operation_id if active is not None else None, queued_count))
         return _select_permission_option(options, decision)
 
-    def _chat_attach_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _chat_attach_response(
+        self,
+        payload: dict[str, Any],
+        emit: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[dict[str, Any]]:
         chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
         last_event_id = _int_or_default(payload.get("lastEventId"), 0)
-        with self._event_lock:
-            events = [event.copy() for event in self._event_logs.get(chat_id, []) if int(event.get("eventId", 0)) > last_event_id]
-            latest_event_id = self._next_event_ids.get(chat_id, 1) - 1
-            status = self._chat_status.get(chat_id, "idle")
-            status_event = self._append_event(chat_id, {"type": "chat.status", "chatId": chat_id, "status": status})
-        return [
-            {
-                "type": "chat.attached",
-                "chatId": chat_id,
-                "latestEventId": latest_event_id,
-                "replayed": len(events),
-            },
-            *events,
-            status_event,
-        ]
+        with self._prompt_lock:
+            active_operation = self._active_prompts.get(chat_id)
+            queued_count = len(self._prompt_queues.get(chat_id, ()))
+            with self._event_lock:
+                events = [event.copy() for event in self._event_logs.get(chat_id, []) if int(event.get("eventId", 0)) > last_event_id]
+                latest_event_id = self._next_event_ids.get(chat_id, 1) - 1
+                status = self._chat_status.get(chat_id, "idle")
+                status_payload: dict[str, Any] = {
+                    "type": "chat.status",
+                    "chatId": chat_id,
+                    "status": status,
+                    "queuedCount": queued_count,
+                }
+                if active_operation is not None:
+                    status_payload["operationId"] = active_operation.operation_id
+                status_event = self._append_event(chat_id, status_payload)
+                responses = [
+                    {
+                        "type": "chat.attached",
+                        "chatId": chat_id,
+                        "latestEventId": latest_event_id,
+                        "replayed": len(events),
+                    },
+                    *events,
+                    status_event,
+                ]
+                if emit is not None:
+                    self._chat_emitters[chat_id] = emit
+                    for response in responses:
+                        emit(response)
+                    return []
+                return responses
 
     def _resolve_approval(self, approval_id: str, decision: str) -> bool:
         with self._approval_lock:
@@ -456,17 +677,6 @@ class BridgeRuntime:
             pending.decision = decision
             pending.condition.notify_all()
         return True
-
-    def _try_mark_chat_busy(self, chat_id: str) -> bool:
-        with self._busy_lock:
-            if chat_id in self._busy_chats:
-                return False
-            self._busy_chats.add(chat_id)
-            return True
-
-    def _mark_chat_idle(self, chat_id: str) -> None:
-        with self._busy_lock:
-            self._busy_chats.discard(chat_id)
 
     def _append_event(self, chat_id: str, event: dict[str, Any]) -> dict[str, Any]:
         with self._event_lock:
@@ -482,13 +692,22 @@ class BridgeRuntime:
                 del log[: len(log) - CHAT_EVENT_LOG_LIMIT]
             return enriched
 
-    def _set_chat_status(self, chat_id: str, status: str, operation_id: str | None = None) -> dict[str, Any]:
-        with self._event_lock:
-            self._chat_status[chat_id] = status
-            event: dict[str, Any] = {"type": "chat.status", "chatId": chat_id, "status": status}
-            if operation_id is not None:
-                event["operationId"] = operation_id
-            return self._append_event(chat_id, event)
+    def _chat_status_event(
+        self,
+        chat_id: str,
+        status: str,
+        operation_id: str | None = None,
+        queued_count: int = 0,
+    ) -> dict[str, Any]:
+        event: dict[str, Any] = {
+            "type": "chat.status",
+            "chatId": chat_id,
+            "status": status,
+            "queuedCount": queued_count,
+        }
+        if operation_id is not None:
+            event["operationId"] = operation_id
+        return event
 
     def _session_set_config_option_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
@@ -616,6 +835,14 @@ def _int_or_default(value: Any, default: int) -> int:
     return value if isinstance(value, int) else default
 
 
+def _same_emitter(
+    emitter: Callable[[dict[str, Any]], None],
+    others: list[Callable[[dict[str, Any]], None]],
+) -> bool:
+    emitter_id = getattr(emitter, "_connection_id", id(emitter))
+    return any(getattr(other, "_connection_id", id(other)) == emitter_id for other in others)
+
+
 def _truncate_log(value: Any, limit: int = 80) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     normalized = " ".join(text.split())
@@ -717,3 +944,4 @@ def _select_permission_option(options: list[dict[str, Any]], decision: str) -> s
 
 
 CHAT_EVENT_LOG_LIMIT = 500
+PROMPT_OPERATION_HISTORY_LIMIT = 1000

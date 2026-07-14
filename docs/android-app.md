@@ -22,6 +22,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - When a prompt completes while AgentLink is in the background, Android shows one system notification with the response preview. No completion notification is shown while the app is in the foreground, and tapping a notification opens the matching chat.
 - Opening a chat automatically scrolls to the newest message.
 - Fixed bottom prompt box for sending chat messages.
+- While an Agent turn is running, the send button becomes Add and submits the prompt to the bridge FIFO. Queued prompts appear in a separate pending area and can be removed before execution.
 - In Chat detail, the history list and prompt composer move above the Android soft keyboard while the header stays anchored; the composer does not keep the bottom navigation bar gap above the keyboard.
 - Horizontally scrollable command chips above the prompt box.
 - Chat prompt WebSocket calls disable the client read timeout, send WebSocket pings, and ignore bridge accepted/heartbeat events; the bridge responds to pings and sends heartbeat messages during long-running Agent turns so idle network paths do not abort the prompt while waiting for ACP updates.
@@ -85,6 +86,7 @@ The app maps these bridge/ACP events:
 - `chat.attached` -> current chat WebSocket is attached to the bridge-side chat channel.
 - `chat.status` -> authoritative chat status for busy/idle/waitingApproval/disconnected UI.
 - `operation.accepted` -> the bridge accepted a prompt/load/config operation.
+- `operation.started` -> a queued prompt became the active ACP turn; Android moves it from the pending area into the conversation timeline.
 - `operation.done` -> the bridge completed a prompt/load/config operation.
 - `chat.resyncRequired` -> Android's last event is outside the bridge replay cache; reload or reopen the session.
 - `session/update` + `tool_call` -> collapsed Agent Activity card.
@@ -123,6 +125,8 @@ Android responsibilities:
 - Retry `chat.attach` with exponential backoff while the user is viewing the chat.
 - Keep pending approvals visible after reconnect by replaying `approval.requested` events.
 - Treat `operation.done` for a completed `chat.prompt` as the single completion signal for unread state and notifications.
+- Suppress completion attention while `operation.done.queueRemaining > 0`; notify only when the final queued prompt completes.
+- Persist queued prompt text and operation IDs in encrypted chat storage, reconcile `operation.started` idempotently after replay, and never insert a queued prompt into the timeline before it starts.
 - Request Android notification permission on Android 13 or newer. If permission is denied, unread dots still work.
 
 The bridge is responsible for event ordering and replay. Android is responsible for caching applied events and avoiding duplicate timeline entries.

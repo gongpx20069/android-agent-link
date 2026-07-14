@@ -56,6 +56,13 @@ data class Chat(
     val createdAtMillis: Long,
     val acpSessionId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
+    val queuedPrompts: List<QueuedPrompt> = emptyList(),
+)
+
+data class QueuedPrompt(
+    val operationId: String,
+    val text: String,
+    val createdAtMillis: Long,
 )
 
 data class AvailableCommand(
@@ -101,6 +108,7 @@ data class ChatMessage(
     val title: String? = null,
     val details: String? = null,
     val activityId: String? = null,
+    val operationId: String? = null,
 )
 
 enum class MessageRole {
