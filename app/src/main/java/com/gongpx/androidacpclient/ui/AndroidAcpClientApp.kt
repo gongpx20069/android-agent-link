@@ -566,6 +566,10 @@ fun AgentLinkApp(
         unreadChatIds.remove(chat.id)
         chatNotificationManager.cancel(chat.id)
         chatConnections.remove(chat.id)?.close()
+        activePromptOperationIds.remove(chat.id)
+        pendingLocalPromptStartEventIds.remove(chat.id)
+        authoritativeBusyEventIds.remove(chat.id)
+        busyChatIds.remove(chat.id)
         if (selectedChatId == chat.id) selectedChatId = null
     }
 
@@ -1113,6 +1117,11 @@ fun AgentLinkApp(
                                     upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
                                 } else {
                                     val operationId = "op_" + UUID.randomUUID()
+                                    pendingLocalPromptStartEventIds[chat.id] = lastChatEventIds[chat.id] ?: 0
+                                    if (chat.id !in activePromptOperationIds) {
+                                        activePromptOperationIds[chat.id] = operationId
+                                    }
+                                    if (chat.id !in busyChatIds) busyChatIds.add(chat.id)
                                     val updated = chat.copy(
                                         queuedPrompts = chat.queuedPrompts + QueuedPrompt(
                                             operationId = operationId,
@@ -1122,8 +1131,6 @@ fun AgentLinkApp(
                                     )
                                     upsertChat(updated)
                                     latestAgentPreviews.remove(chat.id)
-                                    if (chat.id !in busyChatIds) busyChatIds.add(chat.id)
-                                    pendingLocalPromptStartEventIds[chat.id] = lastChatEventIds[chat.id] ?: 0
                                     val activeConnection = chatConnections[chat.id]
                                     if (activeConnection != null && activeConnection.sendPrompt(operationId, chat.agentId, chat.workspacePath, message)) {
                                         // Persistent chat WebSocket owns streaming events and status updates.
@@ -1182,6 +1189,9 @@ fun AgentLinkApp(
                                                 busyChatIds.remove(chat.id)
                                                 pendingLocalPromptStartEventIds.remove(chat.id)
                                                 authoritativeBusyEventIds.remove(chat.id)
+                                                if (activePromptOperationIds[chat.id] == operationId) {
+                                                    activePromptOperationIds.remove(chat.id)
+                                                }
                                             }
                                        }
                                     }
