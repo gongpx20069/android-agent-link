@@ -95,6 +95,7 @@ class BridgeClient {
         onPromptAccepted: (String, String, String) -> Unit = { _, _, _ -> },
         onPromptStarted: (String, String) -> Unit = { _, _ -> },
         onOperationDone: (String, String, String, Int) -> Unit = { _, _, _, _ -> },
+        onStatus: (String, Int?, Int, String) -> Unit = { _, _, _, _ -> },
     ): BridgeSendResult<List<ChatMessage>> {
         return sendBridgeMessage(
             machine,
@@ -127,6 +128,15 @@ class BridgeClient {
                             event.optString("status"),
                             event.optString("operationId"),
                             event.optInt("queueRemaining", 0),
+                        )
+                    }
+                    "chat.status" -> mainHandler.post {
+                        val eventId = event.optInt("eventId", -1)
+                        onStatus(
+                            event.optString("status"),
+                            eventId.takeIf { it >= 0 },
+                            event.optInt("queuedCount", 0),
+                            event.optString("operationId"),
                         )
                     }
                 }
@@ -249,7 +259,7 @@ class BridgeClient {
         queuedPrompts: List<QueuedPrompt> = emptyList(),
         onMessage: (ChatMessage) -> Unit = {},
         onApproval: (BridgeApprovalRequest) -> Unit = {},
-        onStatus: (String, Int?, Int) -> Unit = { _, _, _ -> },
+        onStatus: (String, Int?, Int, String) -> Unit = { _, _, _, _ -> },
         onPromptAccepted: (String, String, String) -> Unit = { _, _, _ -> },
         onPromptStarted: (String, String) -> Unit = { _, _ -> },
         onOperationDone: (String, String, String, Int) -> Unit = { _, _, _, _ -> },
@@ -340,6 +350,7 @@ class BridgeClient {
                                 event.optString("status"),
                                 eventId.takeIf { it >= 0 },
                                 event.optInt("queuedCount", 0),
+                                event.optString("operationId"),
                             )
                         }
                         "chat.resyncRequired" -> mainHandler.post { onResyncRequired() }

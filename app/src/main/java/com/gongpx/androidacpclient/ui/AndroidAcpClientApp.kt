@@ -109,8 +109,12 @@ import com.gongpx.androidacpclient.data.model.ConnectionState
 import com.gongpx.androidacpclient.data.model.Machine
 import com.gongpx.androidacpclient.data.model.MessageRole
 import com.gongpx.androidacpclient.data.model.QueuedPrompt
+import com.gongpx.androidacpclient.data.model.acceptPrompt
+import com.gongpx.androidacpclient.data.model.finishPrompt
 import com.gongpx.androidacpclient.data.model.isFinalPromptCompletion
+import com.gongpx.androidacpclient.data.model.isTerminalPromptStatus
 import com.gongpx.androidacpclient.data.model.removeQueuedPrompt
+import com.gongpx.androidacpclient.data.model.shouldApplyChatStatus
 import com.gongpx.androidacpclient.data.model.startQueuedPrompt
 import com.gongpx.androidacpclient.data.notification.ChatNotificationManager
 import com.gongpx.androidacpclient.data.notification.chatCompletionAttention
@@ -513,6 +517,7 @@ fun AgentLinkApp(
     val latestAgentPreviews = remember { mutableStateMapOf<String, String>() }
     val pendingLocalPromptStartEventIds = remember { mutableStateMapOf<String, Int>() }
     val authoritativeBusyEventIds = remember { mutableStateMapOf<String, Int>() }
+    val activePromptOperationIds = remember { mutableStateMapOf<String, String>() }
     val chatConnections = remember { mutableStateMapOf<String, ChatConnection>() }
     val lastChatEventIds = remember { mutableStateMapOf<String, Int>() }
     var selectedTab by remember { mutableStateOf(AppTab.Machines) }
@@ -686,8 +691,17 @@ fun AgentLinkApp(
         }
     }
 
-    fun updateChatStatus(chatId: String, status: String, eventId: Int? = null, queuedCount: Int = 0) {
+    fun updateChatStatus(
+        chatId: String,
+        status: String,
+        eventId: Int? = null,
+        queuedCount: Int = 0,
+        operationId: String = "",
+    ) {
         val pendingStartEventId = pendingLocalPromptStartEventIds[chatId]
+        if (!shouldApplyChatStatus(status, activePromptOperationIds[chatId])) {
+            return
+        }
         if (status == "idle" && chatId in pendingLocalPromptStartEventIds) {
             return
         }
@@ -704,6 +718,9 @@ fun AgentLinkApp(
         when (status) {
             "busy", "waitingApproval" -> {
                 if (chatId !in busyChatIds) busyChatIds.add(chatId)
+                if (operationId.isNotBlank()) {
+                    activePromptOperationIds[chatId] = operationId
+                }
                 pendingLocalPromptStartEventIds.remove(chatId)
                 if (eventId != null) {
                     authoritativeBusyEventIds[chatId] = maxOf(authoritativeBusyEventIds[chatId] ?: 0, eventId)
@@ -716,44 +733,27 @@ fun AgentLinkApp(
                 if (selectedChatId != chatId) {
                     chatConnections.remove(chatId)?.close()
                 }
-                if (status == "idle" && queuedCount == 0) {
-                    val chat = chats.firstOrNull { it.id == chatId }
-                    if (chat != null && chat.queuedPrompts.isNotEmpty()) {
-                        upsertChat(chat.copy(queuedPrompts = emptyList()))
-                    }
-                }
             }
         }
     }
 
     fun handlePromptStarted(chatId: String, operationId: String, content: String) {
+        activePromptOperationIds[chatId] = operationId
         val chat = chats.firstOrNull { it.id == chatId } ?: return
         upsertChat(chat.startQueuedPrompt(operationId, content, System.currentTimeMillis()))
     }
 
     fun handlePromptAccepted(chatId: String, operationId: String, state: String, content: String) {
+        when (state) {
+            "", "starting", "running" -> activePromptOperationIds[chatId] = operationId
+            "completed", "failed", "cancelled" -> {
+                if (activePromptOperationIds[chatId] == operationId) {
+                    activePromptOperationIds.remove(chatId)
+                }
+            }
+        }
         val chat = chats.firstOrNull { it.id == chatId } ?: return
-        if (state in setOf("completed", "failed", "cancelled")) {
-            upsertChat(chat.removeQueuedPrompt(operationId))
-            return
-        }
-        if (state == "running") {
-            upsertChat(chat.startQueuedPrompt(operationId, content, System.currentTimeMillis()))
-            return
-        }
-        if (state !in setOf("queued", "starting")) return
-        if (chat.messages.any { it.operationId == operationId } || chat.queuedPrompts.any { it.operationId == operationId }) {
-            return
-        }
-        upsertChat(
-            chat.copy(
-                queuedPrompts = chat.queuedPrompts + QueuedPrompt(
-                    operationId = operationId,
-                    text = content,
-                    createdAtMillis = System.currentTimeMillis(),
-                ),
-            ),
-        )
+        upsertChat(chat.acceptPrompt(operationId, state, content, System.currentTimeMillis()))
     }
 
     fun handleOperationDone(
@@ -764,14 +764,14 @@ fun AgentLinkApp(
         queueRemaining: Int = 0,
     ) {
         if (operationType != "chat.prompt") return
-        if (status in setOf("completed", "failed") && queueRemaining == 0) {
-            updateChatStatus(chatId, "idle")
+        if (isTerminalPromptStatus(status) && activePromptOperationIds[chatId] == operationId) {
+            activePromptOperationIds.remove(chatId)
         }
-        if (status == "cancelled") {
-            val chat = chats.firstOrNull { it.id == chatId } ?: return
-            upsertChat(chat.removeQueuedPrompt(operationId))
-            return
+        val current = chats.firstOrNull { it.id == chatId }
+        if (current != null) {
+            upsertChat(current.finishPrompt(operationId, status, System.currentTimeMillis()))
         }
+        if (status == "cancelled") return
         if (!isFinalPromptCompletion(status, queueRemaining)) return
         val chat = chats.firstOrNull { it.id == chatId } ?: return
         val preview = latestAgentPreviews.remove(chatId)
@@ -1000,7 +1000,9 @@ fun AgentLinkApp(
                             )
                             addApproval(activeChat, request)
                         },
-                        onStatus = { status, eventId, queuedCount -> updateChatStatus(activeChat.id, status, eventId, queuedCount) },
+                        onStatus = { status, eventId, queuedCount, operationId ->
+                            updateChatStatus(activeChat.id, status, eventId, queuedCount, operationId)
+                        },
                         onPromptAccepted = { operationId, state, content ->
                             handlePromptAccepted(activeChat.id, operationId, state, content)
                         },
@@ -1143,6 +1145,9 @@ fun AgentLinkApp(
                                                 },
                                                 onOperationDone = { operationType, status, doneOperationId, queueRemaining ->
                                                     handleOperationDone(chat.id, operationType, status, doneOperationId, queueRemaining)
+                                                },
+                                                onStatus = { status, eventId, queuedCount, statusOperationId ->
+                                                    updateChatStatus(chat.id, status, eventId, queuedCount, statusOperationId)
                                                 },
                                                 onApproval = { request ->
                                                     appendChatEvent(

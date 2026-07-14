@@ -86,7 +86,7 @@ The app maps these bridge/ACP events:
 - `chat.attached` -> current chat WebSocket is attached to the bridge-side chat channel.
 - `chat.status` -> authoritative chat status for busy/idle/waitingApproval/disconnected UI.
 - `operation.accepted` -> the bridge accepted a prompt/load/config operation.
-- `operation.started` -> a queued prompt became the active ACP turn; Android moves it from the pending area into the conversation timeline.
+- `operation.accepted(state=starting)`, a legacy prompt acceptance without queue state, or `operation.started` -> the prompt is the active ACP turn; Android moves it from the pending area into the conversation timeline.
 - `operation.done` -> the bridge completed a prompt/load/config operation.
 - `chat.resyncRequired` -> Android's last event is outside the bridge replay cache; reload or reopen the session.
 - `session/update` + `tool_call` -> collapsed Agent Activity card.
@@ -126,7 +126,8 @@ Android responsibilities:
 - Keep pending approvals visible after reconnect by replaying `approval.requested` events.
 - Treat `operation.done` for a completed `chat.prompt` as the single completion signal for unread state and notifications.
 - Suppress completion attention while `operation.done.queueRemaining > 0`; notify only when the final queued prompt completes.
-- Persist queued prompt text and operation IDs in encrypted chat storage, reconcile `operation.started` idempotently after replay, and never insert a queued prompt into the timeline before it starts.
+- Persist queued prompt text and operation IDs in encrypted chat storage, reconcile accepted/started/done events idempotently after replay, and never discard queued text merely because an idle status arrives.
+- Track the active prompt operation independently of tool-call status. Ignore `chat.status=idle` until that prompt's `operation.done`, so completed tools cannot make an unfinished Agent turn appear idle.
 - Request Android notification permission on Android 13 or newer. If permission is denied, unread dots still work.
 
 The bridge is responsible for event ordering and replay. Android is responsible for caching applied events and avoiding duplicate timeline entries.
