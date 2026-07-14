@@ -17,7 +17,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - New Chat form with two modes: create a new ACP session, or open an existing resumable ACP session returned by the selected machine and agent.
 - New and loaded Chats persist their ACP session ID and resumable state, then restore that exact session after Android or Bridge restarts.
 - Chat list and WhatsApp-style chat detail view with full conversation history.
-- Chat, approval, and machine list rows reveal a Delete button after a left swipe; swiping alone never deletes. Deleting a pending approval sends a deny decision before removing it locally.
+- Chat, approval, and machine list rows move left by only the fixed Delete-action width, keeping most of the row visible. Swiping right closes the action, and deletion still requires tapping Delete. Deleting a pending approval sends a deny decision before removing it locally.
 - Chat list rows and the chat detail header show a small status dot: busy while a prompt is running, idle otherwise.
 - Completed Agent responses show a red unread dot on the chat list until that chat is opened.
 - When a prompt completes while AgentLink is in the background, Android shows one system notification with the response preview. No completion notification is shown while the app is in the foreground, and tapping a notification opens the matching chat.
