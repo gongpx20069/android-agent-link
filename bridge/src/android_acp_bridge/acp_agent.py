@@ -119,6 +119,7 @@ class AcpAgentSession:
             timeout_seconds=60,
         )
         session._session_id = _extract_session_id(result)
+        session._capture_config_options(result)
         session._pending_updates = session._pending_updates + updates
         return session
 
@@ -168,7 +169,7 @@ class AcpAgentSession:
     def load(cls, agent_id: str, workspace_path: str, session_id: str) -> tuple[AcpAgentSession, list[dict[str, Any]]]:
         workspace = _resolve_workspace(workspace_path)
         session = cls.start_without_session(agent_id, workspace_path)
-        _result, updates = session._request(
+        result, updates = session._request(
             "session/load",
             {
                 "sessionId": session_id,
@@ -178,13 +179,14 @@ class AcpAgentSession:
             timeout_seconds=120,
         )
         session._session_id = session_id
+        session._capture_config_options(result)
         return session, updates
 
     @classmethod
     def load_recent(cls, agent_id: str, workspace_path: str, session_id: str, limit: int) -> tuple[AcpAgentSession, list[dict[str, Any]], int, bool]:
         workspace = _resolve_workspace(workspace_path)
         session = cls.start_without_session(agent_id, workspace_path)
-        _result, updates, scanned_events, truncated = session._request_and_drain(
+        result, updates, scanned_events, truncated = session._request_and_drain(
             "session/load",
             {
                 "sessionId": session_id,
@@ -197,6 +199,7 @@ class AcpAgentSession:
             max_updates=max(limit * 20, 1000),
         )
         session._session_id = session_id
+        session._capture_config_options(result)
         return session, updates, scanned_events, truncated
 
     def prompt(self, prompt: str, update_callback: UpdateCallback | None = None) -> list[dict[str, Any]]:
@@ -238,16 +241,8 @@ class AcpAgentSession:
             },
             timeout_seconds=60,
         )
-        config_options = result.get("configOptions", [])
-        return [
-            {
-                "type": "session/update",
-                "update": {
-                    "sessionUpdate": "config_option_update",
-                    "configOptions": config_options if isinstance(config_options, list) else [],
-                },
-            }
-        ]
+        self._capture_config_options(result)
+        return self.config_option_updates()
 
     def config_option_updates(self) -> list[dict[str, Any]]:
         if not self._latest_config_options:
@@ -257,10 +252,15 @@ class AcpAgentSession:
                 "type": "session/update",
                 "update": {
                     "sessionUpdate": "config_option_update",
-                    "configOptions": self._latest_config_options,
+                    "configOptions": [option.copy() for option in self._latest_config_options],
                 },
             }
         ]
+
+    def _capture_config_options(self, result: dict[str, Any]) -> None:
+        config_options = result.get("configOptions")
+        if isinstance(config_options, list):
+            self._latest_config_options = [option.copy() for option in config_options if isinstance(option, dict)]
 
     def stop(self) -> None:
         if self._process.poll() is None:

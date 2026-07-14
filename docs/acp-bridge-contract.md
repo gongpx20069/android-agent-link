@@ -461,7 +461,7 @@ Android can ask the bridge to refresh current ACP session config options before 
 }
 ```
 
-The bridge ensures an ACP session exists for that chat, forwards the latest `config_option_update` messages as event-log entries, then sends `operation.done`.
+The bridge ensures an ACP session exists for that chat, caches `configOptions` returned by ACP `session/new` or `session/load`, forwards them as a `config_option_update` event-log entry, then sends `operation.done`.
 
 Android changes session-level options such as model selection through the bridge WebSocket:
 
