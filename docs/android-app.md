@@ -31,7 +31,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Target chat communication uses a persistent WebSocket per open chat, with `chat.attach`, `lastEventId`, bridge event replay, operation IDs, and bridge-authoritative `chat.status`. The older one-shot WebSocket request flow is transitional.
 - Bilingual UI with a Settings language selector: System, English, or Chinese. System mode uses Chinese only when the device language is Chinese; otherwise it uses English.
 - Settings includes a Session load history limit. It defaults to 5 and controls how many recent chat message bubbles are appended when opening or resuming an existing ACP session; tool/activity cards and hidden command/config control updates do not count toward this limit.
-- Settings includes a Feedback card that opens a new GitHub Issue for this repository and provides the developer email `gongpx20069@vip.qq.com`.
+- Settings includes a Feedback card welcoming feature requests, bug reports, and development collaboration. It opens a new GitHub Issue for this repository and provides the developer email `gongpx20069@vip.qq.com`.
 - Built-in `model` chip that opens a model picker from ACP session config options.
 - Common command chips are prioritized before other ACP-advertised commands: `model`, `resume`, and `allow-all`.
 - Built-in `allow-all` opens an on/off picker when the ACP agent exposes the `allow_all` session config option.
