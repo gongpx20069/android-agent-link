@@ -125,6 +125,7 @@ enum class MessageRole {
 enum class ChatMessageKind {
     Message,
     Activity,
+    Plan,
     CommandUpdate,
     ConfigUpdate,
 }

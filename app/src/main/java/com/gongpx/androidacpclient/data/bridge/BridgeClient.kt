@@ -13,6 +13,7 @@ import com.gongpx.androidacpclient.data.model.MessageRole
 import com.gongpx.androidacpclient.data.model.QueuedPrompt
 import com.gongpx.androidacpclient.data.model.PairingPayload
 import com.gongpx.androidacpclient.data.model.Workspace
+import com.gongpx.androidacpclient.data.model.toAgentPlanMessage
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -744,6 +745,7 @@ class BridgeClient {
                     activityId = "available_commands",
                 )
             }
+            "plan" -> toAgentPlanMessage(System.currentTimeMillis())
             "user_message_chunk" -> {
                 val content = optJSONObject("content")
                 val text = content?.optString("text").orEmpty().ifBlank { optString("text") }

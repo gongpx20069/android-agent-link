@@ -103,6 +103,8 @@ import com.gongpx.androidacpclient.BuildConfig
 import com.gongpx.androidacpclient.data.bridge.BridgeClient
 import com.gongpx.androidacpclient.data.bridge.ChatConnection
 import com.gongpx.androidacpclient.data.model.Agent
+import com.gongpx.androidacpclient.data.model.AgentPlanEntryPriority
+import com.gongpx.androidacpclient.data.model.AgentPlanEntryStatus
 import com.gongpx.androidacpclient.data.model.AgentSessionInfo
 import com.gongpx.androidacpclient.data.model.Approval
 import com.gongpx.androidacpclient.data.model.ApprovalStatus
@@ -128,6 +130,7 @@ import com.gongpx.androidacpclient.data.model.isTerminalPromptStatus
 import com.gongpx.androidacpclient.data.model.markQueuedPromptRemoving
 import com.gongpx.androidacpclient.data.model.markdownCodeFenceDelimiterLength
 import com.gongpx.androidacpclient.data.model.parseMarkdownTable
+import com.gongpx.androidacpclient.data.model.parseAgentPlan
 import com.gongpx.androidacpclient.data.model.recordBridgeEventId
 import com.gongpx.androidacpclient.data.model.reconcileRecentSessionMessages
 import com.gongpx.androidacpclient.data.model.shouldClearBusyAfterCancellation
@@ -240,6 +243,7 @@ private data class AppStrings(
     val loadingSessionsFrom: (String) -> String,
     val noResumableSessionsWorkspace: String,
     val agentActivity: String,
+    val plan: String,
     val hide: String,
     val details: String,
     val approvalsSubtitle: String,
@@ -365,6 +369,7 @@ private data class AppStrings(
             loadingSessionsFrom = { "Loading sessions from $it..." },
             noResumableSessionsWorkspace = "No resumable sessions found for this Workspace.",
             agentActivity = "Agent activity",
+            plan = "Plan",
             hide = "Hide",
             details = "Details",
             approvalsSubtitle = "Review commands, file changes, and risky actions before they run.",
@@ -475,6 +480,7 @@ private data class AppStrings(
             loadingSessionsFrom = { "正在从 $it 加载 sessions..." },
             noResumableSessionsWorkspace = "当前 Workspace 没有可恢复 sessions。",
             agentActivity = "Agent activity",
+            plan = "计划",
             hide = "收起",
             details = "详情",
             approvalsSubtitle = "在命令、文件变更和高风险操作执行前进行确认。",
@@ -2325,6 +2331,10 @@ private fun ChatTimelineItem(item: ChatMessage) {
         AgentActivityItem(item)
         return
     }
+    if (item.kind == ChatMessageKind.Plan) {
+        AgentPlanItem(item)
+        return
+    }
 
     val isUser = item.role == MessageRole.User
     Row(
@@ -2610,6 +2620,103 @@ private fun AgentActivityItem(item: ChatMessage) {
                         modifier = Modifier.padding(10.dp),
                         style = MaterialTheme.typography.bodySmall,
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AgentPlanItem(item: ChatMessage) {
+    val strings = LocalAppStrings.current
+    val plan = remember(item.details) { parseAgentPlan(item.details) }
+    if (plan == null) {
+        AgentActivityItem(item.copy(kind = ChatMessageKind.Activity, title = strings.plan))
+        return
+    }
+
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
+        modifier = Modifier.widthIn(min = 210.dp, max = 300.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = strings.plan,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
+                ) {
+                    Text(
+                        text = "${plan.completedCount}/${plan.entries.size}",
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            plan.entries.forEach { entry ->
+                val statusColor = when (entry.status) {
+                    AgentPlanEntryStatus.Completed -> MaterialTheme.colorScheme.primary
+                    AgentPlanEntryStatus.InProgress -> MaterialTheme.colorScheme.tertiary
+                    AgentPlanEntryStatus.Pending -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                    AgentPlanEntryStatus.Unknown -> MaterialTheme.colorScheme.outline
+                }
+                val statusMarker = when (entry.status) {
+                    AgentPlanEntryStatus.Completed -> "✓"
+                    AgentPlanEntryStatus.InProgress -> "›"
+                    AgentPlanEntryStatus.Pending -> "○"
+                    AgentPlanEntryStatus.Unknown -> "?"
+                }
+                val priorityColor = when (entry.priority) {
+                    AgentPlanEntryPriority.High -> MaterialTheme.colorScheme.error
+                    AgentPlanEntryPriority.Medium -> MaterialTheme.colorScheme.tertiary
+                    AgentPlanEntryPriority.Low -> MaterialTheme.colorScheme.outline
+                    AgentPlanEntryPriority.Unknown -> Color.Transparent
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        text = statusMarker,
+                        modifier = Modifier.width(12.dp),
+                        color = statusColor,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = parseInlineMarkdown(entry.content),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textDecoration = if (entry.status == AgentPlanEntryStatus.Completed) {
+                            TextDecoration.LineThrough
+                        } else {
+                            TextDecoration.None
+                        },
+                    )
+                    if (priorityColor != Color.Transparent) {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = 5.dp)
+                                .size(6.dp)
+                                .background(priorityColor, CircleShape),
+                        )
+                    }
                 }
             }
         }

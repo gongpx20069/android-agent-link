@@ -38,6 +38,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Built-in `allow-all` opens an on/off picker when the ACP agent exposes the `allow_all` session config option.
 - Agent/system message bubbles render basic Markdown: headings, bullets, quotes, fenced code blocks, pipe tables, bold, italic, inline code, and link-style text. Tables honor Markdown column alignment and scroll horizontally when wider than the message bubble.
 - Collapsible agent activity cards for ACP `tool_call` and `tool_call_update` events.
+- ACP `plan` updates render as a dedicated compact progress card with step status and priority indicators; each full plan update replaces the previous card instead of appearing as a Tool Call activity.
 - Approval list with approve/deny actions backed by ACP `session/request_permission`.
 - Automatic update checks on app startup and manual update checks from Settings.
 
