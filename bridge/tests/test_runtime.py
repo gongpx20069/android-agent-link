@@ -172,6 +172,90 @@ class RuntimeTests(unittest.TestCase):
         replayed = attach_responses[1:-1]
         self.assertTrue(all(response.get("eventId", 0) > first_event_id for response in replayed))
         self.assertEqual(attach_responses[-1]["type"], "chat.status")
+        self.assertTrue(attach_responses[-1]["snapshot"])
+
+        next_attach = runtime.websocket_responses(
+            {"type": "chat.attach", "chatId": "chat_1", "agentId": "copilot-cli", "workspacePath": "D:\\repo", "lastEventId": first_event_id}
+        )
+        self.assertTrue(all(not response.get("snapshot", False) for response in next_attach[1:-1]))
+        self.assertTrue(next_attach[-1]["snapshot"])
+
+    def test_chat_attach_resets_checkpoint_after_event_counter_restart(self) -> None:
+        runtime = BridgeRuntime(
+            config=BridgeConfig(machine_name="devbox"),
+            pairing_store=PairingStore(),
+            require_local_pairing_confirmation=False,
+            agent_manager=FakeAgentManager(),
+        )
+
+        attached = runtime.websocket_responses(
+            {"type": "chat.attach", "chatId": "chat_1", "agentId": "copilot-cli", "workspacePath": "D:\\repo", "lastEventId": 100}
+        )
+        self.assertTrue(attached[0]["checkpointReset"])
+        self.assertEqual(attached[-1]["eventId"], 1)
+
+        runtime.websocket_responses(
+            {"type": "chat.prompt", "chatId": "chat_1", "agentId": "copilot-cli", "workspacePath": "D:\\repo", "content": "hello"}
+        )
+        reattached = runtime.websocket_responses(
+            {"type": "chat.attach", "chatId": "chat_1", "agentId": "copilot-cli", "workspacePath": "D:\\repo", "lastEventId": 100}
+        )
+        self.assertTrue(reattached[0]["checkpointReset"])
+        self.assertTrue(any(response["type"] == "operation.done" for response in reattached[1:-1]))
+
+    def test_chat_attach_resets_equal_checkpoint_from_previous_generation(self) -> None:
+        previous_runtime = BridgeRuntime(
+            config=BridgeConfig(machine_name="devbox"),
+            pairing_store=PairingStore(),
+            require_local_pairing_confirmation=False,
+            agent_manager=FakeAgentManager(),
+        )
+        previous_attach = previous_runtime.websocket_responses(
+            {"type": "chat.attach", "chatId": "chat_1", "agentId": "copilot-cli", "workspacePath": "D:\\repo", "lastEventId": 0}
+        )
+
+        runtime = BridgeRuntime(
+            config=BridgeConfig(machine_name="devbox"),
+            pairing_store=PairingStore(),
+            require_local_pairing_confirmation=False,
+            agent_manager=FakeAgentManager(),
+        )
+        runtime.websocket_responses(
+            {"type": "chat.prompt", "chatId": "chat_1", "agentId": "copilot-cli", "workspacePath": "D:\\repo", "content": "hello"}
+        )
+        attached = runtime.websocket_responses(
+            {
+                "type": "chat.attach",
+                "chatId": "chat_1",
+                "agentId": "copilot-cli",
+                "workspacePath": "D:\\repo",
+                "lastEventId": previous_attach[-1]["eventId"],
+                "lastEventGeneration": previous_attach[0]["eventGeneration"],
+            }
+        )
+
+        self.assertTrue(attached[0]["checkpointReset"])
+        self.assertNotEqual(attached[0]["eventGeneration"], previous_attach[0]["eventGeneration"])
+        self.assertTrue(any(response["type"] == "operation.accepted" for response in attached[1:-1]))
+
+    def test_chat_attach_requires_resync_when_event_log_was_truncated(self) -> None:
+        runtime = BridgeRuntime(
+            config=BridgeConfig(machine_name="devbox"),
+            pairing_store=PairingStore(),
+            require_local_pairing_confirmation=False,
+            agent_manager=FakeAgentManager(),
+        )
+        for index in range(510):
+            runtime._append_event("chat_1", {"type": "agent_message_chunk", "content": str(index)})
+
+        attached = runtime.websocket_responses(
+            {"type": "chat.attach", "chatId": "chat_1", "agentId": "copilot-cli", "workspacePath": "D:\\repo", "lastEventId": 1}
+        )
+
+        self.assertEqual(attached[1]["type"], "chat.resyncRequired")
+        replayed_event_ids = [response["eventId"] for response in attached[2:-1]]
+        self.assertEqual(replayed_event_ids[0], 11)
+        self.assertEqual(replayed_event_ids[-1], 510)
 
     def test_chat_attach_restores_persisted_session_binding(self) -> None:
         manager = FakeAgentManager()
@@ -843,6 +927,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(attached[-1]["type"], "chat.status")
         self.assertEqual(attached[-1]["status"], "busy")
+        self.assertTrue(attached[-1]["snapshot"])
 
 
 class FakeAgentManager:

@@ -174,6 +174,7 @@ Android opens or reconnects a persistent chat WebSocket by sending:
   "workspacePath": "D:\\repos\\android-agent-link",
   "sessionId": "sess_abc",
   "sessionResumable": true,
+  "lastEventGeneration": "4bd67d8e...",
   "lastEventId": 128
 }
 ```
@@ -184,7 +185,9 @@ Bridge behavior:
 2. Attach the socket to `chatId`.
 3. Ensure the bridge has a `ChatChannel` for the chat.
 4. Replay cached events with `eventId > lastEventId`.
-5. Send current `chat.status`.
+5. Send current `chat.status` with `snapshot=true`. Replayed status events do not carry this flag, so Android must wait for the snapshot before considering startup synchronization complete.
+
+`chat.attached` includes the current `eventGeneration`. If it differs from `lastEventGeneration`, or if `lastEventId` is greater than the Bridge's current event counter, the Bridge returns `checkpointReset=true`, replays the available generation from event `1`, and Android resets its durable event checkpoint before applying that replay.
 
 `sessionId` and `sessionResumable` are optional for a new Chat and required once Android has received a `chat.session` binding. They allow a restarted Bridge to restore the same ACP conversation.
 
@@ -196,6 +199,7 @@ Example response:
 {
   "type": "chat.attached",
   "chatId": "chat_123",
+  "eventGeneration": "4bd67d8e...",
   "latestEventId": 135,
   "replayed": 7
 }
@@ -209,7 +213,8 @@ Then:
   "eventId": 136,
   "chatId": "chat_123",
   "status": "busy",
-  "operationId": "op_abc"
+  "operationId": "op_abc",
+  "snapshot": true
 }
 ```
 
@@ -225,6 +230,7 @@ If the requested `lastEventId` is older than the bridge cache window, the bridge
 ```
 
 Android should then reload the ACP session or ask the user to reopen the chat.
+While recovery is pending, Android must not acknowledge replay checkpoints or show replayed completion notifications. It commits the new checkpoint only after both recent-session recovery and the final attach status snapshot succeed.
 
 ### Event Log and Replay Rules
 

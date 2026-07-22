@@ -27,4 +27,28 @@ class ChatCompletionPolicyTest {
             chatCompletionAttention(appInForeground = false, chatIsOpen = true),
         )
     }
+
+    @Test
+    fun completionPreviewUsesLatestStreamedMessage() {
+        assertEquals(
+            "latest response",
+            chatCompletionPreview(
+                latestAgentPreview = " latest response ",
+                persistedAgentMessages = listOf("older response"),
+                fallback = "completed",
+            ),
+        )
+    }
+
+    @Test
+    fun completionPreviewFallsBackToPersistedAgentMessageAfterRestart() {
+        assertEquals(
+            "persisted response",
+            chatCompletionPreview(
+                latestAgentPreview = null,
+                persistedAgentMessages = listOf("older response", " persisted response "),
+                fallback = "completed",
+            ),
+        )
+    }
 }

@@ -18,6 +18,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
@@ -97,7 +98,7 @@ class BridgeClient {
         onPromptAccepted: (String, String, String) -> Unit = { _, _, _ -> },
         onPromptStarted: (String, String) -> Unit = { _, _ -> },
         onOperationDone: (String, String, String, Int) -> Unit = { _, _, _, _ -> },
-        onStatus: (String, Int?, Int, String) -> Unit = { _, _, _, _ -> },
+        onStatus: (String, Int?, Int, String, Boolean) -> Unit = { _, _, _, _, _ -> },
         onSession: (String, Boolean) -> Unit = { _, _ -> },
     ): BridgeSendResult<List<ChatMessage>> {
         return sendBridgeMessage(
@@ -141,6 +142,7 @@ class BridgeClient {
                             eventId.takeIf { it >= 0 },
                             event.optInt("queuedCount", 0),
                             event.optString("operationId"),
+                            event.optBoolean("snapshot", false),
                         )
                     }
                     "chat.session" -> mainHandler.post {
@@ -311,17 +313,19 @@ class BridgeClient {
         agentId: String,
         workspacePath: String,
         lastEventId: Int,
+        lastEventGeneration: String? = null,
         sessionId: String? = null,
         sessionResumable: Boolean = false,
         queuedPrompts: List<QueuedPrompt> = emptyList(),
-        onMessage: (ChatMessage) -> Unit = {},
-        onApproval: (BridgeApprovalRequest) -> Unit = {},
-        onStatus: (String, Int?, Int, String) -> Unit = { _, _, _, _ -> },
-        onPromptAccepted: (String, String, String) -> Unit = { _, _, _ -> },
-        onPromptStarted: (String, String) -> Unit = { _, _ -> },
-        onOperationDone: (String, String, String, Int) -> Unit = { _, _, _, _ -> },
-        onSession: (String, Boolean) -> Unit = { _, _ -> },
+        onMessage: (ChatMessage, Boolean) -> Unit = { _, _ -> },
+        onApproval: (BridgeApprovalRequest, Boolean) -> Unit = { _, _ -> },
+        onStatus: (String, Int?, Int, String, Boolean) -> Unit = { _, _, _, _, _ -> },
+        onPromptAccepted: (String, String, String, Boolean) -> Unit = { _, _, _, _ -> },
+        onPromptStarted: (String, String, Boolean) -> Unit = { _, _, _ -> },
+        onOperationDone: (String, String, String, Int, Boolean) -> Unit = { _, _, _, _, _ -> },
+        onSession: (String, Boolean, Boolean) -> Unit = { _, _, _ -> },
         onEventId: (Int) -> Unit = {},
+        onEventGeneration: (String, Boolean) -> Unit = { _, _ -> },
         onResyncRequired: () -> Unit = {},
         onFailure: (Throwable) -> Unit = {},
     ): ChatConnection {
@@ -333,6 +337,17 @@ class BridgeClient {
         val sendLock = Any()
         val pendingPayloads = mutableListOf<JSONObject>()
         var socketReady = false
+        var attachReplayBoundary: Int? = null
+        val intentionallyClosed = AtomicBoolean(false)
+        val terminationNotified = AtomicBoolean(false)
+        fun notifyConnectionFailure(error: Throwable) {
+            synchronized(sendLock) {
+                socketReady = false
+            }
+            if (!intentionallyClosed.get() && terminationNotified.compareAndSet(false, true)) {
+                mainHandler.post { onFailure(error.withReadableMessage()) }
+            }
+        }
         val connection = ChatConnection(chatId = chatId) { payload ->
             synchronized(sendLock) {
                 if (socketReady) {
@@ -354,6 +369,11 @@ class BridgeClient {
                             .put("agentId", agentId)
                             .put("workspacePath", workspacePath)
                             .put("lastEventId", lastEventId)
+                            .apply {
+                                if (lastEventGeneration != null) {
+                                    put("lastEventGeneration", lastEventGeneration)
+                                }
+                            }
                             .putSessionBinding(sessionId, sessionResumable)
                             .toString(),
                     )
@@ -396,57 +416,105 @@ class BridgeClient {
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     val event = runCatching { JSONObject(text) }.getOrNull() ?: return
                     val eventId = event.optInt("eventId", -1)
-                    if (eventId >= 0) {
-                        mainHandler.post { onEventId(eventId) }
+                    val replayBoundary = attachReplayBoundary
+                    val isReplay = replayBoundary != null && eventId in 0..replayBoundary
+                    fun postApplied(action: () -> Unit = {}) {
+                        mainHandler.post {
+                            action()
+                            if (eventId >= 0) onEventId(eventId)
+                        }
                     }
                     when (event.optString("type")) {
-                        "bridge.accepted", "bridge.heartbeat", "chat.attached" -> return
+                        "bridge.accepted", "bridge.heartbeat" -> postApplied()
+                        "chat.attached" -> {
+                            val latestEventId = event.optInt("latestEventId", 0)
+                            attachReplayBoundary = latestEventId
+                            val eventGeneration = event.optString("eventGeneration")
+                            val checkpointReset = event.optBoolean(
+                                "checkpointReset",
+                                latestEventId < lastEventId ||
+                                    (lastEventGeneration != null && eventGeneration != lastEventGeneration),
+                            )
+                            if (eventGeneration.isNotBlank()) {
+                                mainHandler.post { onEventGeneration(eventGeneration, checkpointReset) }
+                            }
+                        }
                         "operation.accepted" -> if (event.optString("operationType") == "chat.prompt") {
-                            mainHandler.post {
+                            postApplied {
                                 onPromptAccepted(
                                     event.optString("operationId"),
                                     event.optString("state"),
                                     event.optString("content"),
+                                    isReplay,
                                 )
                             }
+                        } else {
+                            postApplied()
                         }
-                        "operation.started" -> mainHandler.post {
-                            onPromptStarted(event.optString("operationId"), event.optString("content"))
+                        "operation.started" -> postApplied {
+                            onPromptStarted(event.optString("operationId"), event.optString("content"), isReplay)
                         }
-                        "operation.done" -> mainHandler.post {
+                        "operation.done" -> postApplied {
                             onOperationDone(
                                 event.optString("operationType"),
                                 event.optString("status"),
                                 event.optString("operationId"),
                                 event.optInt("queueRemaining", 0),
+                                isReplay,
                             )
                         }
-                        "chat.status" -> mainHandler.post {
-                            onStatus(
-                                event.optString("status"),
-                                eventId.takeIf { it >= 0 },
-                                event.optInt("queuedCount", 0),
-                                event.optString("operationId"),
+                        "chat.status" -> {
+                            val isSnapshot = event.optBoolean(
+                                "snapshot",
+                                replayBoundary != null && eventId > replayBoundary,
                             )
+                            if (isSnapshot) attachReplayBoundary = null
+                            postApplied {
+                                onStatus(
+                                    event.optString("status"),
+                                    eventId.takeIf { it >= 0 },
+                                    event.optInt("queuedCount", 0),
+                                    event.optString("operationId"),
+                                    isSnapshot,
+                                )
+                            }
                         }
-                        "chat.session" -> mainHandler.post {
-                            onSession(event.optString("sessionId"), event.optBoolean("resumable"))
+                        "chat.session" -> postApplied {
+                            onSession(event.optString("sessionId"), event.optBoolean("resumable"), isReplay)
                         }
-                        "chat.resyncRequired" -> mainHandler.post { onResyncRequired() }
-                        "approval.requested" -> event.toApprovalRequest()?.let { request -> mainHandler.post { onApproval(request) } }
-                        else -> parseBridgeMessage(event.toString()).message?.let { message -> mainHandler.post { onMessage(message) } }
+                        "chat.resyncRequired" -> postApplied { onResyncRequired() }
+                        "approval.requested" -> {
+                            val request = event.toApprovalRequest()
+                            postApplied { if (request != null) onApproval(request, isReplay) }
+                        }
+                        else -> {
+                            val message = parseBridgeMessage(event.toString()).message
+                            postApplied { if (message != null) onMessage(message, isReplay) }
+                        }
                     }
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    synchronized(sendLock) {
-                        socketReady = false
-                    }
-                    mainHandler.post { onFailure(t.withReadableMessage()) }
+                    notifyConnectionFailure(t)
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, reason)
+                    notifyConnectionFailure(IOException("WebSocket closing ($code): $reason"))
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    notifyConnectionFailure(IOException("WebSocket closed ($code): $reason"))
                 }
             },
         )
-        connection.setCloseHandler { socket?.close(1000, "chat closed") }
+        connection.setCloseHandler {
+            intentionallyClosed.set(true)
+            synchronized(sendLock) {
+                socketReady = false
+            }
+            socket?.close(1000, "chat closed")
+        }
         return connection
     }
 
@@ -837,6 +905,7 @@ class BridgeClient {
                 role = role,
                 text = item.optString("text"),
                 timestampMillis = System.currentTimeMillis(),
+                activityId = item.optString("messageId").ifBlank { null },
             )
         }.filter { it.text.isNotBlank() }
     }

@@ -20,7 +20,8 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Chat, approval, and machine list rows move left by only the fixed Delete-action width, keeping most of the row visible. Swiping right closes the action, and deletion still requires tapping Delete. Deleting a pending approval sends a deny decision before removing it locally.
 - Chat list rows and the chat detail header show a small status dot: busy while a prompt is running, idle otherwise.
 - Completed Agent responses show a red unread dot on the chat list until that chat is opened.
-- When a prompt completes while AgentLink is in the background, Android shows one system notification with the response preview. No completion notification is shown while the app is in the foreground, and tapping a notification opens the matching chat.
+- On startup, Android attaches every persisted Chat long enough to synchronize its Bridge status. Idle Chats disconnect after synchronization; busy Chats remain monitored until completion, including while another tab or Chat is open.
+- When a prompt completes while AgentLink is in the background, Android shows one system notification whose title is the Chat name and whose body is the latest Agent response. No completion notification is shown while the app is in the foreground, and tapping a notification opens the matching chat.
 - Opening a chat automatically scrolls to the newest message.
 - Fixed bottom prompt box for sending chat messages.
 - While an Agent turn is running, the send button becomes Add and submits the prompt to the bridge FIFO. At the next turn boundary, all prompts already waiting are shown as individual user messages but sent to ACP as one FIFO-ordered batch. Queued prompts appear in a separate pending area and tapping Remove hides one immediately while retaining a durable encrypted cancellation tombstone. Android retries pending cancellations with bounded exponential backoff, including after process restart, and never resends removed content.
@@ -117,16 +118,19 @@ On connect or reconnect, Android sends:
 {
   "type": "chat.attach",
   "chatId": "chat_123",
+  "lastEventGeneration": "4bd67d8e...",
   "lastEventId": 128
 }
 ```
 
 Android responsibilities:
 
-- Persist the latest `eventId` seen for each chat.
+- Persist the Bridge event generation and latest applied `eventId` for each chat. Advance the checkpoint only after applying an event.
 - Apply replayed events idempotently.
+- If replay history was truncated, keep the old checkpoint guarded while reloading recent ACP session history. Commit the recovered history and deferred event checkpoint only after both recovery and the attach status snapshot complete.
 - Render busy/idle/waitingApproval from bridge `chat.status`, not from WebSocket open/closed state.
 - Treat WebSocket disconnect as transport state only; do not mark the agent idle unless the bridge sends `chat.status: idle`.
+- Retry status synchronization and busy-Chat monitoring after transport failure without clearing the busy indicator.
 - Retry `chat.attach` with exponential backoff while the user is viewing the chat.
 - Keep pending approvals visible after reconnect by replaying `approval.requested` events.
 - Treat `operation.done` for a completed `chat.prompt` as the single completion signal for unread state and notifications.

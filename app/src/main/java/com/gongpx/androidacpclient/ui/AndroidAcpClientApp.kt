@@ -121,17 +121,21 @@ import com.gongpx.androidacpclient.data.model.MessageRole
 import com.gongpx.androidacpclient.data.model.QueuedPrompt
 import com.gongpx.androidacpclient.data.model.acceptPrompt
 import com.gongpx.androidacpclient.data.model.bindAcpSession
+import com.gongpx.androidacpclient.data.model.bindBridgeEventGeneration
 import com.gongpx.androidacpclient.data.model.finishPrompt
 import com.gongpx.androidacpclient.data.model.isFinalPromptCompletion
 import com.gongpx.androidacpclient.data.model.isTerminalPromptStatus
 import com.gongpx.androidacpclient.data.model.markQueuedPromptRemoving
 import com.gongpx.androidacpclient.data.model.markdownCodeFenceDelimiterLength
 import com.gongpx.androidacpclient.data.model.parseMarkdownTable
+import com.gongpx.androidacpclient.data.model.recordBridgeEventId
+import com.gongpx.androidacpclient.data.model.reconcileRecentSessionMessages
 import com.gongpx.androidacpclient.data.model.shouldClearBusyAfterCancellation
 import com.gongpx.androidacpclient.data.model.shouldApplyChatStatus
 import com.gongpx.androidacpclient.data.model.startQueuedPrompt
 import com.gongpx.androidacpclient.data.notification.ChatNotificationManager
 import com.gongpx.androidacpclient.data.notification.chatCompletionAttention
+import com.gongpx.androidacpclient.data.notification.chatCompletionPreview
 import com.gongpx.androidacpclient.data.pairing.PairingLinkParser
 import com.gongpx.androidacpclient.data.store.AppLanguageMode
 import com.gongpx.androidacpclient.data.store.AppSettingsStore
@@ -276,6 +280,7 @@ private data class AppStrings(
     val loadingExistingAcpSession: (String) -> String,
     val openSessionFailed: (String?) -> String,
     val resumeFailed: (String?) -> String,
+    val eventHistoryExpired: String,
     val setModel: String,
     val modelChangeFailed: (String?) -> String,
     val connectionFailed: (String?) -> String,
@@ -400,6 +405,7 @@ private data class AppStrings(
             loadingExistingAcpSession = { "Loading existing ACP session $it." },
             openSessionFailed = { "Open session failed: ${it.orUnknownError()}" },
             resumeFailed = { "Resume failed: ${it.orUnknownError()}" },
+            eventHistoryExpired = "Bridge event history expired and this Chat has no resumable ACP session.",
             setModel = "Set model",
             modelChangeFailed = { "Model change failed: ${it.orUnknownError()}" },
             connectionFailed = { "Connection failed: ${it.orUnknownError()}" },
@@ -508,6 +514,7 @@ private data class AppStrings(
             loadingExistingAcpSession = { "正在加载已有 ACP session $it。" },
             openSessionFailed = { "打开 session 失败：${it.orUnknownErrorZh()}" },
             resumeFailed = { "恢复失败：${it.orUnknownErrorZh()}" },
+            eventHistoryExpired = "Bridge 事件历史已过期，并且此 Chat 没有可恢复的 ACP session。",
             setModel = "设置 model",
             modelChangeFailed = { "Model 修改失败：${it.orUnknownErrorZh()}" },
             connectionFailed = { "连接失败：${it.orUnknownErrorZh()}" },
@@ -553,7 +560,11 @@ fun AgentLinkApp(
     val authoritativeBusyEventIds = remember { mutableStateMapOf<String, Int>() }
     val activePromptOperationIds = remember { mutableStateMapOf<String, String>() }
     val chatConnections = remember { mutableStateMapOf<String, ChatConnection>() }
-    val lastChatEventIds = remember { mutableStateMapOf<String, Int>() }
+    val statusSynchronizedChatIds = remember { mutableStateListOf<String>() }
+    val resyncingChatIds = remember { mutableStateListOf<String>() }
+    val pendingResyncEventIds = remember { mutableStateMapOf<String, Int>() }
+    val recoveredResyncMessages = remember { mutableStateMapOf<String, List<ChatMessage>>() }
+    val resyncSnapshotChatIds = remember { mutableStateListOf<String>() }
     var selectedTab by remember { mutableStateOf(AppTab.Machines) }
     var selectedChatId by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
@@ -608,6 +619,11 @@ fun AgentLinkApp(
         activePromptOperationIds.remove(chat.id)
         pendingLocalPromptStartEventIds.remove(chat.id)
         authoritativeBusyEventIds.remove(chat.id)
+        pendingResyncEventIds.remove(chat.id)
+        recoveredResyncMessages.remove(chat.id)
+        resyncSnapshotChatIds.remove(chat.id)
+        resyncingChatIds.remove(chat.id)
+        statusSynchronizedChatIds.remove(chat.id)
         busyChatIds.remove(chat.id)
         if (selectedChatId == chat.id) selectedChatId = null
     }
@@ -708,6 +724,7 @@ fun AgentLinkApp(
     }
 
     fun addApproval(chat: Chat, request: BridgeApprovalRequest? = null) {
+        if (request != null && approvals.any { it.id == request.approvalId }) return
         approvals.add(
             Approval(
                 id = request?.approvalId ?: "approval_" + UUID.randomUUID(),
@@ -752,22 +769,35 @@ fun AgentLinkApp(
         eventId: Int? = null,
         queuedCount: Int = 0,
         operationId: String = "",
+        authoritativeSnapshot: Boolean = false,
     ) {
         val pendingStartEventId = pendingLocalPromptStartEventIds[chatId]
-        if (!shouldApplyChatStatus(status, activePromptOperationIds[chatId])) {
+        if (!authoritativeSnapshot && !shouldApplyChatStatus(status, activePromptOperationIds[chatId])) {
             return
         }
         if (status == "idle" && chatId in pendingLocalPromptStartEventIds) {
             return
         }
         if (
+            status == "idle" &&
+            chats.firstOrNull { it.id == chatId }?.queuedPrompts?.any { !it.removing } == true
+        ) {
+            return
+        }
+        if (
+            !authoritativeSnapshot &&
             (status == "busy" || status == "waitingApproval") &&
             pendingStartEventId != null &&
             (eventId == null || eventId <= pendingStartEventId)
         ) {
             return
         }
-        if (status == "idle" && eventId != null && eventId <= (authoritativeBusyEventIds[chatId] ?: 0)) {
+        if (
+            !authoritativeSnapshot &&
+            status == "idle" &&
+            eventId != null &&
+            eventId <= (authoritativeBusyEventIds[chatId] ?: 0)
+        ) {
             return
         }
         when (status) {
@@ -781,14 +811,17 @@ fun AgentLinkApp(
                     authoritativeBusyEventIds[chatId] = maxOf(authoritativeBusyEventIds[chatId] ?: 0, eventId)
                 }
             }
-            "idle", "failed", "disconnected" -> {
+            "idle", "failed" -> {
                 busyChatIds.remove(chatId)
                 pendingLocalPromptStartEventIds.remove(chatId)
                 authoritativeBusyEventIds.remove(chatId)
-                if (selectedChatId != chatId) {
+                val hasRemovalTombstones =
+                    chats.firstOrNull { it.id == chatId }?.queuedPrompts?.any { it.removing } == true
+                if (selectedChatId != chatId && (status == "failed" || !hasRemovalTombstones)) {
                     chatConnections.remove(chatId)?.close()
                 }
             }
+            "disconnected" -> Unit
         }
     }
 
@@ -824,6 +857,7 @@ fun AgentLinkApp(
         status: String,
         operationId: String = "",
         queueRemaining: Int = 0,
+        allowAttention: Boolean = true,
     ) {
         if (operationType != "chat.prompt") return
         val wasActivePrompt = activePromptOperationIds[chatId] == operationId
@@ -850,15 +884,26 @@ fun AgentLinkApp(
                 pendingLocalPromptStartEventIds.remove(chatId)
                 authoritativeBusyEventIds.remove(chatId)
             }
+            if (
+                finished?.queuedPrompts?.isEmpty() == true &&
+                chatId !in busyChatIds &&
+                activePromptOperationIds[chatId] == null &&
+                selectedChatId != chatId
+            ) {
+                chatConnections.remove(chatId)?.close()
+            }
             return
         }
         if (!isFinalPromptCompletion(status, queueRemaining)) return
+        if (!allowAttention) return
         val chat = chats.firstOrNull { it.id == chatId } ?: return
-        val preview = latestAgentPreviews.remove(chatId)
-            ?.trim()
-            ?.take(240)
-            ?.takeIf { it.isNotBlank() }
-            ?: strings.agentFinished
+        val preview = chatCompletionPreview(
+            latestAgentPreview = latestAgentPreviews.remove(chatId),
+            persistedAgentMessages = chat.messages
+                .filter { it.role == MessageRole.Agent && it.kind == ChatMessageKind.Message }
+                .map { it.text },
+            fallback = strings.agentFinished,
+        ).take(240)
         val attention = chatCompletionAttention(
             appInForeground = appInForeground.value,
             chatIsOpen = selectedTab == AppTab.Chats && selectedChatId == chatId,
@@ -1056,14 +1101,243 @@ fun AgentLinkApp(
         context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$DEVELOPER_EMAIL")))
     }
 
+    fun finalizeRecoveredHistory(chatId: String) {
+        val messages = recoveredResyncMessages[chatId] ?: return
+        if (chatId !in resyncSnapshotChatIds) return
+        val latest = chats.firstOrNull { it.id == chatId } ?: return
+        val checkpoint = pendingResyncEventIds.remove(chatId)
+        val recovered = latest.copy(
+            messages = reconcileRecentSessionMessages(latest.messages, messages),
+            bridgeResyncRequired = false,
+        )
+        upsertChat(if (checkpoint == null) recovered else recovered.recordBridgeEventId(checkpoint))
+        recoveredResyncMessages.remove(chatId)
+        resyncSnapshotChatIds.remove(chatId)
+    }
+
+    fun recoverTruncatedHistory(chatId: String) {
+        if (chatId in resyncingChatIds) return
+        val current = chats.firstOrNull { it.id == chatId } ?: return
+        recoveredResyncMessages.remove(chatId)
+        resyncSnapshotChatIds.remove(chatId)
+        activePromptOperationIds.remove(chatId)
+        pendingLocalPromptStartEventIds.remove(chatId)
+        authoritativeBusyEventIds.remove(chatId)
+        val currentMachine = machines.firstOrNull { it.id == current.machineId }
+        val sessionId = current.acpSessionId
+        if (currentMachine == null || sessionId == null) {
+            val blocked = current.copy(bridgeResyncRequired = true)
+            if (blocked.messages.lastOrNull()?.text != strings.eventHistoryExpired) {
+                upsertChat(blocked.withMessage(MessageRole.System, strings.eventHistoryExpired))
+            } else if (blocked != current) {
+                upsertChat(blocked)
+            }
+            return
+        }
+        upsertChat(current.copy(bridgeResyncRequired = true))
+        resyncingChatIds.add(chatId)
+        scope.launch {
+            try {
+                bridgeClient.loadRecentSession(
+                    currentMachine,
+                    current.id,
+                    current.agentId,
+                    current.workspacePath,
+                    sessionId,
+                    sessionLoadMessageLimit,
+                    onSession = { restoredSessionId, resumable ->
+                        handleSessionBinding(current.id, restoredSessionId, resumable)
+                    },
+                ).result
+                    .onSuccess { messages ->
+                        recoveredResyncMessages[current.id] = messages
+                        finalizeRecoveredHistory(current.id)
+                    }
+                    .onFailure {
+                        val latest = chats.firstOrNull { it.id == current.id } ?: return@onFailure
+                        val failureMessage = strings.resumeFailed(it.message)
+                        if (latest.messages.lastOrNull()?.text != failureMessage) {
+                            upsertChat(latest.withMessage(MessageRole.System, failureMessage))
+                        }
+                        resyncingChatIds.remove(current.id)
+                        recoveredResyncMessages.remove(current.id)
+                        resyncSnapshotChatIds.remove(current.id)
+                        chatConnections.remove(current.id)?.close()
+                        statusSynchronizedChatIds.remove(current.id)
+                    }
+            } finally {
+                resyncingChatIds.remove(current.id)
+            }
+        }
+    }
+
+    fun ensureChatConnection(chat: Chat): Boolean {
+        if (chat.id in chatConnections) return true
+        val machine = machines.firstOrNull { it.id == chat.machineId } ?: return false
+        lateinit var connection: ChatConnection
+        connection = bridgeClient.openChatConnection(
+            machine = machine,
+            chatId = chat.id,
+            agentId = chat.agentId,
+            workspacePath = chat.workspacePath,
+            lastEventId = chat.lastBridgeEventId,
+            lastEventGeneration = chat.bridgeEventGeneration,
+            sessionId = chat.acpSessionId,
+            sessionResumable = chat.acpSessionResumable,
+            queuedPrompts = chat.queuedPrompts,
+            onMessage = { event, isReplay ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                val current = chats.firstOrNull { it.id == chat.id }
+                if (current?.bridgeResyncRequired != true || !isReplay) {
+                    appendChatEvent(chat.id, event)
+                }
+            },
+            onApproval = { request, _ ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                val current = chats.firstOrNull { it.id == chat.id } ?: return@openChatConnection
+                appendChatEvent(
+                    chat.id,
+                    ChatMessage(
+                        role = MessageRole.Agent,
+                        text = strings.approvalRequired(request.summary),
+                        timestampMillis = System.currentTimeMillis(),
+                        kind = ChatMessageKind.Activity,
+                        title = strings.approvalRequiredTitle,
+                        details = request.details,
+                        activityId = request.approvalId,
+                    ),
+                )
+                addApproval(current, request)
+            },
+            onStatus = statusCallback@{ status, eventId, queuedCount, operationId, isSnapshot ->
+                if (chatConnections[chat.id] !== connection) return@statusCallback
+                if (chat.id !in statusSynchronizedChatIds) {
+                    if (!isSnapshot) return@statusCallback
+                }
+                updateChatStatus(
+                    chat.id,
+                    status,
+                    eventId,
+                    queuedCount,
+                    operationId,
+                    authoritativeSnapshot = isSnapshot,
+                )
+                if (isSnapshot) {
+                    if (chats.firstOrNull { it.id == chat.id }?.bridgeResyncRequired == true) {
+                        if (chat.id !in resyncSnapshotChatIds) resyncSnapshotChatIds.add(chat.id)
+                        finalizeRecoveredHistory(chat.id)
+                    }
+                    if (chat.id !in statusSynchronizedChatIds) statusSynchronizedChatIds.add(chat.id)
+                }
+            },
+            onPromptAccepted = { operationId, state, content, _ ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                handlePromptAccepted(chat.id, operationId, state, content)
+            },
+            onPromptStarted = { operationId, content, _ ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                handlePromptStarted(chat.id, operationId, content)
+            },
+            onOperationDone = { operationType, status, operationId, queueRemaining, isReplay ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                handleOperationDone(
+                    chat.id,
+                    operationType,
+                    status,
+                    operationId,
+                    queueRemaining,
+                    allowAttention = !isReplay,
+                )
+            },
+            onSession = { sessionId, resumable, _ ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                handleSessionBinding(chat.id, sessionId, resumable)
+            },
+            onEventId = {
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                val current = chats.firstOrNull { current -> current.id == chat.id } ?: return@openChatConnection
+                if (current.bridgeResyncRequired) {
+                    pendingResyncEventIds[chat.id] = maxOf(pendingResyncEventIds[chat.id] ?: 0, it)
+                    return@openChatConnection
+                }
+                val checkpointed = current.recordBridgeEventId(it)
+                if (checkpointed != current) upsertChat(checkpointed)
+            },
+            onEventGeneration = { generation, checkpointReset ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                val current = chats.firstOrNull { current -> current.id == chat.id } ?: return@openChatConnection
+                if (checkpointReset || current.bridgeEventGeneration != generation) {
+                    pendingResyncEventIds.remove(chat.id)
+                    activePromptOperationIds.remove(chat.id)
+                    pendingLocalPromptStartEventIds.remove(chat.id)
+                    authoritativeBusyEventIds.remove(chat.id)
+                }
+                val rebound = current.bindBridgeEventGeneration(generation, checkpointReset)
+                if (rebound != current) upsertChat(rebound)
+                if (current.bridgeResyncRequired) recoverTruncatedHistory(chat.id)
+            },
+            onResyncRequired = {
+                if (chatConnections[chat.id] === connection) recoverTruncatedHistory(chat.id)
+            },
+            onFailure = {
+                if (chatConnections[chat.id] === connection) {
+                    chatConnections.remove(chat.id)
+                    statusSynchronizedChatIds.remove(chat.id)
+                    updateChatStatus(chat.id, "disconnected")
+                }
+            },
+        )
+        chatConnections[chat.id] = connection
+        return true
+    }
+
     LaunchedEffect(Unit) {
         machines.clear()
         machines.addAll(machineStore.load())
+        val storedChats = chatStore.load()
         chats.clear()
-        chats.addAll(chatStore.load())
+        chats.addAll(storedChats)
+        busyChatIds.clear()
+        busyChatIds.addAll(
+            storedChats
+                .filter { chat -> chat.queuedPrompts.any { queued -> !queued.removing } }
+                .map { it.id },
+        )
         unreadChatIds.clear()
         unreadChatIds.addAll(chatStore.loadUnreadChatIds().filter { unreadChatId -> chats.any { it.id == unreadChatId } })
         checkForUpdate(manual = false)
+    }
+
+    val chatConnectionKeys = chats.map { chat ->
+        buildString {
+            append(chat.id)
+            append('|')
+            append(chat.machineId)
+            append('|')
+            append(chat.agentId)
+            append('|')
+            append(chat.workspacePath)
+            append('|')
+            append(chat.acpSessionId.orEmpty())
+            append('|')
+            chat.queuedPrompts.forEach { queued ->
+                append(queued.operationId)
+                append(':')
+                append(queued.removing)
+                append(',')
+            }
+        }
+    }
+    val machineConnectionKeys = machines.map { "${it.id}|${it.endpoint}|${it.deviceToken}" }
+    LaunchedEffect(chatConnectionKeys, machineConnectionKeys, statusSynchronizedChatIds.toList()) {
+        var retryDelayMillis = 1_000L
+        while (true) {
+            val unsynchronizedChats = chats.filter { it.id !in statusSynchronizedChatIds }
+            if (unsynchronizedChats.isEmpty()) break
+            unsynchronizedChats.forEach(::ensureChatConnection)
+            delay(retryDelayMillis)
+            retryDelayMillis = (retryDelayMillis * 2).coerceAtMost(30_000L)
+        }
     }
 
     LaunchedEffect(incomingPairingLink.value) {
@@ -1142,53 +1416,7 @@ fun AgentLinkApp(
                 if (machine == null) {
                     onDispose { }
                 } else {
-                    val connection = chatConnections[activeChat.id] ?: bridgeClient.openChatConnection(
-                        machine = machine,
-                        chatId = activeChat.id,
-                        agentId = activeChat.agentId,
-                        workspacePath = activeChat.workspacePath,
-                        lastEventId = lastChatEventIds[activeChat.id] ?: 0,
-                        sessionId = activeChat.acpSessionId,
-                        sessionResumable = activeChat.acpSessionResumable,
-                        queuedPrompts = activeChat.queuedPrompts,
-                        onMessage = { event -> appendChatEvent(activeChat.id, event) },
-                        onApproval = { request ->
-                            appendChatEvent(
-                                activeChat.id,
-                                ChatMessage(
-                                    role = MessageRole.Agent,
-                                    text = strings.approvalRequired(request.summary),
-                                    timestampMillis = System.currentTimeMillis(),
-                                    kind = ChatMessageKind.Activity,
-                                    title = strings.approvalRequiredTitle,
-                                    details = request.details,
-                                    activityId = request.approvalId,
-                                ),
-                            )
-                            addApproval(activeChat, request)
-                        },
-                        onStatus = { status, eventId, queuedCount, operationId ->
-                            updateChatStatus(activeChat.id, status, eventId, queuedCount, operationId)
-                        },
-                        onPromptAccepted = { operationId, state, content ->
-                            handlePromptAccepted(activeChat.id, operationId, state, content)
-                        },
-                        onPromptStarted = { operationId, content ->
-                            handlePromptStarted(activeChat.id, operationId, content)
-                        },
-                        onOperationDone = { operationType, status, operationId, queueRemaining ->
-                            handleOperationDone(activeChat.id, operationType, status, operationId, queueRemaining)
-                        },
-                        onSession = { sessionId, resumable ->
-                            handleSessionBinding(activeChat.id, sessionId, resumable)
-                        },
-                        onEventId = { lastChatEventIds[activeChat.id] = maxOf(lastChatEventIds[activeChat.id] ?: 0, it) },
-                        onFailure = {
-                            chatConnections.remove(activeChat.id)?.close()
-                            updateChatStatus(activeChat.id, "disconnected")
-                        },
-                    )
-                    chatConnections[activeChat.id] = connection
+                    ensureChatConnection(activeChat)
                     onDispose {
                         if (activeChat.id !in busyChatIds) {
                             chatConnections.remove(activeChat.id)?.close()
@@ -1279,7 +1507,7 @@ fun AgentLinkApp(
                                     upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
                                 } else {
                                     val operationId = "op_" + UUID.randomUUID()
-                                    pendingLocalPromptStartEventIds[chat.id] = lastChatEventIds[chat.id] ?: 0
+                                    pendingLocalPromptStartEventIds[chat.id] = chat.lastBridgeEventId
                                     if (chat.id !in activePromptOperationIds) {
                                         activePromptOperationIds[chat.id] = operationId
                                     }
@@ -1294,83 +1522,21 @@ fun AgentLinkApp(
                                     upsertChat(updated)
                                     latestAgentPreviews.remove(chat.id)
                                     val activeConnection = chatConnections[chat.id]
-                                    if (
-                                        activeConnection != null &&
-                                        activeConnection.sendPrompt(
-                                            operationId,
-                                            chat.agentId,
-                                            chat.workspacePath,
-                                            message,
-                                            chat.acpSessionId,
-                                            chat.acpSessionResumable,
-                                        )
-                                    ) {
-                                        // Persistent chat WebSocket owns streaming events and status updates.
-                                    } else {
-                                        scope.launch {
-                                            val sendResult = bridgeClient.sendChatPrompt(
-                                                machine = machine,
-                                                chatId = chat.id,
-                                                agentId = chat.agentId,
-                                                workspacePath = chat.workspacePath,
-                                                text = message,
-                                                operationId = operationId,
-                                                sessionId = chat.acpSessionId,
-                                                sessionResumable = chat.acpSessionResumable,
-                                                onMessage = { event -> appendChatEvent(chat.id, event) },
-                                                onPromptAccepted = { acceptedOperationId, state, content ->
-                                                    handlePromptAccepted(chat.id, acceptedOperationId, state, content)
-                                                },
-                                                onPromptStarted = { startedOperationId, content ->
-                                                    handlePromptStarted(chat.id, startedOperationId, content)
-                                                },
-                                                onOperationDone = { operationType, status, doneOperationId, queueRemaining ->
-                                                    handleOperationDone(chat.id, operationType, status, doneOperationId, queueRemaining)
-                                                },
-                                                onStatus = { status, eventId, queuedCount, statusOperationId ->
-                                                    updateChatStatus(chat.id, status, eventId, queuedCount, statusOperationId)
-                                                },
-                                                onSession = { sessionId, resumable ->
-                                                    handleSessionBinding(chat.id, sessionId, resumable)
-                                                },
-                                                onApproval = { request ->
-                                                    appendChatEvent(
-                                                        chat.id,
-                                                        ChatMessage(
-                                                            role = MessageRole.Agent,
-                                                            text = strings.approvalRequired(request.summary),
-                                                            timestampMillis = System.currentTimeMillis(),
-                                                            kind = ChatMessageKind.Activity,
-                                                            title = strings.approvalRequiredTitle,
-                                                            details = request.details,
-                                                            activityId = request.approvalId,
-                                                        ),
-                                                    )
-                                                    addApproval(chat, request)
-                                                },
-                                            )
-                                            sendResult.result
-                                                .onFailure {
-                                                    val current = chats.firstOrNull { current -> current.id == chat.id } ?: return@onFailure
-                                                    if (!sendResult.accepted) {
-                                                        upsertChat(
-                                                            current.copy(
-                                                                queuedPrompts = current.queuedPrompts.filterNot { queued -> queued.operationId == operationId },
-                                                            ).withMessage(MessageRole.System, strings.bridgeWebSocketFailed(it.message)),
-                                                        )
-                                                    }
-                                                }
-                                            // If the bridge accepted the prompt but the transient WebSocket broke before bridge.done,
-                                            // keep the chat busy because the Agent may still be running on the bridge.
-                                            if (!sendResult.accepted) {
-                                                busyChatIds.remove(chat.id)
-                                                pendingLocalPromptStartEventIds.remove(chat.id)
-                                                authoritativeBusyEventIds.remove(chat.id)
-                                                if (activePromptOperationIds[chat.id] == operationId) {
-                                                    activePromptOperationIds.remove(chat.id)
-                                                }
-                                            }
-                                       }
+                                    val sent = activeConnection?.sendPrompt(
+                                        operationId,
+                                        chat.agentId,
+                                        chat.workspacePath,
+                                        message,
+                                        chat.acpSessionId,
+                                        chat.acpSessionResumable,
+                                    ) == true
+                                    if (!sent) {
+                                        if (activeConnection != null) {
+                                            chatConnections.remove(chat.id)
+                                            statusSynchronizedChatIds.remove(chat.id)
+                                            activeConnection.close()
+                                        }
+                                        ensureChatConnection(updated)
                                     }
                                 }
                             },

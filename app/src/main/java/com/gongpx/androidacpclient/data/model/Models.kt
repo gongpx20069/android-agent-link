@@ -58,6 +58,9 @@ data class Chat(
     val acpSessionResumable: Boolean = false,
     val messages: List<ChatMessage> = emptyList(),
     val queuedPrompts: List<QueuedPrompt> = emptyList(),
+    val lastBridgeEventId: Int = 0,
+    val bridgeEventGeneration: String? = null,
+    val bridgeResyncRequired: Boolean = false,
 )
 
 data class QueuedPrompt(

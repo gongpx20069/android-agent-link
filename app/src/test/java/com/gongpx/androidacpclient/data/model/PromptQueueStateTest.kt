@@ -25,6 +25,85 @@ class PromptQueueStateTest {
     }
 
     @Test
+    fun bridgeEventCheckpointOnlyMovesForward() {
+        val checkpointed = testChat().recordBridgeEventId(42)
+        val replayedOlder = checkpointed.recordBridgeEventId(40)
+
+        assertEquals(42, replayedOlder.lastBridgeEventId)
+    }
+
+    @Test
+    fun bridgeEventCheckpointCanResetForNewBridgeGeneration() {
+        assertEquals(0, testChat().recordBridgeEventId(42).resetBridgeEventCheckpoint().lastBridgeEventId)
+    }
+
+    @Test
+    fun newBridgeEventGenerationResetsCheckpoint() {
+        val rebound = testChat()
+            .copy(bridgeEventGeneration = "old")
+            .recordBridgeEventId(42)
+            .bindBridgeEventGeneration("new", checkpointReset = true)
+
+        assertEquals("new", rebound.bridgeEventGeneration)
+        assertEquals(0, rebound.lastBridgeEventId)
+    }
+
+    @Test
+    fun recentSessionRecoveryAppendsOnlyMessagesAfterOverlap() {
+        val existing = listOf(
+            ChatMessage(MessageRole.User, "one", 1),
+            ChatMessage(MessageRole.Agent, "two", 2),
+            ChatMessage(MessageRole.Agent, "tool", 3, kind = ChatMessageKind.Activity),
+            ChatMessage(MessageRole.User, "three", 4),
+        )
+        val recent = listOf(
+            ChatMessage(MessageRole.Agent, "two", 20),
+            ChatMessage(MessageRole.User, "three", 30),
+            ChatMessage(MessageRole.Agent, "four", 40),
+        )
+
+        val reconciled = reconcileRecentSessionMessages(existing, recent)
+
+        assertEquals(listOf("one", "two", "tool", "three", "four"), reconciled.map { it.text })
+    }
+
+    @Test
+    fun repeatedRecoveredMessageWithNewIdIsPreserved() {
+        val existing = listOf(
+            ChatMessage(MessageRole.User, "continue", 1, activityId = "message_old"),
+        )
+        val repeated = listOf(
+            ChatMessage(MessageRole.User, "continue", 2, activityId = "message_new"),
+        )
+
+        assertEquals(2, reconcileRecentSessionMessages(existing, repeated).size)
+    }
+
+    @Test
+    fun recoveredMessageWithSameIdIsNotDuplicated() {
+        val existing = listOf(
+            ChatMessage(MessageRole.Agent, "done", 1, activityId = "message_1"),
+        )
+        val recovered = listOf(
+            ChatMessage(MessageRole.Agent, "done", 2, activityId = "message_1"),
+        )
+
+        assertEquals(existing, reconcileRecentSessionMessages(existing, recovered))
+    }
+
+    @Test
+    fun recoveredMessageReplacesPartialTextWithSameId() {
+        val existing = listOf(
+            ChatMessage(MessageRole.Agent, "hel", 1, activityId = "message_1"),
+        )
+        val recovered = listOf(
+            ChatMessage(MessageRole.Agent, "hello", 2, activityId = "message_1"),
+        )
+
+        assertEquals("hello", reconcileRecentSessionMessages(existing, recovered).single().text)
+    }
+
+    @Test
     fun queuedPromptMovesIntoTimelineWhenItStarts() {
         val chat = testChat().copy(
             queuedPrompts = listOf(QueuedPrompt("op_1", "run tests", 10)),

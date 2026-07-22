@@ -11,3 +11,15 @@ internal fun chatCompletionAttention(appInForeground: Boolean, chatIsOpen: Boole
         showNotification = !appInForeground,
     )
 }
+
+internal fun chatCompletionPreview(
+    latestAgentPreview: String?,
+    persistedAgentMessages: List<String>,
+    fallback: String,
+): String {
+    return latestAgentPreview
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?: persistedAgentMessages.lastOrNull { it.isNotBlank() }?.trim()
+        ?: fallback
+}

@@ -66,6 +66,9 @@ class ChatStore(context: Context) {
             .put("acpSessionResumable", acpSessionResumable)
             .put("messages", JSONArray(messages.map { it.toJson() }))
             .put("queuedPrompts", JSONArray(queuedPrompts.map { it.toJson() }))
+            .put("lastBridgeEventId", lastBridgeEventId)
+            .put("bridgeEventGeneration", bridgeEventGeneration)
+            .put("bridgeResyncRequired", bridgeResyncRequired)
     }
 
     private fun JSONObject.toChat(): Chat {
@@ -85,6 +88,9 @@ class ChatStore(context: Context) {
             acpSessionResumable = optBoolean("acpSessionResumable", sessionId != null),
             messages = optJSONArray("messages").orEmpty().mapJsonObjects { it.toChatMessage() },
             queuedPrompts = optJSONArray("queuedPrompts").orEmpty().mapJsonObjects { it.toQueuedPrompt() },
+            lastBridgeEventId = optInt("lastBridgeEventId", 0),
+            bridgeEventGeneration = optString("bridgeEventGeneration").ifBlank { null },
+            bridgeResyncRequired = optBoolean("bridgeResyncRequired", false),
         )
     }
 

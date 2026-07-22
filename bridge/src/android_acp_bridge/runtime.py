@@ -140,6 +140,7 @@ class BridgeRuntime:
         self._chat_emitters: dict[str, Callable[[dict[str, Any]], None]] = {}
         self._event_logs: dict[str, list[dict[str, Any]]] = {}
         self._next_event_ids: dict[str, int] = {}
+        self._event_generation = secrets.token_hex(16)
         self._chat_status: dict[str, str] = {}
         self._event_lock = threading.RLock()
 
@@ -749,6 +750,7 @@ class BridgeRuntime:
     ) -> list[dict[str, Any]]:
         chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
         last_event_id = _int_or_default(payload.get("lastEventId"), 0)
+        last_event_generation = _optional_string(payload.get("lastEventGeneration"))
         session_id = _optional_string(payload.get("sessionId"))
         binding_error: AcpAgentError | None = None
         if session_id is not None:
@@ -767,8 +769,16 @@ class BridgeRuntime:
             active_operation = self._active_prompts.get(chat_id)
             queued_count = len(self._prompt_queues.get(chat_id, ()))
             with self._event_lock:
-                events = [event.copy() for event in self._event_logs.get(chat_id, []) if int(event.get("eventId", 0)) > last_event_id]
+                event_log = self._event_logs.get(chat_id, [])
                 latest_event_id = self._next_event_ids.get(chat_id, 1) - 1
+                checkpoint_reset = (
+                    (last_event_generation is not None and last_event_generation != self._event_generation)
+                    or last_event_id > latest_event_id
+                )
+                effective_last_event_id = 0 if checkpoint_reset else last_event_id
+                oldest_event_id = int(event_log[0].get("eventId", 0)) if event_log else latest_event_id + 1
+                replay_truncated = effective_last_event_id < oldest_event_id - 1
+                events = [event.copy() for event in event_log if int(event.get("eventId", 0)) > effective_last_event_id]
                 session_events: list[dict[str, Any]] = []
                 if binding_error is not None:
                     session_events.append(
@@ -793,16 +803,32 @@ class BridgeRuntime:
                 if active_operation is not None:
                     status_payload["operationId"] = active_operation.operation_id
                 status_event = self._append_event(chat_id, status_payload)
+                status_snapshot = {**status_event, "snapshot": True}
+                resync_responses = (
+                    [
+                        {
+                            "type": "chat.resyncRequired",
+                            "chatId": chat_id,
+                            "latestEventId": latest_event_id,
+                            "reason": "event log no longer contains requested history",
+                        }
+                    ]
+                    if replay_truncated
+                    else []
+                )
                 responses = [
                     {
                         "type": "chat.attached",
                         "chatId": chat_id,
                         "latestEventId": latest_event_id,
+                        "eventGeneration": self._event_generation,
                         "replayed": len(events),
+                        "checkpointReset": checkpoint_reset,
                     },
+                    *resync_responses,
                     *events,
                     *session_events,
-                    status_event,
+                    status_snapshot,
                 ]
                 if emit is not None:
                     self._chat_emitters[chat_id] = emit
