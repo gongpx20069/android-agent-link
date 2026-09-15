@@ -4,7 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import DEFAULT_PORT, default_config
+from .config import DEFAULT_PORT, default_config, default_device_token_store
+from .device_tokens import DeviceTokenStoreError
 from .devtunnel import DevTunnelAuthError, DevTunnelConflictError, DevTunnelHost, default_tunnel_id, setup_devtunnel
 from .pairing import PairingStore, build_pairing_payload, encode_pairing_deep_link, render_terminal_qr
 from .runtime import BridgeRuntime
@@ -22,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--transport", choices=("tailscale", "devtunnel", "local"), default="devtunnel", help="How Android reaches the bridge. Defaults to devtunnel.")
     start_parser.add_argument("--host", default=None, help="Host to bind. Defaults to the Tailscale IP in Tailscale mode.")
     start_parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind.")
+    start_parser.add_argument("--device-token-store", type=Path, default=default_device_token_store(), help="Hash store in a dedicated user-private directory.")
     start_parser.add_argument("--pairing-endpoint", help="Endpoint to put in the Android pairing QR/link when a relay forwards to this bridge, e.g. wss://<id>-4317.devtunnels.ms.")
     start_parser.add_argument("--allow-non-tailscale", action="store_true", help="Allow localhost/manual endpoint when Tailscale is unavailable.")
     start_parser.add_argument("--no-tailscale-setup", action="store_true", help="Skip automatic Tailscale install/login and only report current status.")
@@ -107,7 +109,7 @@ def _start(args: argparse.Namespace) -> int:
 
         pairing_endpoint = _validate_pairing_endpoint(args.pairing_endpoint) if args.pairing_endpoint else endpoint
 
-    config = default_config(host=bind_host, port=args.port)
+    config = default_config(host=bind_host, port=args.port, device_token_store=args.device_token_store)
 
     pairing_store = PairingStore()
     token = pairing_store.create()
@@ -128,17 +130,20 @@ def _start(args: argparse.Namespace) -> int:
     print("Android pairing QR:", flush=True)
     print(render_terminal_qr(deep_link, ansi=sys.stdout.isatty()), flush=True)
 
-    runtime = BridgeRuntime(
-        config=config,
-        pairing_store=pairing_store,
-        require_local_pairing_confirmation=not args.auto_approve_pairing,
-    )
     try:
+        runtime = BridgeRuntime(
+            config=config,
+            pairing_store=pairing_store,
+            require_local_pairing_confirmation=not args.auto_approve_pairing,
+        )
         if args.server == "fastapi":
             _run_fastapi(runtime)
         else:
             run_server(runtime)
         return 0
+    except DeviceTokenStoreError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     finally:
         if devtunnel_host is not None:
             devtunnel_host.stop()

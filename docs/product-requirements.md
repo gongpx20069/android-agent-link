@@ -66,6 +66,13 @@ Permission modes for MVP:
 - Provide a Settings feedback entry that explicitly welcomes feature requests, bug reports, and development collaboration, linking to this repository's GitHub Issues and the developer contact email.
 - When an Agent response completes while AgentLink is in the background, show a system notification containing the Chat name, latest Agent response, and a direct link to that Chat.
 - Do not show completion notifications while AgentLink is in the foreground; use the chat-list unread indicator when the completed chat is not open.
+- While foregrounded in another screen, show an actionable in-app completion or
+  approval message in addition to unread indicators.
+- Explain incomplete history and provide earlier-page loading. Preserve tool
+  outputs, diffs and plans in recovery rather than returning text-only history.
+- Show notification permission availability and a settings shortcut. Background
+  monitoring is bounded to active work; display interruption/recovery guidance
+  rather than promising delivery after force-stop or platform time limits.
 
 ### Approvals
 
@@ -73,6 +80,9 @@ Permission modes for MVP:
 - Each approval must show machine, workspace, chat, requested action, risk level, and exact target.
 - User can approve or deny.
 - Denied approvals should be visible in the chat timeline.
+- Keep pending/submitting/resolved/expired approval states across app restarts;
+  reconcile against the bridge snapshot independently of the event checkpoint.
+- Do not present a decision as approved/denied until the bridge acknowledges it.
 
 ### Machines
 

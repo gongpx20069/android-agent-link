@@ -49,6 +49,14 @@ android-acp-bridge start
 
 The default transport creates a private authenticated Microsoft Dev Tunnel. Android connects directly with the short-lived relay authorization header in the pairing QR and does not need a Tailscale or ZeroTier app. See **Microsoft Dev Tunnels private relay** below for login behavior and options.
 
+Device authentication survives restarts. Production stores only device-token hashes
+in `%LOCALAPPDATA%\AgentLink\device-tokens.json` on Windows, or
+`$XDG_STATE_HOME/AgentLink/device-tokens.json` (default `~/.local/state`) elsewhere.
+Use `--device-token-store <path>` to choose a file in a dedicated private directory.
+Storage/permission failures are explicit; do not delete this state unless you intend
+to invalidate paired devices on the next restart. This does not renew the relay
+connect token: its expiry still requires explicit re-pairing, never anonymous access.
+
 ### Tailscale mode (optional)
 
 ```powershell

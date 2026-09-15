@@ -51,7 +51,9 @@ fun JSONObject.toAgentPlanMessage(nowMillis: Long): ChatMessage? {
 fun parseAgentPlan(json: String?): AgentPlan? {
     if (json.isNullOrBlank()) return null
     return runCatching {
-        val entries = JSONArray(json)
+        val entries = if (json.trimStart().startsWith("{")) {
+            JSONObject(json).getJSONArray("entries")
+        } else JSONArray(json)
         val parsedEntries = List(entries.length()) { index ->
             entries.optJSONObject(index)?.toAgentPlanEntry()
         }.filterNotNull().filter { it.content.isNotBlank() }

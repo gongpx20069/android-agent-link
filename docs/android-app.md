@@ -8,6 +8,11 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 
 - Compose application shell.
 - Bottom tabs: Chats, Approvals, Machines, Settings.
+- Chats is the default home screen. Chat status and connection status are separate;
+  the last synchronization time and actionable connection errors remain visible.
+- Tool activity preserves ACP content arrays, diffs, locations and raw input/output.
+  Status-only updates no longer erase earlier tool details. Expanded output supports
+  selection and horizontal scrolling.
 - In-app QR scanning with CameraX and ML Kit Barcode Scanning.
 - `acpclient://pair?data=...` deep-link handling.
 - Manual pairing-link paste fallback.
@@ -31,7 +36,11 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - After a local prompt is submitted, Android keeps the optimistic busy state until the bridge confirms `busy` or `waitingApproval`; an attach/replay `idle` received before that confirmation must not clear the busy indicator.
 - Target chat communication uses a persistent WebSocket per open chat, with `chat.attach`, `lastEventId`, bridge event replay, operation IDs, and bridge-authoritative `chat.status`. The older one-shot WebSocket request flow is transitional.
 - Bilingual UI with a Settings language selector: System, English, or Chinese. System mode uses Chinese only when the device language is Chinese; otherwise it uses English.
-- Settings includes a Session load history limit. It defaults to 5 and controls how many recent chat message bubbles are appended when opening or resuming an existing ACP session; tool/activity cards and hidden command/config control updates do not count toward this limit.
+- Settings includes a Session load history page size, defaulting to 5 text bubbles.
+  Associated tool/activity, plan and control rows are retained. Partial history is
+  labelled and a Load older history action fetches earlier snapshot pages without
+  restarting the agent. Opening a different session replaces the visible history
+  and adopts that session's workspace instead of mixing two conversations.
 - Settings includes a Feedback card welcoming feature requests, bug reports, and development collaboration. It opens a new GitHub Issue for this repository and provides the developer email `gongpx20069@vip.qq.com`.
 - Built-in `model` chip that opens a model picker from ACP session config options.
 - Common command chips are prioritized before other ACP-advertised commands: `model`, `resume`, and `allow-all`.
@@ -40,6 +49,15 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Collapsible agent activity cards for ACP `tool_call` and `tool_call_update` events.
 - ACP `plan` updates render as a dedicated compact progress card with step status and priority indicators; each full plan update replaces the previous card instead of appearing as a Tool Call activity.
 - Approval list with approve/deny actions backed by ACP `session/request_permission`.
+- Pending approvals also appear inside their chat with machine, workspace, action,
+  exact supplied details and expiry. They do not force navigation away from the
+  current screen. Approvals and decisions are encrypted at rest; submission failures
+  remain visible and retryable. Bridge snapshots reconcile them after restart.
+- Foreground completion in another chat shows an actionable in-app message;
+  notification-disabled state is visible in the header and Settings.
+- Background monitoring uses a bounded foreground service only for outstanding
+  work, hands connections back before foreground synchronization, and stops after
+  completion or platform/time limits. It cannot guarantee delivery after force-stop.
 - Automatic update checks on app startup and manual update checks from Settings.
 
 GitHub Copilot CLI ACP execution is wired through the bridge when `copilot --acp` is available on the developer machine. The chat shell sends prompts through the bridge WebSocket and displays ACP `session/update` responses as agent messages and expandable activity cards. Claude Code requires the `claude` CLI to be installed and expose an ACP server command.
@@ -111,7 +129,14 @@ The app maps these bridge/ACP events:
 
 The Android connection model is one `ChatConnection` per active chat. The connection opens when a chat detail screen is active or a background operation needs to keep the chat live.
 
-If the user leaves a chat detail screen while its prompt is still busy, Android keeps that chat connection until the bridge sends the terminal status. This allows `operation.done` to drive unread state and background completion notifications without sending duplicate notifications for streamed message chunks.
+Leaving a chat detail screen while the app remains visible keeps its busy connection.
+When the Activity pauses, a synchronous lifecycle observer closes UI sockets and
+cancels UI requests before handing outstanding chats to `ChatMonitorService`.
+Resuming stops the service synchronously before reloading stores and reconnecting
+the UI. The service is non-sticky and limited to one hour per handoff; it also stops
+on platform timeout, authentication failure, or unrecoverable event gaps. It does
+not renew tunnel credentials or guarantee delivery after force-stop. Start failures
+are persisted and shown, rather than claiming monitoring is active.
 
 On connect or reconnect, Android sends:
 
@@ -133,8 +158,9 @@ Android responsibilities:
 - Treat WebSocket disconnect as transport state only; do not mark the agent idle unless the bridge sends `chat.status: idle`.
 - Retry status synchronization and busy-Chat monitoring after transport failure without clearing the busy indicator.
 - Retry `chat.attach` with exponential backoff while the user is viewing the chat.
-- Keep pending approvals visible after reconnect by replaying `approval.requested` events.
-- Treat `operation.done` for a completed `chat.prompt` as the single completion signal for unread state and notifications.
+- Keep pending approvals visible after reconnect using both replayed events and the
+  authoritative `approval.snapshot`, even when their original event was acknowledged.
+- Treat `operation.done` for a completed or failed `chat.prompt` as the single completion signal for unread state and notifications.
 - Suppress completion attention while `operation.done.queueRemaining > 0`; notify only when the final queued prompt completes.
 - Persist queued prompt text, operation IDs, and removal tombstones in encrypted chat storage; reconcile accepted/started/done events idempotently after replay; and never discard queued text merely because an idle status arrives. A local Remove action updates the pending area immediately. Cancellation remains pending until `cancelled`, while a later `already_started` result moves the original prompt into the timeline instead of cancelling an active batch.
 - Include the persisted ACP session binding on attach, prompt, and config requests so a restarted Bridge restores the same agent conversation.
@@ -147,7 +173,10 @@ The bridge is responsible for event ordering and replay. Android is responsible 
 
 The bridge does not bind a workspace at startup. In New Session mode, workspace is selected per chat in the New Chat form by entering the remote absolute project path. Leaving the field blank uses `~`, which the bridge resolves to the remote machine user's home directory. The selected path maps to ACP `cwd` when the bridge creates the Copilot ACP session.
 
-In Existing Session mode, the user does not enter a workspace. AgentLink asks the selected machine and agent for all resumable sessions with ACP `session/list {}`. The selected session's own `cwd` becomes the local chat workspace display. Opening the session uses bridge `session.loadRecent`, which loads ACP history in the bridge, keeps only the newest visible user/agent message bubbles, and replaces the loading placeholder with that recent snapshot.
+In Existing Session mode, the user does not enter a workspace. AgentLink asks the selected machine and agent for all resumable sessions with ACP `session/list {}`. The selected session's own `cwd` becomes the local chat workspace display. Opening the session uses bridge `session.loadRecent`, which loads ACP history in the bridge
+and replaces the loading placeholder with recent text plus associated tool, plan,
+and control rows. Older rows are fetched from that immutable snapshot without
+reloading the agent. Failed session switches leave the prior local history intact.
 
 Deleting an Android Chat removes only the local Chat record. A session with completed prompt history remains in the agent's session store and can be selected again through Existing Session. A config-only empty session has no recoverable conversation and may not be listed by the agent.
 
@@ -167,7 +196,13 @@ AgentLink displays advertised commands as chips without the slash prefix. Tappin
 
 ## Approval Flow
 
-When the ACP agent sends `session/request_permission`, the bridge immediately emits `approval.requested` to Android and pauses the ACP response. AgentLink adds the request to the Approvals tab. Approving or denying sends `approval.decide` back to the bridge, which resolves the pending ACP permission request with the selected allow/reject option.
+When the ACP agent sends `session/request_permission`, the bridge emits
+`approval.requested` and pauses the ACP response. The request is persisted and
+displayed both in the chat and Approvals. Approving or denying first shows
+Submitting; only `approval.decide.result` or `approval.resolved` confirms the
+decision. Failed submissions retain their error. Expired requests cannot be
+approved, and an empty attach snapshot clears stale actionable state without
+inventing a successful decision.
 
 ## Validation
 

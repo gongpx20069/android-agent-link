@@ -40,6 +40,25 @@ The Android MVP permits cleartext HTTP/WebSocket traffic only for private Tailsc
 - The bridge should support token rotation.
 - Relay access headers such as `X-Tunnel-Authorization` are credentials. Store them only in secure platform storage, scope them to a single paired machine, and never log them.
 
+### Restart-safe device authentication
+
+Production bridge startup stores only SHA-256 hashes of random device tokens in
+`%LOCALAPPDATA%\AgentLink\device-tokens.json` on Windows, or
+`$XDG_STATE_HOME/AgentLink/device-tokens.json` (default `~/.local/state`) elsewhere.
+The dedicated directory and files are user-private: protected current-user-only
+Windows ACLs, or directory mode `0700` and file mode `0600`. Writes use a flushed,
+atomic replacement; the bridge never returns a newly issued token if persistence
+fails. Invalid/unreadable stores fail explicitly rather than silently forgetting
+paired devices. Back up this file as sensitive authentication state, not as source.
+Use `--device-token-store` only with a dedicated private directory.
+
+Library/test construction with no configured store remains memory-only and never
+writes to the real user profile. HTTP access logs redact query strings, including
+WebSocket device tokens.
+
+This durability does **not** renew Dev Tunnel connect tokens, extend their lifetime,
+or permit anonymous access. Expired relay credentials require explicit re-pairing.
+
 ## Pairing QR Security
 
 The QR code may include endpoint metadata, pairing ID, a short-lived pairing token, expiry, bridge fingerprint, and short-lived relay access headers needed to reach the bridge. It must not include long-lived credentials or broad third-party tokens.
@@ -97,6 +116,36 @@ Every approval must show:
 - Approve and deny actions
 
 Approvals must not use vague labels such as "continue" when the action is risky.
+
+### Approval recovery
+
+Every chat attach returns an authoritative chat-scoped pending approval snapshot,
+even after the request event has been acknowledged. Requests include creation and
+expiry times in epoch milliseconds. Decisions and the five-minute timeout emit
+replayable `approval.resolved` events. Clients must wait for resolution or a
+successful `approval.decide.result`, not infer success from sending a decision.
+Retries return the existing terminal result, including expiry, without changing it.
+The bridge retains the latest 1,000 terminal decisions in memory; approvals are
+not restored across bridge restarts. A denial never falls back to an allow option.
+
+### History snapshot boundaries
+
+Recent-history loads require the session's workspace instead of silently selecting
+the bridge home directory. Pagination uses an immutable chat/session-bound snapshot;
+it never reloads ACP or replaces an active session. Snapshots include tool/diff,
+plan, and control information for reviewing agent actions. They live only in memory,
+expire after 30 minutes, and are bounded to 16 snapshots (one per chat). Expired,
+evicted, restarted, or mismatched snapshots fail explicitly; partial replay is not
+represented as complete history.
+
+A successful explicit `session.loadRecent` also replaces that chat's replay
+baseline: it discards the old event log, rotates a per-chat `eventGeneration`,
+and returns `latestEventId: 0` alongside the new generation. Clients save this
+checkpoint with the snapshot before attaching, so events from the previous ACP
+session cannot reappear in the new timeline. Other chats are unaffected; history
+pagination never changes checkpoints. Loading fails with `session_busy` while
+that chat has an active prompt/approval, and prompts cannot start during the load.
+Failed loads preserve the previous replay baseline.
 
 ## Workspace Boundaries
 

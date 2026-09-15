@@ -615,6 +615,45 @@ Approval requests must be written to the chat event log before they are sent to 
 - Bridge must not generate long-lived credentials directly in QR payloads.
 - Bridge must require local confirmation before completing first-time pairing.
 
+## Recovery contract
+
+Device authentication survives bridge restarts through a local, user-private store of
+token hashes. This does not renew Dev Tunnel access tokens or enable anonymous access.
+An expired relay credential requires explicit re-pairing.
+
+Every `chat.attach` includes `approval.snapshot` before its final status snapshot.
+The envelope contains `chatId` and `approvals` (the complete current pending
+`approval.requested` payloads, including `createdAt` and `expiresAt` in epoch
+milliseconds). It is authoritative even when the array is empty, and independent
+of the event replay checkpoint. `approval.resolved` is replayable and contains
+`approvalId`, `chatId`, `status` (`approved`, `denied`, or `expired`) and `decidedAt`.
+An `approval.decide` returns `approval.decide.result` with `approvalId`, `status`,
+and `resolved`. Clients show submitting until this acknowledgement or the
+resolution event; network failure must not be displayed as an approved decision.
+
+`session.loadRecent` additionally returns `historyId`, `nextBefore`, `totalMessages`,
+and `hasMore`. Its `messages` may include activity and plan rows as well as text
+bubbles, encoded with `role`, `text`, `kind`, `title`, `details`, `activityId`,
+`timestampMillis`, and stable `historyItemId`. The configured limit counts text
+bubbles; associated activity/control rows are retained. The bridge retains an
+immutable snapshot for pagination. `session.history` with `chatId`, `sessionId`,
+`historyId`, `before`, and `limit` returns `session.history.result` with the same
+page fields without reloading or replacing the running ACP session. Expired
+snapshots fail explicitly; clients must not silently show partial history as full.
+
+`nextBefore` is an exclusive row offset; `totalMessages` counts text bubbles.
+Snapshots expire after 30 minutes and are bounded to one per chat, 16 total.
+History `kind` values are `text`, `activity`, `plan`, and `control`; `details`
+retains the full ACP update as a JSON string, including control `sessionUpdate`.
+
+A successful explicit `session.loadRecent` also returns `eventGeneration` and
+`latestEventId: 0`: it rotates only that chat's replay generation and clears its
+old event log. Clients close the old connection and atomically persist the new
+timeline, session binding, generation, and checkpoint before attaching again.
+Active prompts/approvals return `session_busy`; failed loads preserve the old
+session and replay baseline. Pagination never changes the replay generation.
+Queued operations are restored only after a safe authoritative attach snapshot.
+
 ## Open Decisions
 
 - Decision needed: exact WebSocket envelope format.

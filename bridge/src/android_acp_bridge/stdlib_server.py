@@ -4,12 +4,14 @@ import base64
 import hashlib
 import json
 import queue
+import re
 import struct
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from .device_tokens import DeviceTokenStoreError
 
 from .runtime import BridgeRuntime, InvalidPairingTokenError, PairingDeniedError, parse_device_info
 
@@ -67,11 +69,16 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except InvalidPairingTokenError as exc:
             self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid_pairing_token", "message": str(exc)})
             return
+        except DeviceTokenStoreError as exc:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "device_token_store_unavailable", "message": str(exc)})
+            return
 
         self._send_json(HTTPStatus.OK, response)
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"{self.address_string()} - {format % args}")
+        # Request lines include the WebSocket device token; never log query strings.
+        message = re.sub(r"\?[^\s\"]*", "?[redacted]", format % args)
+        print(f"{self.address_string()} - {message}")
 
     def _read_json_body(self) -> Any | None:
         try:

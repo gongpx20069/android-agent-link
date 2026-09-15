@@ -254,14 +254,39 @@ Each batch member keeps its own operation ID and receives individual `operation.
 
 The WebSocket reader and writer run independently so the bridge can accept queue and approval messages while an ACP prompt request is still running. Chat events are serialized through the connection writer and remain replayable by `eventId`.
 
-### Implementation Phases
+### Recovery and ownership
 
-1. **Current transitional model**: one-shot WebSocket requests with `bridge.accepted`, heartbeat, and ping/pong keepalive. This is only a mitigation for idle disconnects.
-2. **Persistent channel MVP**: Android opens `chat.attach` for the active chat, bridge maintains a `ChatChannel`, event IDs, replay buffer, and bridge-authoritative `chat.status`.
-3. **Multi-chat resilience**: Android can keep multiple chat channels attached, reconnect each independently, and replay missed approvals/tool updates.
-4. **Durable bridge state**: bridge persists event logs and pending approvals across bridge restarts where feasible.
+Persistent chat channels are implemented. One-shot requests remain for bounded
+discovery, history and configuration operations.
 
-The persistent channel MVP is the next architectural milestone. New WebSocket work should move toward this model instead of adding more behavior to the one-shot request flow.
+Android distinguishes transport connectivity, last synchronization time and remote
+agent status. A failed connection does not imply an idle agent. Authentication
+failures require explicit retry/re-pairing rather than endlessly retrying unchanged
+credentials. Bridge device credentials survive restart; short-lived Dev Tunnel
+connect tokens are not automatically renewed.
+
+Tool state is reduced from ACP partial updates. Absent fields preserve their previous
+values; supplied content collections replace the collection. The client retains
+content blocks, diffs, raw input/output and locations rather than flattening the
+wire event into a lossy activity title.
+
+Pending approvals have encrypted local persistence and an authoritative bridge
+snapshot on attach, independent of event cursors. Decisions are not considered
+successful until acknowledged. Expiration is a terminal event, not a silent
+transition back to busy.
+
+Recent ACP history is an explicitly paged snapshot with tools and plans retained.
+Older pages come from an immutable bridge snapshot and never reload an active ACP
+process. Event-gap recovery waits until the agent is idle and advertises incomplete
+history until recovery succeeds. The event ring remains bounded and in memory;
+this is not a durable, complete audit log across bridge restarts.
+
+While the UI is foreground it owns chat sockets. Background task monitoring hands
+ownership to a bounded foreground service, which persists events and raises
+completion/approval notifications. Returning to the UI first stops service-owned
+sockets, then reloads durable state. Monitoring ends with tasks or a time/platform
+limit; it does not promise delivery after force-stop, system termination or relay
+credential expiration. No cloud push infrastructure or always-on tunnel is required.
 
 ## ACP Boundary
 

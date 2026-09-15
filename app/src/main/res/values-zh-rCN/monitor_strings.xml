@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="monitor_channel_name">后台任务监控</string>
+    <string name="monitor_alert_channel_name">审批与监控提醒</string>
+    <string name="monitor_title">正在监控远程任务</string>
+    <string name="monitor_description">正在同步 %1$d 个未完成的聊天。点按打开 AgentLink。</string>
+    <string name="monitor_approval_required">远程任务需要你的审批。请打开 AgentLink 查看详情。</string>
+    <string name="monitor_timeout">后台监控已达到时间限制。请重新打开 AgentLink 同步；远程任务可能仍在运行。</string>
+    <string name="monitor_auth_error">桥接或隧道访问被拒绝，监控已停止。请重新打开 AgentLink 更新访问权限并重新连接。</string>
+    <string name="monitor_resync_error">部分远程事件已不可用。请重新打开 AgentLink 恢复聊天历史；远程任务未被重新启动。</string>
+    <string name="monitor_connection_error">连接已中断。后台监控正在重新连接；远程任务可能仍在运行。</string>
+    <string name="monitor_start_error">Android 无法启动后台监控。请保持 AgentLink 打开，或重新打开以同步未完成的任务。</string>
+    <string name="monitor_storage_error">后台监控无法保存或加载聊天状态。请重新打开 AgentLink 以安全同步。</string>
+    <string name="monitor_machine_missing">已配对的机器不可用。请重新打开 AgentLink 检查配对并同步。</string>
+    <string name="monitor_completion">远程任务已完成。请打开 AgentLink 查看回复。</string>
+    <string name="monitor_task_failed">远程任务失败。请打开 AgentLink 查看错误详情。</string>
+</resources>

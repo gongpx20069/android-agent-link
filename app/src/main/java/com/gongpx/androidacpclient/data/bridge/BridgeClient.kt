@@ -4,16 +4,26 @@ import android.os.Handler
 import android.os.Looper
 import com.gongpx.androidacpclient.data.model.Agent
 import com.gongpx.androidacpclient.data.model.AgentSessionInfo
+import com.gongpx.androidacpclient.data.model.ApprovalDecisionResult
 import com.gongpx.androidacpclient.data.model.BridgeApprovalRequest
 import com.gongpx.androidacpclient.data.model.ChatMessage
 import com.gongpx.androidacpclient.data.model.ChatMessageKind
 import com.gongpx.androidacpclient.data.model.ConnectionState
+import com.gongpx.androidacpclient.data.model.HistoryPage
 import com.gongpx.androidacpclient.data.model.Machine
 import com.gongpx.androidacpclient.data.model.MessageRole
 import com.gongpx.androidacpclient.data.model.QueuedPrompt
 import com.gongpx.androidacpclient.data.model.PairingPayload
 import com.gongpx.androidacpclient.data.model.Workspace
 import com.gongpx.androidacpclient.data.model.toAgentPlanMessage
+import com.gongpx.androidacpclient.data.model.bridgeConnectionFailure
+import com.gongpx.androidacpclient.data.model.mergeToolActivity
+import com.gongpx.androidacpclient.data.model.requireBridgeResult
+import com.gongpx.androidacpclient.data.model.toApprovalDecisionResult
+import com.gongpx.androidacpclient.data.model.toApprovalSnapshot
+import com.gongpx.androidacpclient.data.model.toBridgeApprovalRequest
+import com.gongpx.androidacpclient.data.model.toHistoryPage
+import com.gongpx.androidacpclient.data.model.toToolActivity
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -165,6 +175,25 @@ class BridgeClient {
         )
     }
 
+    suspend fun sendApprovalDecisionValidated(
+        machine: Machine,
+        approvalId: String,
+        decision: String,
+    ): Result<ApprovalDecisionResult> {
+        if (decision !in setOf("approved", "denied")) {
+            return Result.failure(IllegalArgumentException("Decision must be approved or denied."))
+        }
+        return sendRawBridgeMessage(
+            machine,
+            JSONObject()
+                .put("type", "approval.decide")
+                .put("approvalId", approvalId)
+                .put("decision", decision),
+        ).map { events ->
+            requireBridgeResult(events, "approval.decide.result").toApprovalDecisionResult(approvalId, decision)
+        }.result
+    }
+
     suspend fun removeQueuedPrompt(machine: Machine, chatId: String, operationId: String): BridgeSendResult<String?> {
         return sendRawBridgeMessage(
             machine = machine,
@@ -189,9 +218,8 @@ class BridgeClient {
                 .put("agentId", agentId)
                 .put("workspacePath", workspacePath),
         ).map { events ->
-            val sessions = events.firstOrNull { it.optString("type") == "session.list.result" }
-                ?.optJSONArray("sessions")
-                ?: JSONArray()
+            val sessions = requireBridgeResult(events, "session.list.result").optJSONArray("sessions")
+                ?: throw IOException("Bridge returned an invalid session list.")
             sessions.toSessionInfos()
         }.result
     }
@@ -230,6 +258,20 @@ class BridgeClient {
         limit: Int,
         onSession: (String, Boolean) -> Unit = { _, _ -> },
     ): BridgeSendResult<List<ChatMessage>> {
+        return loadRecentSessionPage(
+            machine, chatId, agentId, workspacePath, sessionId, limit, onSession,
+        ).map { it.messages }
+    }
+
+    suspend fun loadRecentSessionPage(
+        machine: Machine,
+        chatId: String,
+        agentId: String,
+        workspacePath: String,
+        sessionId: String,
+        limit: Int,
+        onSession: (String, Boolean) -> Unit = { _, _ -> },
+    ): BridgeSendResult<HistoryPage> {
         return sendRawBridgeMessage(
             machine,
             JSONObject()
@@ -246,11 +288,30 @@ class BridgeClient {
                 }
             },
         ).map { events ->
-            val result = events.firstOrNull { it.optString("type") == "session.loadRecent.result" }
-                ?: throw IOException("Bridge did not return recent session history.")
-            result.optString("error").takeIf { it.isNotBlank() }?.let { throw IOException(it) }
-            result.optJSONArray("messages").orEmpty().toHistoryMessages()
+            requireBridgeResult(events, "session.loadRecent.result").toHistoryPage()
         }
+    }
+
+    suspend fun loadHistoryPage(
+        machine: Machine,
+        chatId: String,
+        sessionId: String,
+        historyId: String,
+        before: Int,
+        limit: Int,
+    ): Result<HistoryPage> {
+        return sendRawBridgeMessage(
+            machine,
+            JSONObject()
+                .put("type", "session.history")
+                .put("chatId", chatId)
+                .put("sessionId", sessionId)
+                .put("historyId", historyId)
+                .put("before", before)
+                .put("limit", limit),
+        ).map { events ->
+            requireBridgeResult(events, "session.history.result").toHistoryPage()
+        }.result
     }
 
     suspend fun setConfigOption(
@@ -329,6 +390,8 @@ class BridgeClient {
         onEventGeneration: (String, Boolean) -> Unit = { _, _ -> },
         onResyncRequired: () -> Unit = {},
         onFailure: (Throwable) -> Unit = {},
+        onApprovalSnapshot: (List<BridgeApprovalRequest>) -> Unit = {},
+        onApprovalResolved: (String, String, Long) -> Unit = { _, _, _ -> },
     ): ChatConnection {
         val requestBuilder = Request.Builder().url(toWebSocketUrl(machine.endpoint, machine.deviceToken))
         machine.connectionHeaders.forEach { (name, value) ->
@@ -346,12 +409,16 @@ class BridgeClient {
                 socketReady = false
             }
             if (!intentionallyClosed.get() && terminationNotified.compareAndSet(false, true)) {
-                mainHandler.post { onFailure(error.withReadableMessage()) }
+                mainHandler.post {
+                    if (!intentionallyClosed.get()) onFailure(error.withReadableMessage())
+                }
             }
         }
         val connection = ChatConnection(chatId = chatId) { payload ->
             synchronized(sendLock) {
-                if (socketReady) {
+                if (intentionallyClosed.get()) {
+                    false
+                } else if (socketReady) {
                     socket?.send(payload.toString()) == true
                 } else {
                     pendingPayloads.add(payload)
@@ -363,22 +430,26 @@ class BridgeClient {
             requestBuilder.build(),
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    webSocket.send(
-                        JSONObject()
-                            .put("type", "chat.attach")
-                            .put("chatId", chatId)
-                            .put("agentId", agentId)
-                            .put("workspacePath", workspacePath)
-                            .put("lastEventId", lastEventId)
-                            .apply {
-                                if (lastEventGeneration != null) {
-                                    put("lastEventGeneration", lastEventGeneration)
-                                }
-                            }
-                            .putSessionBinding(sessionId, sessionResumable)
-                            .toString(),
-                    )
                     synchronized(sendLock) {
+                        if (intentionallyClosed.get()) {
+                            webSocket.cancel()
+                            return
+                        }
+                        webSocket.send(
+                            JSONObject()
+                                .put("type", "chat.attach")
+                                .put("chatId", chatId)
+                                .put("agentId", agentId)
+                                .put("workspacePath", workspacePath)
+                                .put("lastEventId", lastEventId)
+                                .apply {
+                                    if (lastEventGeneration != null) {
+                                        put("lastEventGeneration", lastEventGeneration)
+                                    }
+                                }
+                                .putSessionBinding(sessionId, sessionResumable)
+                                .toString(),
+                        )
                         val pendingRemovals = pendingPayloads.filter {
                             it.optString("type") == "chat.prompt.remove"
                         }
@@ -415,14 +486,16 @@ class BridgeClient {
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (intentionallyClosed.get()) return
                     val event = runCatching { JSONObject(text) }.getOrNull() ?: return
                     val eventId = event.optInt("eventId", -1)
                     val replayBoundary = attachReplayBoundary
                     val isReplay = replayBoundary != null && eventId in 0..replayBoundary
                     fun postApplied(action: () -> Unit = {}) {
                         mainHandler.post {
+                            if (intentionallyClosed.get()) return@post
                             action()
-                            if (eventId >= 0) onEventId(eventId)
+                            if (!intentionallyClosed.get() && eventId >= 0) onEventId(eventId)
                         }
                     }
                     when (event.optString("type")) {
@@ -437,7 +510,9 @@ class BridgeClient {
                                     (lastEventGeneration != null && eventGeneration != lastEventGeneration),
                             )
                             if (eventGeneration.isNotBlank()) {
-                                mainHandler.post { onEventGeneration(eventGeneration, checkpointReset) }
+                                mainHandler.post {
+                                    if (!intentionallyClosed.get()) onEventGeneration(eventGeneration, checkpointReset)
+                                }
                             }
                         }
                         "operation.accepted" -> if (event.optString("operationType") == "chat.prompt") {
@@ -485,8 +560,23 @@ class BridgeClient {
                         }
                         "chat.resyncRequired" -> postApplied { onResyncRequired() }
                         "approval.requested" -> {
-                            val request = event.toApprovalRequest()
+                            val request = event.toBridgeApprovalRequest()
                             postApplied { if (request != null) onApproval(request, isReplay) }
+                        }
+                        "approval.snapshot" -> {
+                            val approvals = runCatching { event.toApprovalSnapshot() }.getOrElse {
+                                notifyConnectionFailure(bridgeConnectionFailure())
+                                webSocket.cancel()
+                                return
+                            }
+                            postApplied { onApprovalSnapshot(approvals) }
+                        }
+                        "approval.resolved" -> postApplied {
+                            onApprovalResolved(
+                                event.optString("approvalId"),
+                                event.optString("status"),
+                                event.optLong("decidedAt", 0),
+                            )
                         }
                         else -> {
                             val message = parseBridgeMessage(event.toString()).message
@@ -496,16 +586,16 @@ class BridgeClient {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    notifyConnectionFailure(t)
+                    notifyConnectionFailure(bridgeConnectionFailure(response?.code))
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                     webSocket.close(code, reason)
-                    notifyConnectionFailure(IOException("WebSocket closing ($code): $reason"))
+                    notifyConnectionFailure(bridgeConnectionFailure())
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    notifyConnectionFailure(IOException("WebSocket closed ($code): $reason"))
+                    notifyConnectionFailure(bridgeConnectionFailure())
                 }
             },
         )
@@ -513,8 +603,9 @@ class BridgeClient {
             intentionallyClosed.set(true)
             synchronized(sendLock) {
                 socketReady = false
+                pendingPayloads.clear()
+                socket?.cancel()
             }
-            socket?.close(1000, "chat closed")
         }
         return connection
     }
@@ -553,7 +644,7 @@ class BridgeClient {
         return sendRawBridgeMessage(machine, payload, allowPartialOnFailure = allowPartialOnFailure) { event ->
             onEvent(event)
             if (event.optString("type") == "approval.requested") {
-                event.toApprovalRequest()?.let { request ->
+                event.toBridgeApprovalRequest()?.let { request ->
                     mainHandler.post { onApproval(request) }
                 }
             } else {
@@ -636,7 +727,7 @@ class BridgeClient {
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                        completeWithPartialOrFailure(t)
+                        completeWithPartialOrFailure(bridgeConnectionFailure(response?.code))
                     }
 
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -698,6 +789,8 @@ class BridgeClient {
                 "operation.accepted",
                 "operation.started",
                 "operation.done",
+                "approval.snapshot",
+                "approval.resolved",
             )
         ) {
             return ParsedBridgeMessage()
@@ -705,7 +798,11 @@ class BridgeClient {
 
         val update = json.optJSONObject("update")
         if (json.optString("type") == "session/update" && update != null) {
-            return ParsedBridgeMessage(message = update.toChatMessage())
+            return ParsedBridgeMessage(
+                message = update.toChatMessage()?.copy(
+                    operationId = (json.opt("operationId") as? String)?.takeIf { it.isNotBlank() },
+                ),
+            )
         }
 
         return ParsedBridgeMessage(
@@ -716,6 +813,7 @@ class BridgeClient {
                 kind = ChatMessageKind.Activity,
                 title = json.optString("type", "Bridge event"),
                 details = json.toString(2),
+                operationId = (json.opt("operationId") as? String)?.takeIf { it.isNotBlank() },
             ),
         )
     }
@@ -757,26 +855,7 @@ class BridgeClient {
                     activityId = optString("messageId").ifBlank { "user_message" },
                 )
             }
-            "tool_call", "tool_call_update" -> {
-                val content = optJSONObject("content")
-                val status = optString("status").ifBlank { if (sessionUpdate == "tool_call") "started" else "updated" }
-                val title = optString("title").ifBlank { optString("kind").ifBlank { "Tool call" } }
-                ChatMessage(
-                    role = MessageRole.Agent,
-                    text = "$title · $status",
-                    timestampMillis = System.currentTimeMillis(),
-                    kind = ChatMessageKind.Activity,
-                    title = title,
-                    activityId = optString("toolCallId").ifBlank { null },
-                    details = JSONObject()
-                        .put("sessionUpdate", sessionUpdate)
-                        .put("toolCallId", optString("toolCallId"))
-                        .put("kind", optString("kind"))
-                        .put("status", status)
-                        .put("content", content ?: JSONObject())
-                        .toString(2),
-                )
-            }
+            "tool_call", "tool_call_update" -> toToolActivity(System.currentTimeMillis())
             "agent_message_chunk" -> {
                 val content = optJSONObject("content")
                 val text = content?.optString("text").orEmpty().ifBlank { optString("text") }
@@ -813,16 +892,6 @@ class BridgeClient {
         }
     }
 
-    private fun JSONObject.toApprovalRequest(): BridgeApprovalRequest? {
-        val approvalId = optString("approvalId").ifBlank { return null }
-        return BridgeApprovalRequest(
-            approvalId = approvalId,
-            action = optString("action").ifBlank { "tool_permission" },
-            summary = optString("summary").ifBlank { "Agent requests permission" },
-            details = optJSONObject("details")?.toString(2),
-        )
-    }
-
     private fun mergeStreamingMessage(messages: MutableList<ChatMessage>, message: ChatMessage) {
         val streamId = message.activityId
         if (streamId == null) {
@@ -831,7 +900,10 @@ class BridgeClient {
         }
 
         val existingIndex = if (message.kind == ChatMessageKind.Message) {
-            messages.indexOfLast { it.activityId == streamId }
+            messages.indexOfLast {
+                it.activityId == streamId &&
+                    (message.operationId == null || it.operationId == message.operationId)
+            }
         } else {
             messages.indexOfFirst { it.activityId == streamId }
         }
@@ -850,11 +922,14 @@ class BridgeClient {
                 if (existing.title == "Thought" && message.title == "Thought") {
                     existing.copy(details = listOfNotNull(existing.details, message.details).joinToString(""))
                 } else {
-                    message
+                    mergeToolActivity(existing, message)
                 }
             }
             message.kind == ChatMessageKind.Message && existing.kind == ChatMessageKind.Message -> {
-                existing.copy(text = existing.text + message.text)
+                existing.copy(
+                    text = existing.text + message.text,
+                    operationId = message.operationId ?: existing.operationId,
+                )
             }
             else -> message
         }
@@ -892,24 +967,6 @@ class BridgeClient {
                 updatedAt = item.optString("updatedAt").ifBlank { null },
             )
         }
-    }
-
-    private fun JSONArray?.orEmpty(): JSONArray = this ?: JSONArray()
-
-    private fun JSONArray.toHistoryMessages(): List<ChatMessage> {
-        return List(length()) { index ->
-            val item = getJSONObject(index)
-            val role = when (item.optString("role")) {
-                "user" -> MessageRole.User
-                else -> MessageRole.Agent
-            }
-            ChatMessage(
-                role = role,
-                text = item.optString("text"),
-                timestampMillis = System.currentTimeMillis(),
-                activityId = item.optString("messageId").ifBlank { null },
-            )
-        }.filter { it.text.isNotBlank() }
     }
 
     private companion object {
@@ -975,7 +1032,7 @@ data class BridgeSendResult<T>(
 )
 
 private inline fun <T, R> BridgeSendResult<T>.map(transform: (T) -> R): BridgeSendResult<R> {
-    return BridgeSendResult(result.map(transform), accepted = accepted)
+    return BridgeSendResult(result.mapCatching(transform), accepted = accepted)
 }
 
 private fun Throwable.withReadableMessage(): Throwable {

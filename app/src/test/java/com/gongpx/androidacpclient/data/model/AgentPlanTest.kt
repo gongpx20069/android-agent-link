@@ -9,6 +9,13 @@ import org.junit.Test
 
 class AgentPlanTest {
     @Test
+    fun parsesFullAcpPlanFromRecoveredHistory() {
+        val plan = parseAgentPlan("""{"sessionUpdate":"plan","entries":[{"content":"Recovered step","status":"completed"}]}""")
+        assertEquals("Recovered step", requireNotNull(plan).entries.single().content)
+        assertTrue(plan.isComplete)
+    }
+
+    @Test
     fun parsesPlanEntriesAndProgress() {
         val plan = parseAgentPlan(
             """

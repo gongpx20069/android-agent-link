@@ -169,7 +169,7 @@ class RuntimeTests(unittest.TestCase):
         attach_responses = runtime.websocket_responses({"type": "chat.attach", "chatId": "chat_1", "agentId": "copilot-cli", "workspacePath": "D:\\repo", "lastEventId": first_event_id})
 
         self.assertEqual(attach_responses[0]["type"], "chat.attached")
-        replayed = attach_responses[1:-1]
+        replayed = [response for response in attach_responses[1:-1] if response["type"] != "approval.snapshot"]
         self.assertTrue(all(response.get("eventId", 0) > first_event_id for response in replayed))
         self.assertEqual(attach_responses[-1]["type"], "chat.status")
         self.assertTrue(attach_responses[-1]["snapshot"])
@@ -253,7 +253,7 @@ class RuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(attached[1]["type"], "chat.resyncRequired")
-        replayed_event_ids = [response["eventId"] for response in attached[2:-1]]
+        replayed_event_ids = [response["eventId"] for response in attached[2:-1] if response["type"] != "approval.snapshot"]
         self.assertEqual(replayed_event_ids[0], 11)
         self.assertEqual(replayed_event_ids[-1], 510)
 
@@ -455,7 +455,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["type"], "session.loadRecent.result")
         self.assertEqual(result["sessionId"], "sess_1")
         self.assertEqual(result["scannedEvents"], 4)
-        self.assertEqual(result["messages"], [{"role": "user", "text": "new question"}, {"role": "agent", "text": "new answer"}])
+        self.assertEqual(
+            [{"role": row["role"], "text": row["text"]} for row in result["messages"]],
+            [{"role": "user", "text": "new question"}, {"role": "agent", "text": "new answer"}],
+        )
         self.assertEqual(responses[-1]["type"], "bridge.done")
 
     def test_session_set_config_option_returns_config_update(self) -> None:

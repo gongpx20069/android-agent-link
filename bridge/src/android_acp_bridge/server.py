@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .device_tokens import DeviceTokenStoreError
 from .runtime import BridgeRuntime, DeviceInfo as RuntimeDeviceInfo, InvalidPairingTokenError, PairingDeniedError
 
 
@@ -49,6 +50,8 @@ def create_app(runtime: BridgeRuntime) -> FastAPI:
             raise HTTPException(status_code=403, detail="Pairing was denied on the developer machine.")
         except InvalidPairingTokenError:
             raise HTTPException(status_code=401, detail="Pairing token is invalid, expired, or already used.")
+        except DeviceTokenStoreError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from None
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

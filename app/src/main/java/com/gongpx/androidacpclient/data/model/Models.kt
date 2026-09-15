@@ -61,6 +61,14 @@ data class Chat(
     val lastBridgeEventId: Int = 0,
     val bridgeEventGeneration: String? = null,
     val bridgeResyncRequired: Boolean = false,
+    val agentStatus: String = "unknown",
+    val lastSyncAtMillis: Long = 0,
+    val connectionError: String? = null,
+    val historyId: String? = null,
+    val historyNextBefore: Int? = null,
+    val historyHasMore: Boolean = false,
+    val historyTotalMessages: Int = 0,
+    val lastNotifiedOperationId: String? = null,
 )
 
 data class QueuedPrompt(
@@ -103,6 +111,8 @@ data class BridgeApprovalRequest(
     val action: String,
     val summary: String,
     val details: String?,
+    val createdAtMillis: Long = 0,
+    val expiresAtMillis: Long? = null,
 )
 
 data class ChatMessage(
@@ -141,10 +151,17 @@ data class Approval(
     val summary: String,
     val status: ApprovalStatus = ApprovalStatus.Pending,
     val createdAtMillis: Long,
+    val details: String? = null,
+    val expiresAtMillis: Long? = null,
+    val decidedAtMillis: Long? = null,
+    val error: String? = null,
 )
 
 enum class ApprovalStatus {
     Pending,
+    Submitting,
     Approved,
     Denied,
+    Expired,
+    Unavailable,
 }

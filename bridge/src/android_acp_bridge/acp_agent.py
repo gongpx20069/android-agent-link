@@ -135,13 +135,16 @@ class AcpAgentManager:
             time.sleep(0.01)
 
     def load_recent_session(self, chat_id: str, agent_id: str, workspace_path: str, session_id: str, limit: int) -> dict[str, Any]:
+        if not workspace_path.strip():
+            raise AcpAgentError("Loading session history requires its workspacePath; refusing to bind it to the home directory.")
+        _resolve_workspace(workspace_path)
         self._set_session_replacing(chat_id, True)
         try:
             with self._chat_lock(chat_id):
+                session, updates, scanned_events, truncated = AcpAgentSession.load_recent(agent_id, workspace_path, session_id, limit)
                 old_session = self._pop_session(chat_id)
                 if old_session is not None:
                     old_session.stop()
-                session, updates, scanned_events, truncated = AcpAgentSession.load_recent(agent_id, workspace_path, session_id, limit)
                 self._set_session(chat_id, session)
                 return {
                     "updates": updates,
@@ -616,11 +619,15 @@ class AcpAgentSession:
         if self.permission_callback is not None:
             option_id = self.permission_callback(message)
         else:
-            option_id = "allow-once"
-            if isinstance(options, list) and options:
-                allow = next((item for item in options if isinstance(item, dict) and str(item.get("kind", "")).startswith("allow")), None)
-                option_id = str((allow or options[0]).get("optionId", option_id))
-        self._write_json({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": {"outcome": "selected", "optionId": option_id}}})
+            reject = next((
+                item for item in options if isinstance(item, dict) and str(item.get("kind", "")).startswith("reject")
+            ), None) if isinstance(options, list) else None
+            option_id = str(reject.get("optionId", "")) if reject else ""
+        valid_option = isinstance(options, list) and any(
+            isinstance(option, dict) and option.get("optionId") == option_id for option in options
+        )
+        outcome = {"outcome": "selected", "optionId": option_id} if valid_option else {"outcome": "cancelled"}
+        self._write_json({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}})
 
     def _write_json(self, message: dict[str, Any]) -> None:
         if self._process.stdin is None:

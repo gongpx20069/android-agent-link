@@ -28,7 +28,9 @@ class ChatStore(context: Context) {
 
     fun upsert(chat: Chat) {
         val next = load().filterNot { it.id == chat.id } + chat
-        preferences.edit().putString(KEY_CHATS, JSONArray(next.map { it.toJson() }).toString()).apply()
+        check(preferences.edit().putString(KEY_CHATS, JSONArray(next.map { it.toJson() }).toString()).commit()) {
+            "Could not persist chat state"
+        }
     }
 
     fun remove(chatId: String) {
@@ -37,7 +39,9 @@ class ChatStore(context: Context) {
     }
 
     fun replaceAll(chats: List<Chat>) {
-        preferences.edit().putString(KEY_CHATS, JSONArray(chats.map { it.toJson() }).toString()).apply()
+        check(preferences.edit().putString(KEY_CHATS, JSONArray(chats.map { it.toJson() }).toString()).commit()) {
+            "Could not persist chat state"
+        }
     }
 
     fun loadUnreadChatIds(): Set<String> {
@@ -47,7 +51,9 @@ class ChatStore(context: Context) {
     fun setUnread(chatId: String, unread: Boolean) {
         val next = loadUnreadChatIds().toMutableSet()
         if (unread) next.add(chatId) else next.remove(chatId)
-        preferences.edit().putStringSet(KEY_UNREAD_CHAT_IDS, next).apply()
+        check(preferences.edit().putStringSet(KEY_UNREAD_CHAT_IDS, next).commit()) {
+            "Could not persist unread chat state"
+        }
     }
 
     private fun Chat.toJson(): JSONObject {
@@ -69,6 +75,14 @@ class ChatStore(context: Context) {
             .put("lastBridgeEventId", lastBridgeEventId)
             .put("bridgeEventGeneration", bridgeEventGeneration)
             .put("bridgeResyncRequired", bridgeResyncRequired)
+            .put("agentStatus", agentStatus)
+            .put("lastSyncAtMillis", lastSyncAtMillis)
+            .put("connectionError", connectionError)
+            .put("historyId", historyId)
+            .put("historyNextBefore", historyNextBefore)
+            .put("historyHasMore", historyHasMore)
+            .put("historyTotalMessages", historyTotalMessages)
+            .put("lastNotifiedOperationId", lastNotifiedOperationId)
     }
 
     private fun JSONObject.toChat(): Chat {
@@ -91,6 +105,14 @@ class ChatStore(context: Context) {
             lastBridgeEventId = optInt("lastBridgeEventId", 0),
             bridgeEventGeneration = optString("bridgeEventGeneration").ifBlank { null },
             bridgeResyncRequired = optBoolean("bridgeResyncRequired", false),
+            agentStatus = optString("agentStatus", "unknown"),
+            lastSyncAtMillis = optLong("lastSyncAtMillis", 0),
+            connectionError = optString("connectionError").ifBlank { null },
+            historyId = optString("historyId").ifBlank { null },
+            historyNextBefore = if (has("historyNextBefore") && !isNull("historyNextBefore")) getInt("historyNextBefore") else null,
+            historyHasMore = optBoolean("historyHasMore", false),
+            historyTotalMessages = optInt("historyTotalMessages", 0),
+            lastNotifiedOperationId = optString("lastNotifiedOperationId").ifBlank { null },
         )
     }
 

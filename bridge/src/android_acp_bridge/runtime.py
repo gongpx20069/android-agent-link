@@ -4,6 +4,7 @@ import secrets
 import threading
 import json
 import time
+from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
@@ -12,6 +13,8 @@ from . import __version__
 from .acp_agent import AcpAgentError, AcpAgentManager, AcpPromptRequest, AcpSessionBinding
 from .agents import discover_agents
 from .config import BridgeConfig
+from .device_tokens import DeviceTokenStore
+from .history import HistoryError, HistoryStore
 from .pairing import PairingStore
 
 
@@ -34,6 +37,8 @@ class InvalidPairingTokenError(Exception):
 class PendingApproval:
     options: list[dict[str, Any]]
     condition: threading.Condition
+    requested: dict[str, Any]
+    emit: Callable[[dict[str, Any]], None] | None
     decision: str | None = None
 
 
@@ -126,10 +131,10 @@ class BridgeRuntime:
         self.config = config
         self.pairing_store = pairing_store
         self.require_local_pairing_confirmation = require_local_pairing_confirmation
-        self.device_tokens: set[str] = set()
+        self._device_tokens = DeviceTokenStore(config.device_token_store)
         self.agent_manager = agent_manager or AcpAgentManager()
         self._pending_approvals: dict[str, PendingApproval] = {}
-        self._approval_lock = threading.Lock()
+        self._approval_results: dict[str, dict[str, Any]] = {}
         self._agent_chunk_logs: dict[str, AgentChunkLogBuffer] = {}
         self._prompt_queues: dict[str, deque[PromptOperation]] = {}
         self._active_prompts: dict[str, PromptOperation] = {}
@@ -141,8 +146,12 @@ class BridgeRuntime:
         self._event_logs: dict[str, list[dict[str, Any]]] = {}
         self._next_event_ids: dict[str, int] = {}
         self._event_generation = secrets.token_hex(16)
+        self._chat_event_generations: dict[str, str] = {}
         self._chat_status: dict[str, str] = {}
         self._event_lock = threading.RLock()
+        self._approval_lock = self._event_lock
+        self._history = HistoryStore()
+        self._history_loading_chats: set[str] = set()
 
     def health_response(self) -> dict[str, Any]:
         return {"status": "ok", "bridgeVersion": __version__}
@@ -176,12 +185,10 @@ class BridgeRuntime:
         }
 
     def issue_device_token(self) -> str:
-        token = "dev_" + secrets.token_urlsafe(32)
-        self.device_tokens.add(token)
-        return token
+        return self._device_tokens.issue()
 
     def is_device_token_valid(self, token: str) -> bool:
-        return token in self.device_tokens
+        return self._device_tokens.contains(token)
 
     def websocket_responses(self, payload: Any, emit: Callable[[dict[str, Any]], None] | None = None) -> list[dict[str, Any]]:
         if not isinstance(payload, dict):
@@ -222,6 +229,10 @@ class BridgeRuntime:
             return responses
         if message_type == "session.loadRecent":
             responses = self._session_load_recent_response(payload)
+            self._log_responses(responses)
+            return responses
+        if message_type == "session.history":
+            responses = self._session_history_response(payload)
             self._log_responses(responses)
             return responses
         if message_type == "session.refreshConfigOptions":
@@ -274,6 +285,15 @@ class BridgeRuntime:
             waiters=[],
         )
         with self._prompt_lock:
+            if chat_id in self._history_loading_chats:
+                return [
+                    {
+                        "type": "operation.done", "chatId": chat_id, "operationId": operation_id,
+                        "operationType": "chat.prompt", "status": "failed", "queueRemaining": 0,
+                        "error": "Session history is being loaded; retry the prompt after loading completes.",
+                    },
+                    {"type": "bridge.done", "chatId": chat_id},
+                ]
             operation_key = (chat_id, operation_id)
             if operation_key in self._pre_cancelled_prompt_ids:
                 self._pre_cancelled_prompt_ids.remove(operation_key)
@@ -619,7 +639,12 @@ class BridgeRuntime:
     def _approval_decision_updates(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         approval_id = _string_or_default(payload.get("approvalId"), "unknown-approval")
         decision = _string_or_default(payload.get("decision"), "unknown")
-        resolved = self._resolve_approval(approval_id, decision)
+        result = self._resolve_approval(
+            approval_id, decision if decision in {"approved", "denied"} else "invalid",
+            _optional_string(payload.get("chatId")),
+        )
+        resolved = result is not None
+        status = result["status"] if result else "unknown"
         return [
             {
                 "type": "session/update",
@@ -629,8 +654,16 @@ class BridgeRuntime:
                     "title": "Approval decision",
                     "kind": "approval",
                     "status": "completed" if resolved else "failed",
-                    "content": {"decision": decision, "resolved": resolved},
+                    "content": {"decision": status if resolved else decision, "resolved": resolved},
                 },
+                **({"chatId": result["chatId"]} if result else {}),
+            },
+            {
+                "type": "approval.decide.result",
+                "approvalId": approval_id,
+                "status": status,
+                "resolved": resolved,
+                **({"chatId": result["chatId"]} if result else {}),
             },
             {"type": "bridge.done"},
         ]
@@ -677,23 +710,43 @@ class BridgeRuntime:
         workspace_path = _string_or_default(payload.get("workspacePath"), "")
         session_id = _string_or_default(payload.get("sessionId"), "")
         limit = max(1, min(_int_or_default(payload.get("limit"), 50), 200))
+        claimed = False
         try:
+            with self._prompt_lock:
+                with self._event_lock:
+                    if (
+                        chat_id in self._active_prompts
+                        or chat_id in self._history_loading_chats
+                        or any(pending.requested["chatId"] == chat_id for pending in self._pending_approvals.values())
+                    ):
+                        raise HistoryError("session_busy", "Finish the active prompt or approval before loading session history.")
+                    self._history_loading_chats.add(chat_id)
+                    claimed = True
             result = self.agent_manager.load_recent_session(chat_id, agent_id, workspace_path, session_id, limit)
             updates = result.get("updates", [])
-            messages = _latest_visible_messages(updates if isinstance(updates, list) else [], limit)
+            if result.get("truncated"):
+                raise AcpAgentError("Session history replay was incomplete; no history snapshot was created.")
+            page = self._history.create(
+                chat_id, session_id, updates if isinstance(updates, list) else [],
+                _int_or_default(result.get("scannedEvents"), 0), limit,
+            )
+            with self._event_lock:
+                self._event_logs.pop(chat_id, None)
+                self._next_event_ids[chat_id] = 1
+                self._chat_event_generations[chat_id] = secrets.token_hex(16)
+                self._chat_status[chat_id] = "idle"
+                self._agent_chunk_logs.pop(chat_id, None)
+                page["latestEventId"] = 0
+                page["eventGeneration"] = self._chat_event_generations[chat_id]
             return [
                 self._session_binding_event(chat_id, AcpSessionBinding(session_id, resumable=True)),
                 {
                     "type": "session.loadRecent.result",
-                    "chatId": chat_id,
-                    "sessionId": session_id,
-                    "messages": messages,
-                    "scannedEvents": _int_or_default(result.get("scannedEvents"), 0),
-                    "truncated": bool(result.get("truncated", False)),
+                    **page,
                 },
                 {"type": "bridge.done", "chatId": chat_id},
             ]
-        except AcpAgentError as exc:
+        except (AcpAgentError, HistoryError) as exc:
             return [
                 {
                     "type": "session.loadRecent.result",
@@ -703,19 +756,35 @@ class BridgeRuntime:
                     "scannedEvents": 0,
                     "truncated": False,
                     "error": str(exc),
+                    "errorCode": getattr(exc, "code", "session_load_failed"),
                 },
                 {"type": "bridge.done", "chatId": chat_id},
             ]
+        finally:
+            if claimed:
+                with self._prompt_lock:
+                    self._history_loading_chats.discard(chat_id)
+
+    def _session_history_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        chat_id = _string_or_default(payload.get("chatId"), "")
+        session_id = _string_or_default(payload.get("sessionId"), "")
+        history_id = _string_or_default(payload.get("historyId"), "")
+        limit = max(1, min(_int_or_default(payload.get("limit"), 50), 200))
+        try:
+            page = self._history.page(chat_id, session_id, history_id, payload.get("before"), limit)
+        except HistoryError as exc:
+            page = {
+                "chatId": chat_id, "sessionId": session_id, "historyId": history_id,
+                "error": str(exc), "errorCode": exc.code,
+            }
+        return [{"type": "session.history.result", **page}, {"type": "bridge.done", "chatId": chat_id}]
 
     def _request_permission(self, chat_id: str, message: dict[str, Any], emit: Callable[[dict[str, Any]], None] | None) -> str:
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
         options = params.get("options") if isinstance(params, dict) and isinstance(params.get("options"), list) else []
         tool_call = params.get("toolCall") if isinstance(params, dict) and isinstance(params.get("toolCall"), dict) else {}
         approval_id = "approval_" + secrets.token_urlsafe(12)
-        pending = PendingApproval(options=options, condition=threading.Condition())
-        with self._approval_lock:
-            self._pending_approvals[approval_id] = pending
-
+        created_at = int(time.time() * 1000)
         requested = {
             "type": "approval.requested",
             "approvalId": approval_id,
@@ -724,17 +793,24 @@ class BridgeRuntime:
             "summary": _string_or_default(tool_call.get("title"), "Agent requests permission"),
             "details": tool_call,
             "options": options,
+            "createdAt": created_at,
+            "expiresAt": created_at + int(APPROVAL_TIMEOUT_SECONDS * 1000),
         }
-        if emit is not None:
-            emit(requested)
-            emit(self._chat_status_event(chat_id, "waitingApproval"))
+        pending = PendingApproval(options, threading.Condition(), deepcopy(requested), emit)
+        with self._approval_lock:
+            self._pending_approvals[approval_id] = pending
+            if emit is not None:
+                emit(requested)
+                if pending.decision is None:
+                    emit(self._chat_status_event(chat_id, "waitingApproval"))
+            else:
+                self._append_event(chat_id, requested)
 
         with pending.condition:
-            pending.condition.wait(timeout=300)
-            decision = pending.decision or "denied"
-
-        with self._approval_lock:
-            self._pending_approvals.pop(approval_id, None)
+            remaining = max(0.0, (requested["expiresAt"] - time.time() * 1000) / 1000)
+            pending.condition.wait_for(lambda: pending.decision is not None, timeout=remaining)
+        self._resolve_approval(approval_id, "expired", chat_id)
+        decision = pending.decision or "denied"
 
         if emit is not None:
             with self._prompt_lock:
@@ -769,10 +845,11 @@ class BridgeRuntime:
             active_operation = self._active_prompts.get(chat_id)
             queued_count = len(self._prompt_queues.get(chat_id, ()))
             with self._event_lock:
+                event_generation = self._chat_event_generations.get(chat_id, self._event_generation)
                 event_log = self._event_logs.get(chat_id, [])
                 latest_event_id = self._next_event_ids.get(chat_id, 1) - 1
                 checkpoint_reset = (
-                    (last_event_generation is not None and last_event_generation != self._event_generation)
+                    (last_event_generation is not None and last_event_generation != event_generation)
                     or last_event_id > latest_event_id
                 )
                 effective_last_event_id = 0 if checkpoint_reset else last_event_id
@@ -821,13 +898,21 @@ class BridgeRuntime:
                         "type": "chat.attached",
                         "chatId": chat_id,
                         "latestEventId": latest_event_id,
-                        "eventGeneration": self._event_generation,
+                        "eventGeneration": event_generation,
                         "replayed": len(events),
                         "checkpointReset": checkpoint_reset,
                     },
                     *resync_responses,
                     *events,
                     *session_events,
+                    {
+                        "type": "approval.snapshot",
+                        "chatId": chat_id,
+                        "approvals": [
+                            deepcopy(pending.requested) for pending in self._pending_approvals.values()
+                            if pending.requested["chatId"] == chat_id
+                        ],
+                    },
                     status_snapshot,
                 ]
                 if emit is not None:
@@ -837,15 +922,40 @@ class BridgeRuntime:
                     return []
                 return responses
 
-    def _resolve_approval(self, approval_id: str, decision: str) -> bool:
+    def _resolve_approval(self, approval_id: str, decision: str, chat_id: str | None = None) -> dict[str, Any] | None:
         with self._approval_lock:
+            result = self._approval_results.get(approval_id)
+            if result is not None:
+                return result if chat_id is None or result["chatId"] == chat_id else None
             pending = self._pending_approvals.get(approval_id)
-        if pending is None:
-            return False
-        with pending.condition:
-            pending.decision = decision
-            pending.condition.notify_all()
-        return True
+            if pending is None or (chat_id is not None and pending.requested["chatId"] != chat_id):
+                return None
+            now = int(time.time() * 1000)
+            if now >= pending.requested["expiresAt"]:
+                decision = "expired"
+            if decision not in {"approved", "denied", "expired"}:
+                return None
+            result = {
+                "type": "approval.resolved",
+                "approvalId": approval_id,
+                "chatId": pending.requested["chatId"],
+                "status": decision,
+                "decidedAt": now,
+            }
+            with pending.condition:
+                pending.decision = decision
+                self._pending_approvals.pop(approval_id)
+                self._approval_results[approval_id] = result
+                while len(self._approval_results) > APPROVAL_RESULT_LIMIT:
+                    self._approval_results.pop(next(iter(self._approval_results)))
+                try:
+                    if pending.emit is not None:
+                        pending.emit(result)
+                    else:
+                        self._append_event(result["chatId"], result)
+                finally:
+                    pending.condition.notify_all()
+            return result
 
     def _append_event(self, chat_id: str, event: dict[str, Any]) -> dict[str, Any]:
         with self._event_lock:
@@ -1149,10 +1259,10 @@ def _select_permission_option(options: list[dict[str, Any]], decision: str) -> s
     target_prefix = "allow" if decision == "approved" else "reject"
     fallback = "allow-once" if decision == "approved" else "reject-once"
     match = next((item for item in options if isinstance(item, dict) and str(item.get("kind", "")).startswith(target_prefix)), None)
-    if match is None and options:
-        match = options[0]
     return str((match or {}).get("optionId", fallback))
 
 
 CHAT_EVENT_LOG_LIMIT = 500
 PROMPT_OPERATION_HISTORY_LIMIT = 1000
+APPROVAL_TIMEOUT_SECONDS = 300
+APPROVAL_RESULT_LIMIT = 1000

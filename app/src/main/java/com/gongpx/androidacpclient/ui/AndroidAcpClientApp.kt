@@ -19,6 +19,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -58,6 +60,9 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -75,6 +80,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -102,6 +110,8 @@ import androidx.core.content.ContextCompat
 import com.gongpx.androidacpclient.BuildConfig
 import com.gongpx.androidacpclient.data.bridge.BridgeClient
 import com.gongpx.androidacpclient.data.bridge.ChatConnection
+import com.gongpx.androidacpclient.data.model.BridgeConnectionException
+import com.gongpx.androidacpclient.data.model.HistoryPage
 import com.gongpx.androidacpclient.data.model.Agent
 import com.gongpx.androidacpclient.data.model.AgentPlanEntryPriority
 import com.gongpx.androidacpclient.data.model.AgentPlanEntryStatus
@@ -125,7 +135,6 @@ import com.gongpx.androidacpclient.data.model.acceptPrompt
 import com.gongpx.androidacpclient.data.model.bindAcpSession
 import com.gongpx.androidacpclient.data.model.bindBridgeEventGeneration
 import com.gongpx.androidacpclient.data.model.finishPrompt
-import com.gongpx.androidacpclient.data.model.isFinalPromptCompletion
 import com.gongpx.androidacpclient.data.model.isTerminalPromptStatus
 import com.gongpx.androidacpclient.data.model.markQueuedPromptRemoving
 import com.gongpx.androidacpclient.data.model.markdownCodeFenceDelimiterLength
@@ -136,6 +145,13 @@ import com.gongpx.androidacpclient.data.model.reconcileRecentSessionMessages
 import com.gongpx.androidacpclient.data.model.shouldClearBusyAfterCancellation
 import com.gongpx.androidacpclient.data.model.shouldApplyChatStatus
 import com.gongpx.androidacpclient.data.model.startQueuedPrompt
+import com.gongpx.androidacpclient.data.model.isActionable
+import com.gongpx.androidacpclient.data.model.toApproval
+import com.gongpx.androidacpclient.data.model.mergeTimelineMessage
+import com.gongpx.androidacpclient.data.model.toolActivitySections
+import com.gongpx.androidacpclient.data.notification.ChatMonitorService
+import com.gongpx.androidacpclient.data.notification.shouldNotifyMonitoredCompletion
+import com.gongpx.androidacpclient.data.bridge.restoreQueuedPrompts
 import com.gongpx.androidacpclient.data.notification.ChatNotificationManager
 import com.gongpx.androidacpclient.data.notification.chatCompletionAttention
 import com.gongpx.androidacpclient.data.notification.chatCompletionPreview
@@ -143,6 +159,7 @@ import com.gongpx.androidacpclient.data.pairing.PairingLinkParser
 import com.gongpx.androidacpclient.data.store.AppLanguageMode
 import com.gongpx.androidacpclient.data.store.AppSettingsStore
 import com.gongpx.androidacpclient.data.store.ChatStore
+import com.gongpx.androidacpclient.data.store.ApprovalStore
 import com.gongpx.androidacpclient.data.store.MachineStore
 import com.gongpx.androidacpclient.data.update.AppUpdate
 import com.gongpx.androidacpclient.data.update.UpdateClient
@@ -157,6 +174,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -174,6 +193,25 @@ private enum class NewChatMode {
 }
 
 private val LocalAppStrings = staticCompositionLocalOf { AppStrings.English }
+private fun AppStrings.reliability(english: String, chinese: String): String =
+    if (this == AppStrings.Chinese) chinese else english
+
+private fun approvalStatusLabel(status: ApprovalStatus, strings: AppStrings): String = when (status) {
+    ApprovalStatus.Pending -> strings.reliability("Awaiting your decision", "等待你审批")
+    ApprovalStatus.Submitting -> strings.reliability("Submitting, not yet confirmed", "正在提交，尚未确认")
+    ApprovalStatus.Approved -> strings.reliability("Approved", "已批准")
+    ApprovalStatus.Denied -> strings.reliability("Denied", "已拒绝")
+    ApprovalStatus.Expired -> strings.reliability("Expired", "已超时")
+    ApprovalStatus.Unavailable -> strings.reliability("No longer pending on bridge", "远端已无此待审批项")
+}
+
+private fun agentStatusLabel(status: String, strings: AppStrings): String = when (status) {
+    "busy" -> strings.reliability("Agent: running", "Agent：运行中")
+    "waitingApproval" -> strings.reliability("Agent: waiting for approval", "Agent：等待审批")
+    "idle" -> strings.reliability("Agent: idle", "Agent：空闲")
+    "failed" -> strings.reliability("Agent: failed", "Agent：失败")
+    else -> strings.reliability("Agent: awaiting status confirmation", "Agent：等待状态确认")
+}
 private const val FEEDBACK_ISSUES_URL = "https://github.com/gongpx20069/android-agent-link/issues/new"
 private const val DEVELOPER_EMAIL = "gongpx20069@vip.qq.com"
 
@@ -547,10 +585,14 @@ fun AgentLinkApp(
     incomingPairingLink: MutableState<String?>,
     incomingChatId: MutableState<String?>,
     appInForeground: State<Boolean>,
+    notificationPermissionRevision: Int = 0,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var uiOwnsConnections by remember { mutableStateOf(appInForeground.value) }
     val machineStore = remember { MachineStore(context.applicationContext) }
     val chatStore = remember { ChatStore(context.applicationContext) }
+    val approvalStore = remember { ApprovalStore(context.applicationContext) }
     val appSettingsStore = remember { AppSettingsStore(context.applicationContext) }
     val bridgeClient = remember { BridgeClient() }
     val chatNotificationManager = remember { ChatNotificationManager(context.applicationContext) }
@@ -569,9 +611,15 @@ fun AgentLinkApp(
     val statusSynchronizedChatIds = remember { mutableStateListOf<String>() }
     val resyncingChatIds = remember { mutableStateListOf<String>() }
     val pendingResyncEventIds = remember { mutableStateMapOf<String, Int>() }
-    val recoveredResyncMessages = remember { mutableStateMapOf<String, List<ChatMessage>>() }
+    val recoveredResyncMessages = remember { mutableStateMapOf<String, HistoryPage>() }
     val resyncSnapshotChatIds = remember { mutableStateListOf<String>() }
-    var selectedTab by remember { mutableStateOf(AppTab.Machines) }
+    val authenticationRequiredChatIds = remember { mutableStateListOf<String>() }
+    val loadingHistoryChatIds = remember { mutableStateListOf<String>() }
+    val sessionLoadingChatIds = remember { mutableStateListOf<String>() }
+    val snackbar = remember { SnackbarHostState() }
+    var storesLoaded by remember { mutableStateOf(false) }
+    var notificationsEnabled by remember { mutableStateOf(chatNotificationManager.notificationsEnabled()) }
+    var selectedTab by remember { mutableStateOf(AppTab.Chats) }
     var selectedChatId by remember { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var scannerOpen by remember { mutableStateOf(false) }
@@ -582,6 +630,14 @@ fun AgentLinkApp(
     var sessionLoadMessageLimit by remember { mutableStateOf(appSettingsStore.loadSessionLoadMessageLimit()) }
     val strings = languageMode.resolveStrings()
     val scope = rememberCoroutineScope()
+    val foregroundJobs = remember { mutableSetOf<Job>() }
+
+    fun launchBridge(block: suspend CoroutineScope.() -> Unit) {
+        val job = scope.launch(start = CoroutineStart.LAZY, block = block)
+        foregroundJobs.add(job)
+        job.invokeOnCompletion { foregroundJobs.remove(job) }
+        job.start()
+    }
 
     fun upsertMachine(machine: Machine) {
         val index = machines.indexOfFirst { it.id == machine.id }
@@ -595,7 +651,85 @@ fun AgentLinkApp(
         chatStore.upsert(chat)
     }
 
+    fun refreshApprovals() {
+        approvals.clear()
+        approvals.addAll(approvalStore.load())
+    }
+
+    fun showChatAttention(chatId: String, text: String) {
+        scope.launch {
+            if (snackbar.showSnackbar(text, actionLabel = strings.openSession) == SnackbarResult.ActionPerformed) {
+                selectedTab = AppTab.Chats
+                selectedChatId = chatId
+            }
+        }
+    }
+
+    fun applyHistoryPage(
+        chatId: String,
+        page: HistoryPage,
+        replace: Boolean = false,
+        prepend: Boolean = false,
+        session: AgentSessionInfo? = null,
+    ) {
+        val stored = chats.firstOrNull { it.id == chatId } ?: return
+        val current = if (session == null) stored else {
+            val path = session.cwd?.ifBlank { null } ?: stored.workspacePath
+            stored.bindAcpSession(session.sessionId, resumable = true).copy(
+                workspacePath = path,
+                workspaceName = path.trimEnd('\\', '/').substringAfterLast('\\').substringAfterLast('/'),
+                bridgeResyncRequired = false,
+            )
+        }
+        if (!prepend && page.eventGeneration != null) {
+            chatConnections.remove(chatId)?.close()
+            statusSynchronizedChatIds.remove(chatId)
+            pendingResyncEventIds.remove(chatId)
+        }
+        val messages = when {
+            replace -> page.messages
+            prepend -> {
+                val existingIds = current.messages.mapNotNull { it.activityId }.toSet()
+                page.messages.filterNot { it.activityId != null && it.activityId in existingIds } + current.messages
+            }
+            else -> reconcileRecentSessionMessages(current.messages, page.messages)
+        }
+        upsertChat(current.copy(
+            messages = messages,
+            historyId = page.historyId,
+            historyNextBefore = page.nextBefore,
+            historyHasMore = page.hasMore,
+            historyTotalMessages = page.totalMessages,
+            lastBridgeEventId = if (!prepend) page.latestEventId ?: current.lastBridgeEventId else current.lastBridgeEventId,
+            bridgeEventGeneration = if (!prepend) page.eventGeneration ?: current.bridgeEventGeneration else current.bridgeEventGeneration,
+        ))
+    }
+
+    fun loadOlderHistory(chat: Chat) {
+        if (chat.id in loadingHistoryChatIds) return
+        val machine = machines.firstOrNull { it.id == chat.machineId } ?: return
+        val sessionId = chat.acpSessionId ?: return
+        val historyId = chat.historyId ?: return
+        val before = chat.historyNextBefore ?: return
+        loadingHistoryChatIds.add(chat.id)
+        launchBridge {
+            try {
+                bridgeClient.loadHistoryPage(machine, chat.id, sessionId, historyId, before, sessionLoadMessageLimit)
+                    .onSuccess { applyHistoryPage(chat.id, it, prepend = true) }
+                    .onFailure { error ->
+                        showChatAttention(chat.id, strings.reliability(
+                            "Could not load older history: ${error.message}. Reopen the session to refresh its snapshot.",
+                            "无法加载更早记录：${error.message}。请重新打开会话以刷新历史快照。",
+                        ))
+                    }
+            } finally {
+                loadingHistoryChatIds.remove(chat.id)
+            }
+        }
+    }
+
     fun handleSessionBinding(chatId: String, sessionId: String, resumable: Boolean) {
+        if (!appInForeground.value || !uiOwnsConnections) return
         val current = chats.firstOrNull { it.id == chatId } ?: return
         upsertChat(current.bindAcpSession(sessionId, resumable))
     }
@@ -699,52 +833,47 @@ fun AgentLinkApp(
                 ),
             ),
         )
+        sessionLoadingChatIds.add(chat.id)
         upsertChat(chat)
         selectedChatId = chat.id
         selectedTab = AppTab.Chats
-        scope.launch {
-            bridgeClient.loadRecentSession(
-                machine,
-                chat.id,
-                agent.id,
-                path,
-                session.sessionId,
-                sessionLoadMessageLimit,
-                onSession = { sessionId, resumable -> handleSessionBinding(chat.id, sessionId, resumable) },
-            ).result
-                .onSuccess { messages ->
-                    val current = chats.firstOrNull { it.id == chat.id } ?: return@onSuccess
-                    upsertChat(current.copy(messages = messages.ifEmpty { current.messages }))
-                }
-                .onFailure {
-                    val current = chats.firstOrNull { current -> current.id == chat.id } ?: return@onFailure
-                    upsertChat(current.withMessage(MessageRole.System, strings.openSessionFailed(it.message)))
-                }
+        launchBridge {
+            try {
+                bridgeClient.loadRecentSessionPage(
+                    machine,
+                    chat.id,
+                    agent.id,
+                    path,
+                    session.sessionId,
+                    sessionLoadMessageLimit,
+                    onSession = { sessionId, resumable -> handleSessionBinding(chat.id, sessionId, resumable) },
+                ).result
+                    .onSuccess { page -> applyHistoryPage(chat.id, page, replace = true) }
+                    .onFailure {
+                        val current = chats.firstOrNull { current -> current.id == chat.id } ?: return@onFailure
+                        upsertChat(current.withMessage(MessageRole.System, strings.openSessionFailed(it.message)))
+                    }
+            } finally {
+                sessionLoadingChatIds.remove(chat.id)
+            }
         }
     }
 
     fun loadExistingSessions(machine: Machine, agent: Agent, onResult: (Result<List<AgentSessionInfo>>) -> Unit) {
-        scope.launch {
+        launchBridge {
             onResult(bridgeClient.listSessions(machine, agent.id, ""))
         }
     }
 
     fun addApproval(chat: Chat, request: BridgeApprovalRequest? = null) {
-        if (request != null && approvals.any { it.id == request.approvalId }) return
-        approvals.add(
-            Approval(
-                id = request?.approvalId ?: "approval_" + UUID.randomUUID(),
-                chatId = chat.id,
-                chatTitle = chat.title,
-                machineId = chat.machineId,
-                machineName = chat.machineName,
-                workspacePath = chat.workspacePath,
-                action = request?.action ?: "run_command",
-                summary = request?.summary ?: "Run test command in ${chat.workspacePath}",
-                createdAtMillis = System.currentTimeMillis(),
-            ),
-        )
-        selectedTab = AppTab.Approvals
+        if (request == null) return
+        val known = approvals.any { it.id == request.approvalId }
+        if (known) return
+        approvalStore.upsert(request.toApproval(chat, System.currentTimeMillis()))
+        refreshApprovals()
+        if (appInForeground.value && (selectedTab != AppTab.Chats || selectedChatId != chat.id)) {
+            showChatAttention(chat.id, strings.approvalRequired("${chat.title}: ${request.summary}"))
+        }
     }
 
     fun appendChatEvent(chatId: String, message: ChatMessage) {
@@ -761,11 +890,38 @@ fun AgentLinkApp(
     }
 
     fun updateApproval(approval: Approval, status: ApprovalStatus) {
-        val index = approvals.indexOfFirst { it.id == approval.id }
-        if (index >= 0) approvals[index] = approval.copy(status = status)
-        val machine = machines.firstOrNull { it.id == approval.machineId } ?: return
-        scope.launch {
-            bridgeClient.sendApprovalDecision(machine, approval.id, if (status == ApprovalStatus.Approved) "approved" else "denied").result
+        if (approval.status != ApprovalStatus.Pending) return
+        val machine = machines.firstOrNull { it.id == approval.machineId }
+        if (machine == null) {
+            approvalStore.upsert(approval.copy(error = strings.machineUnavailable))
+            refreshApprovals()
+            return
+        }
+        approvalStore.upsert(approval.copy(status = ApprovalStatus.Submitting, error = null))
+        refreshApprovals()
+        launchBridge {
+            bridgeClient.sendApprovalDecisionValidated(machine, approval.id, if (status == ApprovalStatus.Approved) "approved" else "denied")
+                .onSuccess { result ->
+                    approvalStore.resolve(approval.id, result.status, System.currentTimeMillis())
+                    chatNotificationManager.cancelApproval(approval.id)
+                    refreshApprovals()
+                    appendChatEvent(approval.chatId, ChatMessage(
+                        MessageRole.System,
+                        "${approval.summary}: ${approvalStatusLabel(approvals.first { it.id == approval.id }.status, strings)}",
+                        System.currentTimeMillis(),
+                        kind = ChatMessageKind.Activity,
+                        title = strings.approvals,
+                        details = approval.details,
+                        activityId = approval.id,
+                    ))
+                }
+                .onFailure { error ->
+                    val latest = approvalStore.load().firstOrNull { it.id == approval.id } ?: return@onFailure
+                    if (latest.status.isActionable()) {
+                        approvalStore.upsert(latest.copy(status = ApprovalStatus.Pending, error = error.message))
+                    }
+                    refreshApprovals()
+                }
         }
     }
 
@@ -778,6 +934,11 @@ fun AgentLinkApp(
         authoritativeSnapshot: Boolean = false,
     ) {
         val pendingStartEventId = pendingLocalPromptStartEventIds[chatId]
+        if (authoritativeSnapshot) {
+            chats.firstOrNull { it.id == chatId }?.let {
+                upsertChat(it.copy(agentStatus = status, lastSyncAtMillis = System.currentTimeMillis(), connectionError = null))
+            }
+        }
         if (!authoritativeSnapshot && !shouldApplyChatStatus(status, activePromptOperationIds[chatId])) {
             return
         }
@@ -823,12 +984,19 @@ fun AgentLinkApp(
                 authoritativeBusyEventIds.remove(chatId)
                 val hasRemovalTombstones =
                     chats.firstOrNull { it.id == chatId }?.queuedPrompts?.any { it.removing } == true
-                if (selectedChatId != chatId && (status == "failed" || !hasRemovalTombstones)) {
+                val recovering = chats.firstOrNull { it.id == chatId }?.bridgeResyncRequired == true
+                if (!recovering && selectedChatId != chatId && (status == "failed" || !hasRemovalTombstones)) {
                     chatConnections.remove(chatId)?.close()
                 }
             }
             "disconnected" -> Unit
         }
+        val latest = chats.firstOrNull { it.id == chatId } ?: return
+        upsertChat(latest.copy(
+            agentStatus = if (status == "disconnected") latest.agentStatus else status,
+            lastSyncAtMillis = if (status == "disconnected") latest.lastSyncAtMillis else System.currentTimeMillis(),
+            connectionError = if (status == "disconnected") latest.connectionError else null,
+        ))
     }
 
     fun handlePromptStarted(chatId: String, operationId: String, content: String) {
@@ -900,10 +1068,17 @@ fun AgentLinkApp(
             }
             return
         }
-        if (!isFinalPromptCompletion(status, queueRemaining)) return
+        if (queueRemaining != 0 || status !in setOf("completed", "failed")) return
         if (!allowAttention) return
         val chat = chats.firstOrNull { it.id == chatId } ?: return
-        val preview = chatCompletionPreview(
+        if (!shouldNotifyMonitoredCompletion(
+                operationId, chat.lastNotifiedOperationId, status, queueRemaining,
+                chat.messages.filter { it.role == MessageRole.User }.mapNotNull { it.operationId },
+            )
+        ) return
+        val preview = if (status == "failed") strings.reliability(
+            "Task failed. Open the chat for error details.", "任务失败，请打开聊天查看错误详情。",
+        ) else chatCompletionPreview(
             latestAgentPreview = latestAgentPreviews.remove(chatId),
             persistedAgentMessages = chat.messages
                 .filter { it.role == MessageRole.Agent && it.kind == ChatMessageKind.Message }
@@ -920,13 +1095,17 @@ fun AgentLinkApp(
         if (attention.showNotification) {
             chatNotificationManager.showCompletion(chatId, chat.title, preview)
         }
+        if (attention.markUnread && appInForeground.value) showChatAttention(chatId, "${chat.title}: $preview")
+        upsertChat((chats.firstOrNull { it.id == chatId } ?: chat).copy(lastNotifiedOperationId = operationId))
     }
 
     fun deleteApproval(approval: Approval) {
-        if (approval.status == ApprovalStatus.Pending) {
+        if (approval.status.isActionable()) {
             updateApproval(approval, ApprovalStatus.Denied)
+            return
         }
-        approvals.removeAll { it.id == approval.id }
+        approvalStore.remove(approval.id)
+        refreshApprovals()
     }
 
     fun showResumeDialog(chat: Chat) {
@@ -936,7 +1115,7 @@ fun AgentLinkApp(
             return
         }
         resumeDialogState = ResumeDialogState(chat = chat, sessions = null, error = null)
-        scope.launch {
+        launchBridge {
             bridgeClient.listSessions(machine, chat.agentId, chat.workspacePath)
                 .onSuccess { sessions ->
                     resumeDialogState = ResumeDialogState(chat = chat, sessions = sessions, error = null)
@@ -960,33 +1139,35 @@ fun AgentLinkApp(
             details = "sessionId=${session.sessionId}\ncwd=${session.cwd.orEmpty()}\nupdatedAt=${session.updatedAt.orEmpty()}",
         )
         upsertChat(loading)
-        scope.launch {
-            val bound = loading.bindAcpSession(session.sessionId, resumable = true)
-            upsertChat(bound)
-            bridgeClient.loadRecentSession(
+        sessionLoadingChatIds.add(chat.id)
+        chatConnections.remove(chat.id)?.close()
+        statusSynchronizedChatIds.remove(chat.id)
+        launchBridge {
+            try {
+            val path = session.cwd?.ifBlank { null } ?: chat.workspacePath
+            bridgeClient.loadRecentSessionPage(
                 machine,
                 chat.id,
                 chat.agentId,
-                chat.workspacePath,
+                path,
                 session.sessionId,
                 sessionLoadMessageLimit,
-                onSession = { sessionId, resumable -> handleSessionBinding(chat.id, sessionId, resumable) },
             ).result
-                .onSuccess { messages ->
-                    val current = chats.firstOrNull { it.id == chat.id } ?: return@onSuccess
-                    upsertChat(current.copy(messages = current.messages + messages))
-                }
+                .onSuccess { page -> applyHistoryPage(chat.id, page, replace = true, session = session) }
                 .onFailure {
                     val current = chats.firstOrNull { current -> current.id == chat.id } ?: return@onFailure
                     upsertChat(current.withMessage(MessageRole.System, strings.resumeFailed(it.message)))
                 }
+            } finally {
+                sessionLoadingChatIds.remove(chat.id)
+            }
         }
     }
 
     fun showModelDialog(chat: Chat, option: ConfigOption) {
         modelDialogState = ModelDialogState(chat = chat, option = option)
         val machine = machines.firstOrNull { it.id == chat.machineId } ?: return
-        scope.launch {
+        launchBridge {
             bridgeClient.refreshConfigOptions(
                 machine,
                 chat.id,
@@ -1029,7 +1210,7 @@ fun AgentLinkApp(
             details = "configId=${option.id}\nvalue=${value.value}\n${value.description.orEmpty()}",
         )
         upsertChat(changing)
-        scope.launch {
+        launchBridge {
             bridgeClient.setConfigOption(
                 machine,
                 chat.id,
@@ -1062,6 +1243,11 @@ fun AgentLinkApp(
             bridgeClient.redeemPairing(payload)
                 .onSuccess { machine ->
                     upsertMachine(machine)
+                    chats.filter { it.machineId == machine.id }.forEach { chat ->
+                        authenticationRequiredChatIds.remove(chat.id)
+                        statusSynchronizedChatIds.remove(chat.id)
+                        chatConnections.remove(chat.id)?.close()
+                    }
                     bridgeClient.fetchMachineDetails(machine)
                         .onSuccess {
                             upsertMachine(it)
@@ -1108,15 +1294,21 @@ fun AgentLinkApp(
     }
 
     fun finalizeRecoveredHistory(chatId: String) {
-        val messages = recoveredResyncMessages[chatId] ?: return
+        val page = recoveredResyncMessages[chatId] ?: return
         if (chatId !in resyncSnapshotChatIds) return
         val latest = chats.firstOrNull { it.id == chatId } ?: return
         val checkpoint = pendingResyncEventIds.remove(chatId)
         val recovered = latest.copy(
-            messages = reconcileRecentSessionMessages(latest.messages, messages),
+            messages = reconcileRecentSessionMessages(latest.messages, page.messages),
             bridgeResyncRequired = false,
+            historyId = page.historyId,
+            historyNextBefore = page.nextBefore,
+            historyHasMore = page.hasMore,
+            historyTotalMessages = page.totalMessages,
+            bridgeEventGeneration = page.eventGeneration ?: latest.bridgeEventGeneration,
+            lastBridgeEventId = page.latestEventId ?: checkpoint ?: latest.lastBridgeEventId,
         )
-        upsertChat(if (checkpoint == null) recovered else recovered.recordBridgeEventId(checkpoint))
+        upsertChat(recovered)
         recoveredResyncMessages.remove(chatId)
         resyncSnapshotChatIds.remove(chatId)
     }
@@ -1125,10 +1317,9 @@ fun AgentLinkApp(
         if (chatId in resyncingChatIds) return
         val current = chats.firstOrNull { it.id == chatId } ?: return
         recoveredResyncMessages.remove(chatId)
-        resyncSnapshotChatIds.remove(chatId)
-        activePromptOperationIds.remove(chatId)
-        pendingLocalPromptStartEventIds.remove(chatId)
-        authoritativeBusyEventIds.remove(chatId)
+        upsertChat(current.copy(bridgeResyncRequired = true))
+        // Loading ACP history can replace the process; wait for an authoritative idle snapshot.
+        if (chatId !in statusSynchronizedChatIds || current.agentStatus in setOf("busy", "waitingApproval")) return
         val currentMachine = machines.firstOrNull { it.id == current.machineId }
         val sessionId = current.acpSessionId
         if (currentMachine == null || sessionId == null) {
@@ -1142,9 +1333,12 @@ fun AgentLinkApp(
         }
         upsertChat(current.copy(bridgeResyncRequired = true))
         resyncingChatIds.add(chatId)
-        scope.launch {
+        sessionLoadingChatIds.add(chatId)
+        chatConnections.remove(chatId)?.close()
+        statusSynchronizedChatIds.remove(chatId)
+        launchBridge {
             try {
-                bridgeClient.loadRecentSession(
+                bridgeClient.loadRecentSessionPage(
                     currentMachine,
                     current.id,
                     current.agentId,
@@ -1155,8 +1349,8 @@ fun AgentLinkApp(
                         handleSessionBinding(current.id, restoredSessionId, resumable)
                     },
                 ).result
-                    .onSuccess { messages ->
-                        recoveredResyncMessages[current.id] = messages
+                    .onSuccess { page ->
+                        recoveredResyncMessages[current.id] = page
                         finalizeRecoveredHistory(current.id)
                     }
                     .onFailure {
@@ -1173,11 +1367,15 @@ fun AgentLinkApp(
                     }
             } finally {
                 resyncingChatIds.remove(current.id)
+                sessionLoadingChatIds.remove(current.id)
             }
         }
     }
 
     fun ensureChatConnection(chat: Chat): Boolean {
+        if (!appInForeground.value || !uiOwnsConnections || !storesLoaded ||
+            chat.id in authenticationRequiredChatIds || chat.id in sessionLoadingChatIds
+        ) return false
         if (chat.id in chatConnections) return true
         val machine = machines.firstOrNull { it.id == chat.machineId } ?: return false
         lateinit var connection: ChatConnection
@@ -1190,7 +1388,7 @@ fun AgentLinkApp(
             lastEventGeneration = chat.bridgeEventGeneration,
             sessionId = chat.acpSessionId,
             sessionResumable = chat.acpSessionResumable,
-            queuedPrompts = chat.queuedPrompts,
+            queuedPrompts = emptyList(),
             onMessage = { event, isReplay ->
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
                 val current = chats.firstOrNull { it.id == chat.id }
@@ -1215,8 +1413,34 @@ fun AgentLinkApp(
                 )
                 addApproval(current, request)
             },
+            onApprovalSnapshot = { requests ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                val current = chats.firstOrNull { it.id == chat.id } ?: return@openChatConnection
+                approvalStore.reconcile(current, requests)
+                refreshApprovals()
+                approvals.filter { it.chatId == chat.id && !it.status.isActionable() }
+                    .forEach { chatNotificationManager.cancelApproval(it.id) }
+            },
+            onApprovalResolved = { approvalId, status, decidedAt ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                approvalStore.resolve(approvalId, status, decidedAt)
+                chatNotificationManager.cancelApproval(approvalId)
+                refreshApprovals()
+                approvals.firstOrNull { it.id == approvalId }?.let { approval ->
+                    appendChatEvent(chat.id, ChatMessage(
+                        MessageRole.System,
+                        "${approval.summary}: ${approvalStatusLabel(approval.status, strings)}",
+                        decidedAt,
+                        kind = ChatMessageKind.Activity,
+                        title = strings.approvals,
+                        details = approval.details,
+                        activityId = approvalId,
+                    ))
+                }
+            },
             onStatus = statusCallback@{ status, eventId, queuedCount, operationId, isSnapshot ->
                 if (chatConnections[chat.id] !== connection) return@statusCallback
+                val firstSnapshot = isSnapshot && chat.id !in statusSynchronizedChatIds
                 if (chat.id !in statusSynchronizedChatIds) {
                     if (!isSnapshot) return@statusCallback
                 }
@@ -1229,11 +1453,29 @@ fun AgentLinkApp(
                     authoritativeSnapshot = isSnapshot,
                 )
                 if (isSnapshot) {
+                    if (chat.id !in statusSynchronizedChatIds) statusSynchronizedChatIds.add(chat.id)
                     if (chats.firstOrNull { it.id == chat.id }?.bridgeResyncRequired == true) {
                         if (chat.id !in resyncSnapshotChatIds) resyncSnapshotChatIds.add(chat.id)
                         finalizeRecoveredHistory(chat.id)
+                        if (status == "idle" && chats.firstOrNull { it.id == chat.id }?.bridgeResyncRequired == true) {
+                            recoverTruncatedHistory(chat.id)
+                        }
                     }
-                    if (chat.id !in statusSynchronizedChatIds) statusSynchronizedChatIds.add(chat.id)
+                } else if (status == "idle" && chats.firstOrNull { it.id == chat.id }?.bridgeResyncRequired == true) {
+                    recoverTruncatedHistory(chat.id)
+                }
+                val current = chats.firstOrNull { it.id == chat.id }
+                if (firstSnapshot && current != null && !current.bridgeResyncRequired &&
+                    chatConnections[chat.id] === connection
+                ) {
+                    if (!connection.restoreQueuedPrompts(current)) {
+                        upsertChat(current.copy(connectionError = strings.reliability(
+                            "Could not restore queued prompts. Reconnect to retry.",
+                            "无法恢复待发送消息，请重新连接后重试。",
+                        )))
+                        chatConnections.remove(chat.id)?.close()
+                        statusSynchronizedChatIds.remove(chat.id)
+                    }
                 }
             },
             onPromptAccepted = { operationId, state, content, _ ->
@@ -1252,7 +1494,7 @@ fun AgentLinkApp(
                     status,
                     operationId,
                     queueRemaining,
-                    allowAttention = !isReplay,
+                    allowAttention = chats.firstOrNull { it.id == chat.id }?.bridgeResyncRequired != true,
                 )
             },
             onSession = { sessionId, resumable, _ ->
@@ -1279,8 +1521,9 @@ fun AgentLinkApp(
                     authoritativeBusyEventIds.remove(chat.id)
                 }
                 val rebound = current.bindBridgeEventGeneration(generation, checkpointReset)
-                if (rebound != current) upsertChat(rebound)
-                if (current.bridgeResyncRequired) recoverTruncatedHistory(chat.id)
+                val needsRecovery = current.bridgeResyncRequired ||
+                    (checkpointReset && current.bridgeEventGeneration != null && current.acpSessionResumable)
+                if (rebound != current || needsRecovery) upsertChat(rebound.copy(bridgeResyncRequired = needsRecovery))
             },
             onResyncRequired = {
                 if (chatConnections[chat.id] === connection) recoverTruncatedHistory(chat.id)
@@ -1289,6 +1532,11 @@ fun AgentLinkApp(
                 if (chatConnections[chat.id] === connection) {
                     chatConnections.remove(chat.id)
                     statusSynchronizedChatIds.remove(chat.id)
+                    if (it is BridgeConnectionException && it.authenticationRequired) {
+                        if (chat.id !in authenticationRequiredChatIds) authenticationRequiredChatIds.add(chat.id)
+                    }
+                    val current = chats.firstOrNull { current -> current.id == chat.id }
+                    if (current != null) upsertChat(current.copy(connectionError = it.message))
                     updateChatStatus(chat.id, "disconnected")
                 }
             },
@@ -1303,6 +1551,7 @@ fun AgentLinkApp(
         val storedChats = chatStore.load()
         chats.clear()
         chats.addAll(storedChats)
+        refreshApprovals()
         busyChatIds.clear()
         busyChatIds.addAll(
             storedChats
@@ -1311,7 +1560,74 @@ fun AgentLinkApp(
         )
         unreadChatIds.clear()
         unreadChatIds.addAll(chatStore.loadUnreadChatIds().filter { unreadChatId -> chats.any { it.id == unreadChatId } })
+        storesLoaded = true
         checkForUpdate(manual = false)
+    }
+
+    LaunchedEffect(notificationPermissionRevision) {
+        notificationsEnabled = chatNotificationManager.notificationsEnabled()
+    }
+
+    fun handOffToBackground() {
+        if (!uiOwnsConnections) return
+        uiOwnsConnections = false
+        if (!storesLoaded) return
+        val monitored = chats.filter {
+            it.id in busyChatIds || it.id !in statusSynchronizedChatIds ||
+                it.queuedPrompts.isNotEmpty() || approvals.any { approval -> approval.chatId == it.id && approval.status.isActionable() }
+        }.map { it.id }
+        chatConnections.values.toList().forEach { it.close() }
+        chatConnections.clear()
+        foregroundJobs.toList().forEach { it.cancel() }
+        if (monitored.isNotEmpty()) {
+            ChatMonitorService.start(context.applicationContext, monitored).onFailure { error ->
+                monitored.forEach { id ->
+                    chats.firstOrNull { it.id == id }?.let { upsertChat(it.copy(connectionError = error.message)) }
+                }
+            }
+        }
+    }
+
+    val handOff by rememberUpdatedState(::handOffToBackground)
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> handOff()
+                Lifecycle.Event.ON_RESUME -> {
+                    ChatMonitorService.stop(context.applicationContext)
+                    uiOwnsConnections = true
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(appInForeground.value, uiOwnsConnections, storesLoaded) {
+        if (!storesLoaded) return@LaunchedEffect
+        if (appInForeground.value && uiOwnsConnections) {
+            ChatMonitorService.stop(context.applicationContext)
+            chats.clear()
+            chats.addAll(chatStore.load())
+            refreshApprovals()
+            unreadChatIds.clear()
+            unreadChatIds.addAll(chatStore.loadUnreadChatIds())
+            statusSynchronizedChatIds.clear()
+            busyChatIds.clear()
+            busyChatIds.addAll(chats.filter {
+                it.agentStatus in setOf("busy", "waitingApproval") || it.queuedPrompts.any { queued -> !queued.removing }
+            }.map { it.id })
+            notificationsEnabled = chatNotificationManager.notificationsEnabled()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            chatConnections.values.toList().forEach { it.close() }
+            chatConnections.clear()
+            foregroundJobs.toList().forEach { it.cancel() }
+        }
     }
 
     val chatConnectionKeys = chats.map { chat ->
@@ -1334,11 +1650,12 @@ fun AgentLinkApp(
             }
         }
     }
-    val machineConnectionKeys = machines.map { "${it.id}|${it.endpoint}|${it.deviceToken}" }
-    LaunchedEffect(chatConnectionKeys, machineConnectionKeys, statusSynchronizedChatIds.toList()) {
+    val machineConnectionKeys = machines.map { "${it.id}|${it.endpoint}|${it.deviceToken}|${it.connectionHeaders.hashCode()}" }
+    LaunchedEffect(chatConnectionKeys, machineConnectionKeys, statusSynchronizedChatIds.toList(), sessionLoadingChatIds.toList(), appInForeground.value, uiOwnsConnections, storesLoaded) {
+        if (!appInForeground.value || !uiOwnsConnections || !storesLoaded) return@LaunchedEffect
         var retryDelayMillis = 1_000L
         while (true) {
-            val unsynchronizedChats = chats.filter { it.id !in statusSynchronizedChatIds }
+            val unsynchronizedChats = chats.filter { it.id !in statusSynchronizedChatIds && it.id !in authenticationRequiredChatIds }
             if (unsynchronizedChats.isEmpty()) break
             unsynchronizedChats.forEach(::ensureChatConnection)
             delay(retryDelayMillis)
@@ -1366,7 +1683,8 @@ fun AgentLinkApp(
             .filter { it.removing }
             .map { queued -> "${chat.id}:${queued.operationId}" }
     }
-    LaunchedEffect(queuedPromptRemovalKeys, machines.toList()) {
+    LaunchedEffect(queuedPromptRemovalKeys, machines.toList(), appInForeground.value, uiOwnsConnections) {
+        if (!appInForeground.value || !uiOwnsConnections) return@LaunchedEffect
         var retryDelayMillis = 1_000L
         while (true) {
             val pendingRemovals = chats.flatMap { chat ->
@@ -1443,6 +1761,7 @@ fun AgentLinkApp(
                 )
             } else {
                 Scaffold(
+                    snackbarHost = { SnackbarHost(snackbar) },
                     topBar = {
                         TopAppBar(
                             title = {
@@ -1453,6 +1772,13 @@ fun AgentLinkApp(
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
+                                    if (!notificationsEnabled) {
+                                        Text(
+                                            strings.reliability("Background alerts disabled - see Settings", "后台提醒未启用，请前往设置"),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
                                 }
                             },
                         )
@@ -1471,6 +1797,10 @@ fun AgentLinkApp(
                                         ) {
                                             Text(tab.icon, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                                             Text(strings.tabLabel(tab), style = MaterialTheme.typography.labelSmall)
+                                            if (tab == AppTab.Approvals) {
+                                                val pending = approvals.count { it.status.isActionable() }
+                                                if (pending > 0) Text("$pending", color = MaterialTheme.colorScheme.error)
+                                            }
                                         }
                                     },
                                 )
@@ -1486,6 +1816,17 @@ fun AgentLinkApp(
                             busyChatIds = busyChatIds.toSet(),
                             unreadChatIds = unreadChatIds.toSet(),
                             selectedChatId = selectedChatId,
+                            approvals = approvals,
+                            connectedChatIds = statusSynchronizedChatIds.toSet(),
+                            loadingHistoryChatIds = loadingHistoryChatIds.toSet(),
+                            onApprovalDecision = ::updateApproval,
+                            onLoadOlder = ::loadOlderHistory,
+                            onRetryConnection = { chat ->
+                                authenticationRequiredChatIds.remove(chat.id)
+                                statusSynchronizedChatIds.remove(chat.id)
+                                chatConnections.remove(chat.id)?.close()
+                                ensureChatConnection(chat)
+                            },
                             onCreateChat = ::createChat,
                             onOpenExistingSession = ::openExistingSession,
                             onLoadExistingSessions = ::loadExistingSessions,
@@ -1519,6 +1860,7 @@ fun AgentLinkApp(
                                     }
                                     if (chat.id !in busyChatIds) busyChatIds.add(chat.id)
                                     val updated = chat.copy(
+                                        agentStatus = "busy",
                                         queuedPrompts = chat.queuedPrompts + QueuedPrompt(
                                             operationId = operationId,
                                             text = message,
@@ -1586,6 +1928,11 @@ fun AgentLinkApp(
                             onOpenUpdate = ::openUpdate,
                             onOpenFeedbackIssue = ::openFeedbackIssue,
                             onEmailDeveloper = ::emailDeveloper,
+                            notificationsEnabled = notificationsEnabled,
+                            onNotificationSettings = {
+                                context.startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
+                            },
                         )
                     }
 
@@ -1623,6 +1970,8 @@ private fun SettingsScreen(
     onOpenUpdate: (AppUpdate) -> Unit,
     onOpenFeedbackIssue: () -> Unit,
     onEmailDeveloper: () -> Unit,
+    notificationsEnabled: Boolean,
+    onNotificationSettings: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
     var sessionLoadLimitText by remember(sessionLoadMessageLimit) { mutableStateOf(sessionLoadMessageLimit.toString()) }
@@ -1639,6 +1988,23 @@ private fun SettingsScreen(
                 subtitle = strings.manageSettings,
                 metric = "v${BuildConfig.VERSION_NAME}",
             )
+        }
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(strings.reliability("Task notifications", "任务通知"), style = MaterialTheme.typography.titleMedium)
+                    Text(if (notificationsEnabled) strings.reliability(
+                        "Enabled. Active tasks can be monitored with a foreground notification. Android force-stop and background limits can still interrupt monitoring.",
+                        "已启用。任务运行期间使用前台通知保持监控。强制停止应用或系统后台限制仍会中断监控。",
+                    ) else strings.reliability(
+                        "Notifications are disabled. You will not receive background completion or approval alerts. Reopen the app to synchronize.",
+                        "通知未启用，后台完成及审批提醒不可用。请重新打开应用同步状态。",
+                    ), color = if (notificationsEnabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
+                    OutlinedButton(onClick = onNotificationSettings) {
+                        Text(strings.reliability("Notification settings", "通知设置"))
+                    }
+                }
+            }
         }
         item {
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
@@ -1746,6 +2112,12 @@ private fun ChatsScreen(
     busyChatIds: Set<String>,
     unreadChatIds: Set<String>,
     selectedChatId: String?,
+    approvals: List<Approval>,
+    connectedChatIds: Set<String>,
+    loadingHistoryChatIds: Set<String>,
+    onApprovalDecision: (Approval, ApprovalStatus) -> Unit,
+    onLoadOlder: (Chat) -> Unit,
+    onRetryConnection: (Chat) -> Unit,
     onCreateChat: (Machine, String, Agent) -> Unit,
     onOpenExistingSession: (Machine, Agent, AgentSessionInfo) -> Unit,
     onLoadExistingSessions: (Machine, Agent, (Result<List<AgentSessionInfo>>) -> Unit) -> Unit,
@@ -1760,12 +2132,17 @@ private fun ChatsScreen(
     val strings = LocalAppStrings.current
     val selectedChat = chats.firstOrNull { it.id == selectedChatId }
     if (selectedChat != null) {
-        val selectedMachineState = machines.firstOrNull { it.id == selectedChat.machineId }?.connectionState ?: ConnectionState.Unknown
+        val selectedMachineState = if (selectedChat.id in connectedChatIds) ConnectionState.Online else ConnectionState.Offline
         ChatDetailScreen(
             padding = padding,
             chat = selectedChat,
             isBusy = selectedChat.id in busyChatIds,
             connectionState = selectedMachineState,
+            approvals = approvals.filter { it.chatId == selectedChat.id && it.status.isActionable() },
+            onApprovalDecision = onApprovalDecision,
+            loadingHistory = selectedChat.id in loadingHistoryChatIds,
+            onLoadOlder = { onLoadOlder(selectedChat) },
+            onRetryConnection = { onRetryConnection(selectedChat) },
             onBack = onBackToList,
             onSendMessage = { onSendMessage(selectedChat, it) },
             onRemoveQueuedPrompt = { onRemoveQueuedPrompt(selectedChat, it) },
@@ -1944,7 +2321,7 @@ private fun ChatsScreen(
             item { EmptyStateCard(strings.noChatsYet, strings.createChatAfterPairing) }
         } else {
             items(chats, key = { it.id }) { chat ->
-                val machineState = machines.firstOrNull { it.id == chat.machineId }?.connectionState ?: ConnectionState.Unknown
+                val machineState = if (chat.id in connectedChatIds) ConnectionState.Online else ConnectionState.Offline
                 SwipeToDeleteItem(onDelete = { onDeleteChat(chat) }) {
                     ElevatedCard(onClick = { onOpenChat(chat) }, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
@@ -1970,6 +2347,10 @@ private fun ChatsScreen(
                                 }
                             }
                             Text("${chat.machineName} · ${chat.workspacePath}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(agentStatusLabel(chat.agentStatus, strings), color = MaterialTheme.colorScheme.primary)
+                            val pending = approvals.count { it.chatId == chat.id && it.status.isActionable() }
+                            if (pending > 0) Text(strings.pending(pending), color = MaterialTheme.colorScheme.error)
+                            chat.connectionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                             Text(strings.messages(chat.messages.size), style = MaterialTheme.typography.labelMedium)
                         }
                     }
@@ -1985,14 +2366,21 @@ private fun ChatDetailScreen(
     chat: Chat,
     isBusy: Boolean,
     connectionState: ConnectionState,
+    approvals: List<Approval>,
+    onApprovalDecision: (Approval, ApprovalStatus) -> Unit,
+    loadingHistory: Boolean,
+    onLoadOlder: () -> Unit,
+    onRetryConnection: () -> Unit,
     onBack: () -> Unit,
     onSendMessage: (String) -> Unit,
     onRemoveQueuedPrompt: (String) -> Unit,
     onCommand: (AvailableCommand) -> Unit,
 ) {
     val strings = LocalAppStrings.current
-    var message by remember { mutableStateOf("") }
+    var message by androidx.compose.runtime.saveable.rememberSaveable(chat.id) { mutableStateOf("") }
     val listState = rememberLazyListState()
+    var previousMessageCount by remember(chat.id) { mutableStateOf(0) }
+    var previousFirstMessage by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     BackHandler(onBack = onBack)
     val commands = remember(chat.messages) {
         val advertisedCommands = chat.availableCommands()
@@ -2005,9 +2393,13 @@ private fun ChatDetailScreen(
         }
     }
     LaunchedEffect(chat.id, chat.messages.size) {
-        if (chat.messages.isNotEmpty()) {
-            listState.scrollToItem(chat.messages.lastIndex)
+        val nearBottom = (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= previousMessageCount - 2
+        val prepended = previousMessageCount > 0 && previousFirstMessage != chat.messages.firstOrNull()
+        if (chat.messages.isNotEmpty() && !loadingHistory && !prepended && (previousMessageCount == 0 || nearBottom)) {
+            listState.scrollToItem(chat.messages.size)
         }
+        previousMessageCount = chat.messages.size
+        previousFirstMessage = chat.messages.firstOrNull()
     }
     val density = LocalDensity.current
     val isImeVisible = WindowInsets.ime.getBottom(density) > 0
@@ -2039,10 +2431,32 @@ private fun ChatDetailScreen(
                     }
                     Text("${chat.machineName} · ${chat.workspacePath}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(chat.agentName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    Text(agentStatusLabel(chat.agentStatus, strings), style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        if (connectionState == ConnectionState.Online) strings.reliability("Connection: synchronized", "连接：已同步")
+                        else strings.reliability("Connection: disconnected / reconnecting", "连接：已断开 / 正在重连"),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    if (chat.lastSyncAtMillis > 0) {
+                        Text(
+                            strings.reliability("Last synchronized: ", "最近同步：") +
+                                java.text.DateFormat.getTimeInstance().format(java.util.Date(chat.lastSyncAtMillis)),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                 }
             }
         }
 
+        if (connectionState != ConnectionState.Online || chat.connectionError != null) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(chat.connectionError ?: strings.reliability(
+                    "Remote task status is not yet confirmed. Reconnecting does not stop the agent.",
+                    "远端任务状态尚未确认。连接中断不代表 Agent 已停止。",
+                ), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                OutlinedButton(onClick = onRetryConnection) { Text(strings.reliability("Retry", "重试")) }
+            }
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -2058,6 +2472,26 @@ private fun ChatDetailScreen(
                 contentPadding = PaddingValues(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (chat.bridgeResyncRequired) Text(strings.reliability(
+                            "History has a gap. Recovery waits for the active turn to finish; this transcript is not complete.",
+                            "历史记录存在缺口，待当前任务结束后恢复；当前显示的记录不完整。",
+                        ), color = MaterialTheme.colorScheme.error)
+                        if (chat.historyHasMore) {
+                            Text(strings.reliability(
+                                "Showing a recent history page, not the full session.",
+                                "当前仅显示部分历史，并非完整会话。",
+                            ), style = MaterialTheme.typography.bodySmall)
+                            OutlinedButton(enabled = !loadingHistory, onClick = onLoadOlder) {
+                                Text(if (loadingHistory) strings.loadingSessions else strings.reliability("Load older history", "加载更早记录"))
+                            }
+                        }
+                        approvals.forEach { approval ->
+                            ApprovalCard(approval, onApprovalDecision)
+                        }
+                    }
+                }
                 items(chat.messages) { item ->
                     ChatTimelineItem(item)
                 }
@@ -2229,7 +2663,8 @@ private fun CompactPromptField(value: String, onValueChange: (String) -> Unit, m
                 onValueChange = onValueChange,
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-                singleLine = true,
+                singleLine = false,
+                maxLines = 6,
             )
         }
     }
@@ -2596,7 +3031,7 @@ private fun findClosingInlineBackticks(value: String, startIndex: Int, delimiter
 @Composable
 private fun AgentActivityItem(item: ChatMessage) {
     val strings = LocalAppStrings.current
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by remember(item.activityId) { mutableStateOf(false) }
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.70f),
@@ -2615,11 +3050,20 @@ private fun AgentActivityItem(item: ChatMessage) {
             if (expanded && !item.details.isNullOrBlank()) {
                 Spacer(Modifier.height(8.dp))
                 Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)) {
-                    Text(
-                        text = item.details,
-                        modifier = Modifier.padding(10.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    val sections = remember(item.details) { toolActivitySections(item.details) }
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        sections.ifEmpty { listOf(strings.details to item.details.orEmpty()) }.forEach { (title, text) ->
+                            Text(title, style = MaterialTheme.typography.labelLarge)
+                            androidx.compose.foundation.text.selection.SelectionContainer {
+                                Text(
+                                    text = text,
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    fontFamily = FontFamily.Monospace,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2736,7 +3180,7 @@ private fun ApprovalsScreen(
             PageHero(
                 title = strings.approvals,
                 subtitle = strings.approvalsSubtitle,
-                metric = strings.pending(approvals.count { it.status == ApprovalStatus.Pending }),
+                metric = strings.pending(approvals.count { it.status.isActionable() }),
             )
         }
         if (approvals.isEmpty()) {
@@ -2744,21 +3188,54 @@ private fun ApprovalsScreen(
         } else {
             items(approvals, key = { it.id }) { approval ->
                 SwipeToDeleteItem(onDelete = { onDeleteApproval(approval) }) {
-                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp)) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(approval.summary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                                Text(approval.status.name)
-                            }
-                            Text("${approval.machineName} · ${approval.workspacePath}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(Modifier.height(10.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                Button(enabled = approval.status == ApprovalStatus.Pending, onClick = { onDecision(approval, ApprovalStatus.Approved) }) { Text(strings.approve) }
-                                OutlinedButton(enabled = approval.status == ApprovalStatus.Pending, onClick = { onDecision(approval, ApprovalStatus.Denied) }) { Text(strings.deny) }
-                            }
-                        }
-                    }
+                    ApprovalCard(approval, onDecision)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApprovalCard(approval: Approval, onDecision: (Approval, ApprovalStatus) -> Unit) {
+    val strings = LocalAppStrings.current
+    var now by remember(approval.id) { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(approval.id, approval.status) {
+        while (approval.status.isActionable()) {
+            now = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+    val expired = approval.expiresAtMillis?.let { now >= it } == true
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(approval.summary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(approvalStatusLabel(approval.status, strings), color = MaterialTheme.colorScheme.primary)
+            Text(approval.chatTitle, fontWeight = FontWeight.SemiBold)
+            Text("${approval.machineName} · ${approval.workspacePath}", style = MaterialTheme.typography.bodySmall)
+            Text(strings.reliability("Action: ", "操作：") + approval.action)
+            Text(strings.reliability(
+                "Review the exact target below. Risk is not independently verified.",
+                "请核对下方具体操作目标，风险未经独立验证。",
+            ), style = MaterialTheme.typography.bodySmall)
+            approval.details?.let {
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    Text(
+                        it,
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState()),
+                        fontFamily = FontFamily.Monospace,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            } ?: Text(strings.reliability("No target details supplied by the agent.", "Agent 未提供具体目标。"), color = MaterialTheme.colorScheme.error)
+            approval.expiresAtMillis?.takeIf { approval.status.isActionable() }?.let {
+                Text(if (expired) strings.reliability("Deadline passed; awaiting bridge confirmation.", "已超过截止时间，等待远端确认。")
+                else strings.reliability("Expires in ${(it - now) / 1000}s", "${(it - now) / 1000} 秒后超时"),
+                    style = MaterialTheme.typography.labelSmall)
+            }
+            approval.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(enabled = approval.status == ApprovalStatus.Pending && !expired, onClick = { onDecision(approval, ApprovalStatus.Approved) }) { Text(strings.approve) }
+                OutlinedButton(enabled = approval.status == ApprovalStatus.Pending && !expired, onClick = { onDecision(approval, ApprovalStatus.Denied) }) { Text(strings.deny) }
             }
         }
     }
@@ -3185,30 +3662,7 @@ private fun Chat.withMessage(role: MessageRole, text: String): Chat {
     return copy(messages = messages + ChatMessage(role, text, System.currentTimeMillis()))
 }
 
-private fun List<ChatMessage>.mergeMessage(message: ChatMessage): List<ChatMessage> {
-    val streamId = message.activityId ?: return this + message
-    val existingIndex = if (message.kind == ChatMessageKind.Message) {
-        indexOfLast { it.activityId == streamId }
-    } else {
-        indexOfFirst { it.activityId == streamId }
-    }
-    if (existingIndex < 0) return this + message
-    if (message.kind == ChatMessageKind.Message && existingIndex != lastIndex) return this + message
-    return toMutableList().also { current ->
-        val existing = current[existingIndex]
-        current[existingIndex] = when {
-            message.kind == ChatMessageKind.Activity && existing.kind == ChatMessageKind.Activity -> {
-                if (existing.title == "Thought" && message.title == "Thought") {
-                    existing.copy(details = listOfNotNull(existing.details, message.details).joinToString(""))
-                } else {
-                    message
-                }
-            }
-            message.kind == ChatMessageKind.Message && existing.kind == ChatMessageKind.Message -> existing.copy(text = existing.text + message.text)
-            else -> message
-        }
-    }
-}
+private fun List<ChatMessage>.mergeMessage(message: ChatMessage): List<ChatMessage> = mergeTimelineMessage(message)
 
 private fun Chat.withActivity(title: String, summary: String, details: String): Chat {
     return copy(
@@ -3227,7 +3681,10 @@ private fun Chat.withActivity(title: String, summary: String, details: String): 
 private fun Chat.availableCommands(): List<AvailableCommand> {
     val latest = messages.lastOrNull { it.kind == ChatMessageKind.CommandUpdate && !it.details.isNullOrBlank() } ?: return emptyList()
     val commandDetails = latest.details ?: return emptyList()
-    val array = runCatching { JSONArray(commandDetails) }.getOrNull() ?: return emptyList()
+    val array = runCatching {
+        if (commandDetails.trimStart().startsWith("{")) JSONObject(commandDetails).getJSONArray("availableCommands")
+        else JSONArray(commandDetails)
+    }.getOrNull() ?: return emptyList()
     return List(array.length()) { index ->
         val item = array.getJSONObject(index)
         val input = item.optJSONObject("input")
@@ -3256,7 +3713,10 @@ private fun Chat.allowAllConfigOption(): ConfigOption? {
 private fun Chat.configOptions(): List<ConfigOption> {
     val latest = messages.lastOrNull { it.kind == ChatMessageKind.ConfigUpdate && !it.details.isNullOrBlank() } ?: return emptyList()
     val configDetails = latest.details ?: return emptyList()
-    val array = runCatching { JSONArray(configDetails) }.getOrNull() ?: return emptyList()
+    val array = runCatching {
+        if (configDetails.trimStart().startsWith("{")) JSONObject(configDetails).getJSONArray("configOptions")
+        else JSONArray(configDetails)
+    }.getOrNull() ?: return emptyList()
     val options = List(array.length()) { index -> array.getJSONObject(index) }
     return options.mapNotNull { option ->
         val id = option.getString("id")

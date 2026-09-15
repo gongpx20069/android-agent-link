@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 import socket
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ class BridgeConfig:
     port: int = DEFAULT_PORT
     machine_name: str = field(default_factory=socket.gethostname)
     workspaces: tuple[WorkspaceConfig, ...] = field(default_factory=tuple)
+    device_token_store: Path | None = None
 
     @property
     def bridge_fingerprint(self) -> str:
@@ -39,8 +41,16 @@ def default_workspace(path: str | None = None) -> WorkspaceConfig:
     )
 
 
-def default_config(host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> BridgeConfig:
-    return BridgeConfig(host=host, port=port, workspaces=())
+def default_config(host: str = "127.0.0.1", port: int = DEFAULT_PORT, device_token_store: Path | None = None) -> BridgeConfig:
+    return BridgeConfig(host=host, port=port, workspaces=(), device_token_store=device_token_store)
+
+
+def default_device_token_store() -> Path:
+    if os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+    else:
+        root = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+    return root / "AgentLink" / "device-tokens.json"
 
 
 def _stable_id(value: str) -> str:

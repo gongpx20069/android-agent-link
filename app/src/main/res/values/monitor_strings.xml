@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="monitor_channel_name">Background task monitoring</string>
+    <string name="monitor_alert_channel_name">Approvals and monitoring warnings</string>
+    <string name="monitor_title">Monitoring remote tasks</string>
+    <string name="monitor_description">Keeping %1$d outstanding chats synchronized. Tap to open AgentLink.</string>
+    <string name="monitor_approval_required">A remote task needs your approval. Open AgentLink to review the details.</string>
+    <string name="monitor_timeout">Background monitoring reached its time limit. Reopen AgentLink to synchronize; the remote task may still be running.</string>
+    <string name="monitor_auth_error">Monitoring stopped because bridge or tunnel access was rejected. Reopen AgentLink to refresh access and reconnect.</string>
+    <string name="monitor_resync_error">Some remote events are no longer available. Reopen AgentLink to recover chat history; the remote task was not restarted.</string>
+    <string name="monitor_connection_error">Connection interrupted. Background monitoring is reconnecting; the remote task may still be running.</string>
+    <string name="monitor_start_error">Android could not start background monitoring. Keep AgentLink open or reopen it to synchronize outstanding tasks.</string>
+    <string name="monitor_storage_error">Background monitoring could not save or load chat state. Reopen AgentLink to synchronize safely.</string>
+    <string name="monitor_machine_missing">The paired machine is unavailable. Reopen AgentLink to check its pairing and synchronize.</string>
+    <string name="monitor_completion">The remote task completed. Open AgentLink to read the response.</string>
+    <string name="monitor_task_failed">The remote task failed. Open AgentLink to review the error.</string>
+</resources>

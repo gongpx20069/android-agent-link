@@ -11,13 +11,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.ContextCompat
 import com.gongpx.androidacpclient.data.notification.EXTRA_CHAT_ID
+import com.gongpx.androidacpclient.data.notification.ChatMonitorService
 import com.gongpx.androidacpclient.ui.AgentLinkApp
 
 class MainActivity : ComponentActivity() {
     private val incomingPairingLink = mutableStateOf<String?>(null)
     private val incomingChatId = mutableStateOf<String?>(null)
     private val appInForeground = mutableStateOf(false)
-    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val notificationPermissionRevision = mutableStateOf(0)
+    private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        notificationPermissionRevision.value++
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -28,13 +32,20 @@ class MainActivity : ComponentActivity() {
                 incomingPairingLink = incomingPairingLink,
                 incomingChatId = incomingChatId,
                 appInForeground = appInForeground,
+                notificationPermissionRevision = notificationPermissionRevision.value,
             )
         }
     }
 
     override fun onStart() {
         super.onStart()
+        ChatMonitorService.stop(this)
         appInForeground.value = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        notificationPermissionRevision.value++
     }
 
     override fun onStop() {

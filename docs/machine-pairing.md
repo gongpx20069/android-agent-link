@@ -194,6 +194,15 @@ Android stores the device token in secure platform storage.
 
 ## Android UX
 
+Dev Tunnel access tokens are intentionally short-lived. AgentLink does not keep a
+tunnel alive or renew its connect token continuously. If relay authorization expires,
+restart the bridge as needed and scan its new pairing link to update the saved
+machine credentials. Re-pairing updates the existing machine without deleting chats.
+Bridge device authentication survives a normal bridge restart separately from the
+relay credential. Authentication errors and network disconnection are distinct:
+retry handles temporary connectivity, while a stale relay credential needs a new
+pairing link.
+
 Machine setup flow:
 
 ```text

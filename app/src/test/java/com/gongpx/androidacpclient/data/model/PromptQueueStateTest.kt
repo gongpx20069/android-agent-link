@@ -5,6 +5,23 @@ import org.junit.Test
 
 class PromptQueueStateTest {
     @Test
+    fun recoveryPreservesActivityAndPlanRowsBetweenMessages() {
+        val recent = listOf(
+            ChatMessage(MessageRole.User, "hello", 1),
+            ChatMessage(MessageRole.Agent, "tool", 2, kind = ChatMessageKind.Activity, activityId = "tool-1"),
+            ChatMessage(MessageRole.Agent, "plan", 3, kind = ChatMessageKind.Plan, activityId = "plan"),
+            ChatMessage(MessageRole.Agent, "done", 4),
+        )
+        assertEquals(recent, reconcileRecentSessionMessages(emptyList(), recent))
+    }
+
+    @Test
+    fun activityOnlyRecoveryDoesNotDisappear() {
+        val activity = ChatMessage(MessageRole.Agent, "tool", 2, kind = ChatMessageKind.Activity, activityId = "tool-1")
+        assertEquals(listOf(activity), reconcileRecentSessionMessages(emptyList(), listOf(activity)))
+    }
+
+    @Test
     fun sessionBindingIsPersistedAndNeverDowngradedByReplay() {
         val bound = testChat().bindAcpSession("session-1", resumable = false)
         val resumable = bound.bindAcpSession("session-1", resumable = true)

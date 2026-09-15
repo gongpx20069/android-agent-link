@@ -27,7 +27,7 @@ fun reconcileRecentSessionMessages(
     recent: List<ChatMessage>,
 ): List<ChatMessage> {
     val recentConversation = recent.filter { it.isConversationMessage() }
-    if (recentConversation.isEmpty()) return existing
+    if (recentConversation.isEmpty()) return recent.fold(existing) { messages, item -> messages.mergeTimelineMessage(item) }
     val reconciledExisting = existing.toMutableList()
     recentConversation.forEach { recovered ->
         val recoveredId = recovered.stableMessageId() ?: return@forEach
@@ -55,7 +55,16 @@ fun reconcileRecentSessionMessages(
                 .all { (left, right) -> left.sameRecoveredMessage(right) }
         }
     }
-    return reconciledExisting + recentConversation.drop(overlap)
+    var result: List<ChatMessage> = reconciledExisting
+    var conversationIndex = 0
+    recent.forEach { item ->
+        if (item.isConversationMessage()) {
+            if (conversationIndex++ >= overlap) result = result + item
+        } else {
+            result = result.mergeTimelineMessage(item)
+        }
+    }
+    return result
 }
 
 private fun ChatMessage.isConversationMessage(): Boolean {
