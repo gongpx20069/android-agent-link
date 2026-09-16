@@ -97,7 +97,8 @@ computer and phone. For example, start the bridge with GitHub:
 
 In **Machines**, sign in with GitHub, complete the browser/device-code flow, and
 find your computers. Select one, compare the six-digit code shown on your phone
-and computer, and type it into the computer terminal to approve first-time access.
+and computer, then enter `y` in the computer terminal to approve first-time access.
+Press Enter or enter `n` to decline; you do not need to type the numeric code.
 GitHub consent names Microsoft's **Visual Studio Tunnel Service**.
 
 On subsequent starts, omit the login flag to reuse the computer's existing CLI

@@ -111,10 +111,28 @@ class AccountPairingRuntimeTests(unittest.TestCase):
 
     def test_auto_approve_flag_cannot_bypass_account_confirmation(self) -> None:
         runtime = self.runtime()
-        with patch("builtins.input", return_value="yes"), patch("sys.stdout", new_callable=io.StringIO):
+        with patch("builtins.input", return_value="") as read, patch("sys.stdout", new_callable=io.StringIO):
             self.assertFalse(runtime._confirm_account_pairing("Phone", "123456"))
-        with patch("builtins.input", return_value="123456"), patch("sys.stdout", new_callable=io.StringIO):
-            self.assertTrue(runtime._confirm_account_pairing("Phone", "123456"))
+        read.assert_called_once()
+
+    def test_confirmation_accepts_only_explicit_yes_and_displays_comparison_code(self) -> None:
+        runtime = self.runtime()
+        for answer in ("y", "Y", "yes", " YES "):
+            with self.subTest(answer=answer), patch("builtins.input", return_value=answer) as read, patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertTrue(runtime._confirm_account_pairing("Phone", "123456"))
+                self.assertIn("[y/N]", read.call_args.args[0])
+                self.assertIn("123456", output.getvalue())
+                self.assertIn("unverified device label", output.getvalue())
+        for answer in ("", " ", "n", "N", "no", "123456", "approve", "y123456"):
+            with self.subTest(answer=answer), patch("builtins.input", return_value=answer), patch("sys.stdout", new_callable=io.StringIO):
+                self.assertFalse(runtime._confirm_account_pairing("Phone", "123456"))
+
+    def test_console_lock_released_after_input_failure(self) -> None:
+        runtime = self.runtime()
+        with patch("builtins.input", side_effect=EOFError), patch("sys.stdout", new_callable=io.StringIO):
+            with self.assertRaises(EOFError):
+                runtime._confirm_account_pairing("Phone", "123456")
+        self.assertFalse(runtime._console_pairing_lock.locked())
 
     def test_console_is_not_shared_with_another_pairing_prompt(self) -> None:
         runtime = self.runtime()

@@ -69,7 +69,8 @@ The bridge prints both an Android pairing link and a compact CLI QR code on ever
 The Android app supports account discovery plus the two existing QR/link paths:
 
 1. Sign in from Machines, find computers using the same Dev Tunnel identity,
-   select a computer, and compare/type the phone's confirmation code at its console.
+   select a computer, compare the confirmation code on both screens, and enter
+   `y` at the computer console to approve (`Enter` declines).
 2. Scan the QR code in the Machines tab with the built-in camera scanner.
 3. Paste the `acpclient://pair?data=...` link into the Machines tab.
 

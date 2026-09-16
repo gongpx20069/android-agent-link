@@ -53,7 +53,8 @@ python .\run.py start --devtunnel-login github
 ```
 
 On the phone, sign in with GitHub from Machines, choose the computer, and compare
-the six-digit confirmation code. Type the exact code in this console to approve.
+the six-digit confirmation code. Enter `y` or `yes` at the `[y/N]` prompt to
+approve; Enter, `n`, or any other input declines. Do not type the numeric code.
 Keep the console available for first pairing. QR scanning remains available.
 For Microsoft, use `--devtunnel-login microsoft` on the computer and Microsoft
 sign-in on the phone. The corrected explicit delegated scope has passed real

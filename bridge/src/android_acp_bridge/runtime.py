@@ -190,7 +190,7 @@ class BridgeRuntime:
         try:
             print(f"\nNew phone pairing request (unverified device label: {device_name}).", flush=True)
             print(f"Compare code {code} with the code displayed in AgentLink on YOUR phone.", flush=True)
-            return input("Type that exact six-digit code to approve within 2 minutes, or Enter to deny: ").strip() == code
+            return input("Do the codes match? Allow this phone to pair within 2 minutes? [y/N] ").strip().lower() in {"y", "yes"}
         finally:
             self._console_pairing_lock.release()
 

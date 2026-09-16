@@ -8,7 +8,8 @@
 - Distinguish live-verified authorization/API access from unverified physical-phone
   pairing, connection and renewal. Do not ask users to fix app registration.
 - Discover only AgentLink-labelled computers owned by the selected account.
-- First pairing requires matching-code confirmation on the computer; account
+- First pairing displays a matching code for visual comparison and requires
+  explicit `y/N` confirmation on the computer (default deny); account
   login alone never grants permission to operate it.
 - Obtain fresh relay credentials for saved account-backed computers without
   requiring another QR scan while identity authorization remains valid.

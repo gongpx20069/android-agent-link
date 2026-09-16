@@ -152,7 +152,7 @@ internal fun AccountDiscoveryCard(
                 }) { Text(text("Copy code & open sign-in", "复制代码并打开登录")) }
             }
             pairingCode?.let { code ->
-                Text(text("Check that your computer shows this code, then type it at the bridge console:", "核对电脑上显示的代码一致，然后在 bridge 控制台输入："))
+                Text(text("Check that your computer shows this code, then enter y at the bridge console to approve (Enter declines):", "核对电脑上显示的代码一致后，在 bridge 控制台输入 y 批准（直接回车拒绝）："))
                 SelectionContainer { Text(code, style = MaterialTheme.typography.headlineMedium) }
             }
             if (busy) {

@@ -28,8 +28,9 @@ users can pass `--devtunnel-id agentlink` to retain their prior address, or sele
 the new computer entry and pair again; old tunnels are not deleted automatically.
 
 The phone lists discovered computers, requests pairing, and shows a six-digit
-confirmation code. The developer compares it with the bridge console and types
-the exact code within two minutes. Account pairing always requires this step,
+confirmation code. The developer compares it with the bridge console and enters
+`y` or `yes` within two minutes to approve. Enter or any other input denies the
+request; the numeric code is for visual comparison only. Account pairing always requires this step,
 even if legacy QR auto-approval was explicitly enabled. Merely reaching the
 authenticated tunnel does not authorize operating the machine.
 

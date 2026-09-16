@@ -629,7 +629,10 @@ Dev Tunnel startup enables `accountPairing` in `GET /health`, alongside
 `POST /pairing/request` with `{device:{name,platform,appVersion}}` creates a
 two-minute pairing attempt and returns `requestId`, `pollToken`, `confirmationCode`,
 `expiresAt`, and `status:"pending"`. The client displays the code; the developer
-must type that exact code at the bridge console. Device labels are unverified.
+must visually compare it with the bridge console and explicitly enter `y` or
+`yes` at its `[y/N]` prompt. Enter or any other input denies the request.
+The code remains in the response for comparison, not numeric entry.
+Device labels are unverified.
 There is no automatic approval, including with `--auto-approve-pairing`.
 
 `POST /pairing/status` with `{requestId,pollToken}` returns pending/denied/expired,

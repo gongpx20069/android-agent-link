@@ -81,8 +81,11 @@ borrowed. A successful live `/all` request does not establish that every tenant'
 consent policy allows the same request.
 
 Tunnel labels and device names are not proof of identity. Account pairing is
-enabled only in authenticated Dev Tunnel startup, requires exact local comparison
-and input of a random six-digit code, and cannot use the QR auto-approve option.
+enabled only in authenticated Dev Tunnel startup, displays a random six-digit code
+for visual comparison, and requires explicit `y`/`yes` approval at a `[y/N]` prompt.
+Enter or any other input denies access. Unlike retyping the code, this relies on
+the user actually comparing both screens before approving; the prompt requests
+that comparison. Account pairing cannot use the QR auto-approve option.
 Attempts expire after two minutes. One console request at a time and a minimum
 ten-second request interval bound prompting; an unanswered console input blocks
 additional prompts until dismissed. Device labels reject control characters.
