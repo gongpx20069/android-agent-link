@@ -70,6 +70,16 @@ No client secrets are embedded. Microsoft account claims from the direct TLS
 token response identify the locally stored account; management API authorization
 is always performed by the tunnel service, not by decoded claims.
 
+Microsoft login and refresh request
+`46da2f7e-b5ef-422a-88d4-2a7f9de6a0b2/all openid profile offline_access`.
+This is delegated tunnel access, not just basic identity consent or a
+single-tunnel connect grant. The browser prompts for the user's authorization,
+and the UI tells users to review it. The application uses the identity only for
+management reads and obtaining tunnel-scoped connect tokens; the broad identity
+credential is never sent to the bridge. No first-party Microsoft client ID is
+borrowed. A successful live `/all` request does not establish that every tenant's
+consent policy allows the same request.
+
 Tunnel labels and device names are not proof of identity. Account pairing is
 enabled only in authenticated Dev Tunnel startup, requires exact local comparison
 and input of a random six-digit code, and cannot use the QR auto-approve option.

@@ -9,6 +9,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TunnelAccountsTest {
+    private val microsoftScope = "46da2f7e-b5ef-422a-88d4-2a7f9de6a0b2/all openid profile offline_access"
     private val account = LoginAccount(LoginProvider.GitHub, "42", "owner")
     private val binding = TunnelBinding(account.provider, account.id, "usw2", "tunnel-one", 4317)
     private val origin = "https://tunnel-one-4317.usw2.devtunnels.ms"
@@ -120,6 +121,7 @@ class TunnelAccountsTest {
                 assertEquals("https://login.microsoftonline.com/common/oauth2/v2.0/token", url)
                 assertEquals("refresh_token", body["grant_type"])
                 assertEquals("refresh-secret", body["refresh_token"])
+                assertEquals(microsoftScope, body["scope"])
                 assertFalse(body.containsKey("client_secret"))
                 refreshed = true
                 JSONObject("""{"access_token":"fresh-access","refresh_token":"rotated","expires_in":3600}""")
@@ -237,6 +239,7 @@ class TunnelAccountsTest {
             { url, body ->
                 assertEquals("https://login.microsoftonline.com/common/oauth2/v2.0/devicecode", url)
                 assertEquals("own-client-id", body["client_id"])
+                assertEquals(microsoftScope, body["scope"])
                 JSONObject("""{
                     "device_code":"private","user_code":"code","verification_uri":"https://login.microsoft.com/device",
                     "expires_in":900,"interval":5
@@ -249,6 +252,51 @@ class TunnelAccountsTest {
         val login = service.beginLogin(LoginProvider.Microsoft)
 
         assertEquals("https://login.microsoft.com/device", login.verificationUri)
+    }
+
+    @Test
+    fun microsoftLoginAuthorizesManagementBeforeSavingThenResolvesConnectToken() = runBlocking {
+        val microsoft = LoginAccount(LoginProvider.Microsoft, "tenant:user", "Microsoft account")
+        val store = MemoryStore(AccountTokens(account, "old-github", null, null))
+        val claims = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+            """{"aud":"own-client-id","tid":"tenant","oid":"user"}""".toByteArray(Charsets.UTF_8),
+        )
+        var managementChecked = false
+        val service = TunnelAccounts(
+            store,
+            { listOf(machine.copy(tunnelBinding = binding.copy(provider = microsoft.provider, accountId = microsoft.id))) },
+            { url, headers ->
+                assertEquals("Bearer microsoft-access", headers["Authorization"])
+                if (url.contains("global=true")) {
+                    assertEquals(account, store.tokens?.account)
+                    managementChecked = true
+                    JSONObject().put("value", JSONArray().put(JSONObject().put("value", JSONArray().put(tunnel()))))
+                } else {
+                    assertTrue(managementChecked)
+                    assertTrue(url.contains("tokenScopes=connect"))
+                    tunnel()
+                }
+            },
+            { url, body ->
+                assertEquals("https://login.microsoftonline.com/common/oauth2/v2.0/token", url)
+                assertEquals("own-client-id", body["client_id"])
+                assertEquals("device-test", body["device_code"])
+                assertEquals("urn:ietf:params:oauth:grant-type:device_code", body["grant_type"])
+                JSONObject()
+                    .put("access_token", "microsoft-access")
+                    .put("refresh_token", "microsoft-refresh")
+                    .put("id_token", "header.$claims.signature")
+                    .put("expires_in", 3600)
+            },
+            { _, _, _ -> error("Unexpected pairing") },
+            microsoftClientId = "own-client-id",
+        )
+        val login = DeviceLogin(LoginProvider.Microsoft, "device-test", "USERCODE", "https://login.microsoft.com/device",
+            System.currentTimeMillis() + 60_000, 0)
+        assertEquals(microsoft, service.finishLogin(login))
+        assertTrue(managementChecked)
+        assertEquals("microsoft-refresh", store.tokens?.refreshToken)
+        assertEquals(mapOf("X-Tunnel-Authorization" to "tunnel relay-secret"), service.relayHeaders(origin, emptyMap()))
     }
 
     @Test

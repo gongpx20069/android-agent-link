@@ -279,11 +279,12 @@ The bridge advertises labelled tunnel ports and serves bounded account-pairing
 requests separately from QR token redemption. A console-confirmation lock prevents
 overlapping prompts. Discovery through Microsoft management infrastructure needs
 no AgentLink cloud server, but still depends on supported provider authorization.
-Microsoft account discovery is disabled in default and published builds after a
-personal-account tunnel authorization failure was reproduced independently of
-Android. Basic identity login succeeded, but does not authorize tunnel access.
-The implementation is retained for explicit local investigation only; publishing
-requires verified end-to-end authorization before removing the release override.
+Microsoft requests the explicit delegated resource scope `/all` on initial login
+and refresh, rather than `.default`. A live personal-account test using AgentLink's
+own client ID confirmed authorization, refresh-token issuance and HTTP 200 from
+the tunnel-list API after the old request failed with a browser "code expired"
+message. Login is restored with the corrected scope. Actual refresh, connect-token
+issuance and full physical-phone pairing/connection remain separately unverified.
 Computer-side Dev Tunnels login and QR pairing remain independent and available.
 
 Tool state is reduced from ACP partial updates. Absent fields preserve their previous

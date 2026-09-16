@@ -103,13 +103,18 @@ GitHub consent names Microsoft's **Visual Studio Tunnel Service**.
 On subsequent starts, omit the login flag to reuse the computer's existing CLI
 account.
 
-**Microsoft phone account discovery is temporarily disabled.** Personal-account
-testing reproduced a misleading "code expired" error during the tunnel authorization
-request, even though basic sign-in works. Do not register an app to work around it.
-You can still use Microsoft login in the computer's Dev Tunnels CLI and pair by QR.
+For Microsoft, use `--devtunnel-login microsoft` on the computer and Microsoft
+sign-in on the phone. AgentLink requests delegated Dev Tunnels access, not just
+basic sign-in; review the browser's permission prompt before approving.
+The explicit permission request fixes the "code expired" failure reproduced with
+the earlier request. A real personal-account login, refresh-token issuance, and
+tunnel-list API access have now succeeded using AgentLink's own application ID.
+No changes to your app registration are required to use the published app.
 
-**Preview limitation:** GitHub phone sign-in, discovery, and pairing have not yet
-been verified end to end. If account discovery does not work, use QR pairing.
+**Preview limitation:** full physical-phone discovery, pairing, and connection
+remain unverified for both providers. Microsoft token refresh and connect-token
+issuance still need live verification; receiving a refresh token alone does not
+verify renewal. If account discovery does not work, use QR pairing.
 
 ### 5. Start your first conversation
 
@@ -137,6 +142,7 @@ machine's agent list does not by itself prove ACP compatibility.
 Account-paired connections obtain fresh tunnel connect credentials when needed,
 provided the account remains authorized. Expired or revoked GitHub credentials
 require signing in again.
+Microsoft refresh is implemented but has not yet been live-verified.
 This is not a promise of a permanent connection or unattended computer login.
 
 - Keep the computer awake and leave the bridge running.

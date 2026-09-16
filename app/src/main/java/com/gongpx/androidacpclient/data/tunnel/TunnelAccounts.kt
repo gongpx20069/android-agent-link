@@ -244,7 +244,8 @@ class TunnelAccounts internal constructor(
     companion object {
         private const val API_VERSION = "2023-09-27-preview"
         private const val GLOBAL = "https://global.rel.tunnels.api.visualstudio.com"
-        private const val MICROSOFT_SCOPE = "46da2f7e-b5ef-422a-88d4-2a7f9de6a0b2/.default openid profile offline_access"
+        // Request delegated consent explicitly; .default relies on preconfigured resource permissions.
+        private const val MICROSOFT_SCOPE = "46da2f7e-b5ef-422a-88d4-2a7f9de6a0b2/all openid profile offline_access"
         @Volatile private var instance: TunnelAccounts? = null
         fun get(context: Context): TunnelAccounts = instance ?: synchronized(this) {
             instance ?: run {

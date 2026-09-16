@@ -130,16 +130,16 @@ internal fun AccountDiscoveryCard(
                 }
             }
             if (!accounts.microsoftEnabled) Text(
-                text("Microsoft account discovery is temporarily unavailable because tunnel authorization has not been validated. Use Dev Tunnels QR pairing instead; no app registration is needed.",
-                    "Microsoft 账号发现暂不可用：隧道授权尚未验证通过。请使用 Dev Tunnels 扫码配对，无需注册应用。"),
+                text("Microsoft login is disabled in this build. Use Dev Tunnels QR pairing instead; no app registration is needed.",
+                    "此构建未启用 Microsoft 登录。请使用 Dev Tunnels 扫码配对，无需注册应用。"),
                 style = MaterialTheme.typography.bodySmall,
             )
             login?.let { pending ->
                 Text(text(
                     if (pending.provider == LoginProvider.GitHub) "Authorize Microsoft's Visual Studio Tunnel Service in your browser, then return here."
-                    else "Authorize AgentLink in your browser, then return here.",
+                    else "Authorize AgentLink's delegated Dev Tunnels access in your browser, then return here. Review the permissions before approving; this is more than basic sign-in.",
                     if (pending.provider == LoginProvider.GitHub) "在浏览器中授权微软的 Visual Studio Tunnel Service，然后返回这里。"
-                    else "在浏览器中授权 AgentLink，然后返回这里。",
+                    else "在浏览器中授权 AgentLink 访问 Dev Tunnels，然后返回这里。请先检查权限再批准；这不仅是基础账号登录。",
                 ))
                 SelectionContainer { Text(pending.userCode, style = MaterialTheme.typography.headlineMedium) }
                 Button(onClick = {

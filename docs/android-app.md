@@ -82,20 +82,22 @@ domains. GitHub authorizes Microsoft's **Visual Studio Tunnel Service**
 application, whose public client ID is explicitly documented for clients by the
 Dev Tunnels SDK. This is not an AgentLink-owned GitHub application.
 
-Microsoft phone account discovery is temporarily disabled in default and published
-builds. Live personal-account testing succeeded for basic `openid profile` login
-but failed for the full tunnel authorization request with a browser "code expired"
-message, reproduced outside Android. The exact authorization cause remains unresolved.
-QR pairing and computer-side Microsoft Dev Tunnels login are unaffected.
+Microsoft login uses AgentLink's publisher-owned public-client registration and
+the explicit delegated scope `46da2f7e-b5ef-422a-88d4-2a7f9de6a0b2/all`,
+alongside `openid profile offline_access`. Both initial login and refresh use
+the same scope. The earlier `.default` request failed after personal-account
+sign-in with a browser "code expired" message. On September 16, 2026, changing
+only that resource scope to `/all` succeeded with the same client ID and account:
+the token response granted `/all`, included a refresh token, and the tunnel-list
+API returned HTTP 200. This validates real authorization and API access, not yet
+actual refresh, connect-token issuance or physical-phone pairing/connection.
 
-The implementation remains available for explicit local investigation with a
-publisher-owned public-client registration. `agentlink.microsoftClientId` in
-`gradle.properties` is empty by default. An explicit
+`agentlink.microsoftClientId` in `gradle.properties` provides the public default. An explicit
 `AGENTLINK_MICROSOFT_CLIENT_ID` Gradle property overrides the environment and default;
 a nonempty environment variable overrides the default. An explicit empty Gradle
-override disables Microsoft login with an explanation. The release workflow
-explicitly passes this empty override, regardless of any environment or repository
-variable. Disabled builds also reject saved Microsoft credentials for discovery
+override disables Microsoft login with an explanation. The release workflow can
+use the repository variable or fall back to the checked-in default.
+Disabled builds also reject saved Microsoft credentials for discovery
 and relay requests; local sign-out remains available. GitHub and QR pairing remain
 available. No user is asked to enter a client ID or change app registration.
 
@@ -127,7 +129,7 @@ cloud backup and device transfer. Identity tokens go only to the provider and
 Dev Tunnels management API, never to a discovered bridge. Credential-bearing
 HTTP clients do not follow redirects.
 
-### Microsoft login investigation (not a released feature)
+### Publisher setup for Microsoft login
 
 This requires real application registration and permission validation; a random
 GUID does not enable a usable login:
@@ -135,21 +137,18 @@ GUID does not enable a usable login:
 1. Register an AgentLink public client in Microsoft Entra with the intended
    supported account types (work/school and, if permitted, personal accounts).
 2. Enable public-client/device-code authentication. No client secret belongs in
-   Android. Configure the delegated Visual Studio Tunnel Service permissions
-   actually exposed/approved for this application and tenant.
+   Android. Request explicit delegated tunnel permission at login and obtain user
+   consent. Finding the API in the portal's permission picker is not a prerequisite
+   demonstrated by this working dynamic-consent flow.
 3. Validate that the application's user token can call the tunnel management API
    and retrieve connect-scoped tokens for an owned tunnel. The implementation
-   requests `46da2f7e-b5ef-422a-88d4-2a7f9de6a0b2/.default`, `openid`, `profile`,
+   requests `46da2f7e-b5ef-422a-88d4-2a7f9de6a0b2/all`, `openid`, `profile`,
    and `offline_access`; tenant consent and conditional-access rules still apply.
-   If that resource/permission is not available to the registration, leave the
-   feature disabled. The observed registration had only Graph `User.Read` configured
-   and the tunnel resource was not found in its portal API search. This is not proof
-   that third-party access is impossible, but it is not a validated deployment.
-4. For local investigation only, set `AGENTLINK_MICROSOFT_CLIENT_ID` through an
-   environment variable or Gradle property and rebuild. The client ID is public
-   configuration, not a secret. Do not restore a default ID or remove the release
-   workflow's empty override until real login, discovery and connect authorization
-   have passed end to end.
+   Keep the remaining physical-device and renewal checks distinct from successful
+   login. Do not substitute a Microsoft first-party application's client ID.
+4. To override the publisher default, set `AGENTLINK_MICROSOFT_CLIENT_ID` through
+   an environment variable, Gradle property or GitHub Actions repository variable
+   and rebuild. The client ID is public configuration, not a secret.
 
 Relevant primary contracts:
 - https://github.com/microsoft/dev-tunnels/blob/main/ts/src/contracts/tunnelServiceProperties.ts

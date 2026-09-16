@@ -2,10 +2,11 @@
 
 ## Account-based computer discovery
 
-- Offer GitHub login from Machines, with QR/link pairing retained as a fallback.
-- Keep Microsoft phone account discovery disabled in default and published builds
-  until real sign-in, tunnel discovery, and connect authorization pass. Basic
-  identity login alone is not sufficient. Do not ask users to fix app registration.
+- Offer GitHub and Microsoft login from Machines, with QR/link pairing retained
+  as a fallback. Microsoft uses explicit delegated tunnel consent, not only
+  identity login or an unconfigured `.default` request.
+- Distinguish live-verified authorization/API access from unverified physical-phone
+  pairing, connection and renewal. Do not ask users to fix app registration.
 - Discover only AgentLink-labelled computers owned by the selected account.
 - First pairing requires matching-code confirmation on the computer; account
   login alone never grants permission to operate it.

@@ -55,11 +55,12 @@ python .\run.py start --devtunnel-login github
 On the phone, sign in with GitHub from Machines, choose the computer, and compare
 the six-digit confirmation code. Type the exact code in this console to approve.
 Keep the console available for first pairing. QR scanning remains available.
-Microsoft phone account discovery is temporarily disabled after personal-account
-tunnel authorization failed in live testing. Computer CLI login with
-`--devtunnel-login microsoft` still works independently with QR pairing; users
-do not need to register an application. GitHub phone login, discovery, and pairing
-remain unverified end to end. Use QR pairing if account discovery is unavailable.
+For Microsoft, use `--devtunnel-login microsoft` on the computer and Microsoft
+sign-in on the phone. The corrected explicit delegated scope has passed real
+personal-account authorization and tunnel-list API access. Users do not need to
+register an application. Live token refresh, connect-token issuance and complete
+phone pairing/connection still need verification; GitHub also remains unverified
+end to end. Use QR pairing if account discovery is unavailable.
 Omit the flag to reuse the CLI's current account on later starts.
 
 Default tunnel IDs now include a hostname-derived suffix. Use `--devtunnel-id
