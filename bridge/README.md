@@ -1,6 +1,8 @@
 # AgentLink Bridge
 
-Python MVP bridge for pairing AgentLink with a remote developer machine.
+Connect your computer's coding agents to the AgentLink Android app.
+For the shortest setup path, start with the [AgentLink quick start](../README.md).
+This guide covers additional installation and connection options.
 
 ## Install
 
@@ -41,7 +43,7 @@ Use `requirements-all.txt` instead of `requirements.txt` to install every option
 
 ## Starting the bridge
 
-### Microsoft Dev Tunnels (default)
+### Microsoft Dev Tunnels (recommended and default)
 
 The updated Android app can discover the bridge without a QR code when both use
 the same account. For GitHub login on both sides:
@@ -53,8 +55,12 @@ python .\run.py start --devtunnel-login github
 On the phone, sign in with GitHub from Machines, choose the computer, and compare
 the six-digit confirmation code. Type the exact code in this console to approve.
 Keep the console available for first pairing. QR scanning remains available.
-For Microsoft use `--devtunnel-login microsoft`; the Android publisher must first
-configure the Microsoft client ID and validate tunnel-service permissions.
+For Microsoft use `--devtunnel-login microsoft`. The published app includes its
+client ID; users do not need to register an application. Full phone login,
+discovery, and pairing remain unverified for both providers. The Microsoft device
+authorization endpoint accepts the configured ID, but real user consent and
+tunnel-service access still need verification. Use QR pairing if account discovery
+is unavailable.
 Omit the flag to reuse the CLI's current account on later starts.
 
 Default tunnel IDs now include a hostname-derived suffix. Use `--devtunnel-id
@@ -65,15 +71,22 @@ discovery metadata labels the tunnel and port; it never enables anonymous access
 android-acp-bridge start
 ```
 
-The default transport creates a private authenticated Microsoft Dev Tunnel. Android connects directly with the short-lived relay authorization header in the pairing QR and does not need a Tailscale or ZeroTier app. See **Microsoft Dev Tunnels private relay** below for login behavior and options.
+The recommended transport creates a private authenticated Microsoft Dev Tunnel.
+Android does not need a Tailscale or ZeroTier app. Account pairing resolves fresh
+connect credentials while authorized; QR pairing stores the short-lived relay
+authorization header supplied by the bridge. See **Microsoft Dev Tunnels private
+relay details** below for login behavior and options.
 
 Device authentication survives restarts. Production stores only device-token hashes
 in `%LOCALAPPDATA%\AgentLink\device-tokens.json` on Windows, or
 `$XDG_STATE_HOME/AgentLink/device-tokens.json` (default `~/.local/state`) elsewhere.
 Use `--device-token-store <path>` to choose a file in a dedicated private directory.
 Storage/permission failures are explicit; do not delete this state unless you intend
-to invalidate paired devices on the next restart. This does not renew the relay
-connect token: its expiry still requires explicit re-pairing, never anonymous access.
+to invalidate paired devices on the next restart. This device state does not renew
+relay credentials: QR-paired connections may need a fresh QR when their relay
+token expires, while account-paired connections obtain new connect tokens when
+the account remains authorized. Neither path renews the computer's CLI login or
+enables anonymous access.
 
 ### Tailscale mode (optional)
 
@@ -100,7 +113,9 @@ The bridge does not bind a workspace at startup. A workspace is chosen when crea
 
 ### Microsoft Dev Tunnels private relay details
 
-Use this when Tailscale/ZeroTier are blocked but a private authenticated Microsoft relay is acceptable. Do not enable anonymous Dev Tunnel access.
+This is the recommended connection method, not just a fallback for blocked VPN
+tools. It avoids a companion networking app on Android. Do not enable anonymous
+Dev Tunnel access.
 
 With conda:
 
@@ -114,10 +129,10 @@ What it does:
 
 1. Finds `devtunnel` on `PATH`, or downloads `bridge\.tools\devtunnel.exe` on Windows.
 2. Starts `devtunnel user login -d` if login is required.
-3. Creates or reuses a machine-specific `agentlink-<hostname>` tunnel.
+3. Creates or reuses a machine-specific `agentlink-<hostname>-<hash>` tunnel.
 4. Adds the bridge port with HTTP forwarding if needed.
 5. Issues a short-lived `connect` token.
-6. Starts `devtunnel host agentlink` as a child process.
+6. Starts `devtunnel host <tunnel-id>` as a child process.
 7. Starts the local bridge listener.
 8. Prints an AgentLink QR/link containing the Dev Tunnel `wss://` endpoint and `X-Tunnel-Authorization` header.
 
@@ -156,7 +171,12 @@ If tunnel creation fails with `Conflict with existing entity`, the tunnel ID is 
 android-acp-bridge start --transport devtunnel --devtunnel-id agentlink-<yourname>-<devbox>
 ```
 
-Android stores the relay header per machine and sends it on `/pairing/redeem`, `/health`, `/agents`, `/workspaces`, and future WebSocket requests for that machine. Dev Tunnel connect tokens currently expire after a short period, so re-run the command and re-scan when access expires.
+For QR pairing, Android stores the relay header per machine and sends it on
+pairing, HTTP, and WebSocket requests to that machine. Re-run the bridge and
+re-scan when that token expires. Account-paired connections instead request fresh
+connect tokens through the signed-in account; identity credentials are never
+sent to the bridge. Revoked or expired login may still require interactive
+sign-in, and phone login does not keep the computer's tunnel host alive.
 
 Manual debugging flow:
 

@@ -2,201 +2,180 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-AgentLink lets you control remote coding agents from an Android phone. Your developer machine runs a small bridge and the agent CLI; your phone becomes the control surface for chats, approvals, session resume, model selection, and agent updates.
+**Keep coding with your agents, even when you step away from your computer.**
 
-AgentLink does not require opening inbound firewall ports on your developer machine.
+AgentLink brings your remote coding-agent conversations to Android. Start a task,
+follow its progress, respond to approval requests, and pick up an existing session
+from your phone. Your projects and agent processes stay on your computer.
 
-## Install the Android app
+**[Download the Android APK](https://github.com/gongpx20069/android-agent-link/releases)**
 
-Download and install the latest APK from the latest release:
+## What you can do
 
-**[Download AgentLink APK from Releases](https://github.com/gongpx20069/android-agent-link/releases/latest)**
+- **Chat across computers and projects.** Choose a machine, workspace, and agent for each conversation.
+- **Follow work as it happens.** Read streaming replies, tool activity, and execution results.
+- **Respond from your phone.** Approve or deny requests that the agent sends for your decision.
+- **Pick up where you left off.** Resume available agent sessions and view recent history.
 
-On the release page, download the APK asset named like `agentlink-0.0.x.apk`.
+AgentLink is a remote control, not an on-phone agent runtime. Your computer must
+stay awake, online, and running the bridge while you use it.
 
-If you previously installed a debug build, Android may require uninstalling it once before installing the signed release APK. After that, signed releases can update in place.
+## What you need
 
-## Supported coding agents
+| On your phone | On your computer |
+| --- | --- |
+| Android 8.0 or later and the AgentLink APK | Python 3.11 or later, Git, and an installed, signed-in coding-agent CLI |
+| Internet access | Internet access and the AgentLink bridge running |
 
-AgentLink talks to agents through ACP (Agent Client Protocol). The bridge currently exposes agents that are explicitly wired in `bridge/src/android_acp_bridge/agents.py` and `acp_agent.py`.
+**Microsoft Dev Tunnels is the recommended connection method and the default.**
+It provides an authenticated relay, so you do not need to open inbound firewall
+ports or install a separate VPN/networking app on Android. Keep tunnel access
+private; never enable anonymous access.
 
-| Agent | Current status | Required command on the developer machine | Notes |
-| --- | --- | --- | --- |
-| **GitHub Copilot CLI** | Supported now | `copilot --acp` | Primary tested path. The bridge launches `copilot --acp --allow-all --add-dir <workspace>`. |
-| **Claude Code** | Supported now when installed | `claude --acp` | Exposed in the app when `claude` is on PATH. Requires a Claude Code CLI version that supports ACP. |
-| **Gemini CLI** | Not wired yet | `gemini --acp` | Gemini CLI has ACP mode, but AgentLink does not yet expose `gemini-cli` in the bridge agent list. |
-| **OpenAI Codex CLI** | Not wired yet | varies | No stable AgentLink integration yet. Needs an ACP-compatible CLI command before it can be added. |
-| **Cursor Agent / Cursor CLI** | Not wired yet | varies | Not currently exposed by the bridge. |
-| **Aider** | Not wired yet | `aider` | Aider is a popular coding assistant, but AgentLink does not currently have an ACP adapter for it. |
-| **Qoder / QCode** | Not wired yet | not confirmed | No public AgentLink-compatible ACP CLI command is wired today. |
-| **Alibaba Tongyi Lingma / CodeFuse** | Not wired yet | not confirmed | Public docs do not currently provide a stable `--acp` command for AgentLink to launch. |
-| **ByteDance Doubao / MarsCode** | Not wired yet | not confirmed | No AgentLink-compatible ACP CLI command is wired today. |
-| **Baidu Comate** | Not wired yet | not confirmed | No AgentLink-compatible ACP CLI command is wired today. |
-| **CodeGeeX** | Not wired yet | not confirmed | No AgentLink-compatible ACP adapter is wired today. |
+## Get started
 
-In the app, missing agents may still appear as unavailable/missing depending on bridge discovery. Only the “Supported now” agents can be selected for working chats today.
+The commands below are for Windows PowerShell.
 
-## Install the bridge
+### 1. Install AgentLink on your phone
 
-The bridge requires Python 3.11 or newer and never installs its own Python environment or packages at startup. Choose one installation method below and run it from the `bridge` directory.
+Open [Releases](https://github.com/gongpx20069/android-agent-link/releases) and
+download `agentlink-0.0.x.apk` from the newest published version. Builds are
+currently marked **Pre-release**. Open the APK on Android and allow installation
+from that source if prompted.
 
-### Conda
+Signed release APKs can update previous signed releases in place. A debug build
+may require uninstalling before switching to a release build; uninstalling removes
+its local app data.
 
-```powershell
-cd bridge
-conda env create -f environment.yml
-conda activate android-acp-bridge
-```
+### 2. Set up your computer once
 
-### uv
-
-```powershell
-cd bridge
-uv venv --python 3.12
-.\.venv\Scripts\Activate.ps1
-uv pip install -r requirements.txt
-```
-
-### Python venv and pip
+Install and sign in to your coding-agent CLI first. Then download the bridge:
 
 ```powershell
-cd bridge
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+git clone https://github.com/gongpx20069/android-agent-link.git
+cd android-agent-link
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .\bridge
 ```
 
-Use `requirements-all.txt` instead of `requirements.txt` to install every optional backend. After installation, use the `android-acp-bridge` command shown below. The source helper `python .\run.py ...` forwards to the same CLI using the current Python environment; it does not create an environment or install packages.
+Already have a checkout? Use that folder instead of cloning again.
+For Conda, uv, and additional installation options, see the
+[bridge guide](bridge/README.md).
 
-See [`bridge/README.md`](bridge/README.md) for dependency groups and development details.
+### 3. Start the recommended Dev Tunnel connection
 
-## Start the bridge
-
-Run bridge commands from the repository root on your developer machine.
-
-### Option A: Microsoft Dev Tunnels (default)
-
-This authenticated relay is the default because Android does not need a Tailscale, ZeroTier, or other companion networking app. You only need to sign in to Microsoft Dev Tunnels on the developer machine.
+Run from the repository folder:
 
 ```powershell
-android-acp-bridge start
+.\.venv\Scripts\python.exe .\bridge\run.py start
 ```
 
-The bridge will:
+Follow the Dev Tunnels sign-in instructions if prompted. The bridge prepares a
+private tunnel for this computer and prints a pairing QR code and link. Keep
+this terminal open.
 
-1. Find `devtunnel` or download `bridge\.tools\devtunnel.exe` on Windows.
-2. Ask you to sign in with device-code login if needed.
-3. Create or reuse a private `agentlink` tunnel.
-4. Start the tunnel host and local bridge.
-5. Print a pairing link and QR code for Android.
+On Windows, the bridge can download the Dev Tunnels CLI if it is missing.
+You do not need to register an application or enter a client ID to use the
+published AgentLink app.
 
-Do **not** enable anonymous/public Dev Tunnel access. AgentLink uses a short-lived `X-Tunnel-Authorization` token in the pairing QR.
+### 4. Pair your phone
 
-### Option B: Tailscale
+**Scan a QR code**
 
-Tailscale is an optional private-network transport. Install the Tailscale app on both the Android device and developer machine, sign both into the same tailnet, and keep both connected.
+In AgentLink, open **Machines → Scan QR**, scan the code in the terminal, and
+confirm the pairing on your computer. You can also paste the printed pairing
+link. Use **Test Connection** on the saved machine to check connectivity.
+
+**Or try account discovery without scanning**
+
+Account discovery is new in `0.0.25`. Use the same provider and account on your
+computer and phone. For example, start the bridge with GitHub:
 
 ```powershell
-android-acp-bridge start --transport tailscale
+.\.venv\Scripts\python.exe .\bridge\run.py start --devtunnel-login github
 ```
 
-The bridge checks Tailscale, runs `tailscale up --qr` if login is needed, waits for a Tailscale IP, then prints a pairing link and QR code.
+In **Machines**, sign in with GitHub, complete the browser/device-code flow, and
+find your computers. Select one, compare the six-digit code shown on your phone
+and computer, and type it into the computer terminal to approve first-time access.
+GitHub consent names Microsoft's **Visual Studio Tunnel Service**.
 
-ZeroTier has the same device requirement: both the developer machine and Android need the ZeroTier client and must join the same network. AgentLink does not currently automate ZeroTier setup.
+For Microsoft, use `--devtunnel-login microsoft` and Microsoft sign-in on the
+phone. On subsequent starts, omit the login flag to reuse the computer's existing
+CLI account.
 
-If Windows blocks Tailscale install with organization policy / exit code `1625`, install Tailscale through your company software portal, ask an administrator to approve `Tailscale.Tailscale`, or use the official installer from <https://tailscale.com/download/windows>.
+**Preview limitation:** full phone sign-in, discovery, and pairing have not yet
+been verified end to end for either provider. The configured Microsoft app can
+request a device login code, but user consent and Dev Tunnels permissions still
+need live verification. If account discovery does not work, use QR pairing.
 
-### Local testing only
+### 5. Start your first conversation
+
+Open **Chats → New Chat**, choose your machine and agent, and enter your project's
+absolute path **on the computer**, such as `C:\Repos\my-project`. Create the chat
+and send a task.
+
+To continue previous work, choose **Existing session** in New Chat and load a
+session offered by that agent. When an agent requests approval, respond from
+**Approvals**. Available sessions, models, and permission behavior depend on the
+installed agent CLI.
+
+## Coding agents
+
+| Agent | AgentLink integration |
+| --- | --- |
+| GitHub Copilot CLI | Primary tested integration; requires a working `copilot --acp` command on the computer. |
+| Claude Code | Available when `claude` is installed; requires a version or setup that actually supports `claude --acp`. |
+
+Other agents are not currently integrated. An installed CLI appearing in the
+machine's agent list does not by itself prove ACP compatibility.
+
+## Staying connected
+
+Account-paired connections obtain fresh tunnel connect credentials when needed,
+provided the account remains authorized. Microsoft sign-in can refresh supported
+credentials; expired or revoked GitHub credentials require signing in again.
+This is not a promise of a permanent connection or unattended computer login.
+
+- Keep the computer awake and leave the bridge running.
+- With QR pairing, expired tunnel credentials may require restarting the bridge and scanning a fresh code.
+- If the computer reports an expired Dev Tunnels login, follow the login command in its error message and restart the bridge.
+- Android background monitoring is currently limited to one hour; it is not an always-on service.
+
+## Other connection options
+
+Dev Tunnels is the first choice. If you already use Tailscale, you can instead run:
 
 ```powershell
-android-acp-bridge start --transport local
+.\.venv\Scripts\python.exe .\bridge\run.py start --transport tailscale
 ```
 
-This is only useful for local/manual tests. It does not make your developer machine reachable from your phone by itself.
+Both phone and computer need Tailscale installed, connected, and signed in to the
+same tailnet. Pair through the bridge's QR code. ZeroTier setup is not automated.
+Local transport is for testing and does not make the computer remotely reachable.
 
-## Pair a machine
+## Need help?
 
-1. Open AgentLink on Android.
-2. Go to **Machines**.
-3. Tap **Scan QR**.
-4. Scan the QR printed by the bridge.
-5. Confirm pairing on the developer machine when prompted.
-6. Use **Test Connection** to verify the bridge is reachable.
+| Problem | What to try |
+| --- | --- |
+| `android-acp-bridge` is not recognized | Use the explicit `.\.venv\Scripts\python.exe .\bridge\run.py start` command above, from the repository folder. |
+| Phone cannot connect | Check that the computer is awake and the bridge is running. For QR connections, refresh an expired QR/tunnel credential. |
+| Account discovery shows no computers | Update and restart the bridge. Check that both devices use the same provider and account; GitHub and Microsoft are separate identities. |
+| Dev Tunnels reports `Login token expired` | Use the exact CLI login command printed by the bridge, then restart it. Phone sign-in does not renew the computer's login. |
+| Pairing was cancelled but the computer still waits | Press Enter to dismiss its outstanding confirmation prompt before trying again. |
+| Agent is missing or fails to start | Install and sign in to the agent CLI on the computer, and check that its ACP command works there. |
 
-The QR contains a short-lived pairing token. If it expires, restart or re-run the bridge command and scan again.
+To update the bridge, stop it, run `git pull --ff-only` in your checkout, repeat the
+pip install command above, and start it again. Use matching app and bridge versions
+for new features. Older installations can retain their fixed tunnel address with
+`--devtunnel-id agentlink`; otherwise rediscover or re-pair the new computer tunnel.
 
-## Start a chat
+For more setup and troubleshooting, see the [bridge guide](bridge/README.md).
+For bugs, include the app version and the error message in a
+[GitHub issue](https://github.com/gongpx20069/android-agent-link/issues), but never
+include pairing links, login codes, or tokens.
 
-1. Go to **Chats**.
-2. Tap **New Chat**.
-3. Select the paired machine.
-4. Select an agent, such as GitHub Copilot CLI.
-5. Enter the remote workspace path, for example:
+## Contributing
 
-```text
-C:\Repos\my-project
-```
-
-6. Create the chat and send a prompt.
-
-AgentLink shows streaming agent replies, tool activity cards, model/command chips, and approval requests.
-
-## Resume an existing session
-
-In **New Chat**, switch to **Existing session**, load sessions from the selected machine/agent, and open one.
-
-AgentLink asks the bridge for a recent-history snapshot instead of showing the full old replay. The number of recent messages can be adjusted in **Settings**.
-
-## Approvals
-
-When the agent requests permission for a command or risky operation, AgentLink shows it in the **Approvals** tab. Approve or deny from the phone; the bridge continues only after the decision is received.
-
-## Troubleshooting
-
-### Android cannot connect after scanning
-
-- Make sure the bridge process is still running.
-- For Dev Tunnels, re-run the bridge command if the connect token expired.
-- For Tailscale, make sure Android and the developer machine are in the same tailnet.
-- Check that the Android machine card uses the expected endpoint.
-
-### Dev Tunnel login or tunnel creation fails
-
-Run:
-
-```powershell
-.\bridge\.tools\devtunnel.exe user login -d
-```
-
-or, if `devtunnel` is on PATH:
-
-```powershell
-devtunnel user login -d
-```
-
-Then retry:
-
-```powershell
-android-acp-bridge start --transport devtunnel
-```
-
-### Copilot or Claude agent is not available
-
-Install and sign in to the CLI on the developer machine, then confirm one of these commands works:
-
-```powershell
-copilot --acp
-claude --acp
-```
-
-## For contributors
-
-This README is for users. Development and agent instructions live in:
-
-- `CLAUDE.md`
-- `docs/README.md`
-- `docs/architecture.md`
-- `docs/acp-bridge-contract.md`
-- `docs/android-app.md`
-- `docs/security-model.md`
+Looking to build or extend AgentLink? Start with the
+[technical documentation](docs/README.md) and [contributor instructions](CLAUDE.md).
