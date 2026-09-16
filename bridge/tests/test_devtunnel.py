@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import subprocess
+import io
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from android_acp_bridge.devtunnel import (
     DevTunnelAuthError,
@@ -14,6 +16,7 @@ from android_acp_bridge.devtunnel import (
     ensure_devtunnel_login,
     ensure_devtunnel_cli,
     ensure_tunnel_port,
+    find_visible_tunnel_id,
     issue_connect_token,
     parse_connect_token,
     parse_host_url,
@@ -135,6 +138,8 @@ agentlink-cpc-peixi-3hwbj.jpe1      0                                           
                 return subprocess.CompletedProcess(args, 0, "Tunnel ID             : agentlink.jpe1", "")
             if args[1:4] == ["port", "create", "agentlink.jpe1"]:
                 return subprocess.CompletedProcess(args, 0, "", "")
+            if "--add-labels" in args:
+                return subprocess.CompletedProcess(args, 0, "", "")
             if args[1:] == ["token", "agentlink.jpe1", "--scopes", "connect"]:
                 return subprocess.CompletedProcess(args, 0, "aaa.bbb.ccc", "")
             raise AssertionError(f"unexpected command: {args}")
@@ -166,6 +171,8 @@ agentlink-cpc-peixi-3hwbj.jpe1      0                                           
 
         self.assertIn(["devtunnel", "port", "create", "agentlink.jpe1", "-p", "4317", "--protocol", "http"], commands)
         self.assertIn(["devtunnel", "token", "agentlink.jpe1", "--scopes", "connect"], commands)
+        self.assertIn(["devtunnel", "update", "agentlink.jpe1", "--add-labels", "agentlink"], commands)
+        self.assertIn(["devtunnel", "port", "update", "agentlink.jpe1", "-p", "4317", "--add-labels", "agentlink"], commands)
 
     def test_create_or_reuse_tunnel_reports_anonymous_create_denial(self) -> None:
         def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
@@ -175,8 +182,63 @@ agentlink-cpc-peixi-3hwbj.jpe1      0                                           
 
         with self.assertRaises(DevTunnelAuthError) as error:
             create_or_reuse_tunnel("devtunnel", "agentlink", runner)
-        self.assertIn(".\\bridge\\.tools\\devtunnel.exe user login -d", str(error.exception))
-        self.assertNotIn("\\.\\bridge", str(error.exception))
+        self.assertIn('& "devtunnel" user login -d', str(error.exception))
+
+    def test_expired_login_at_show_does_not_attempt_tunnel_creation(self) -> None:
+        commands: list[list[str]] = []
+        cli = r"C:\Tools with spaces\devtunnel.exe"
+
+        def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            commands.append(args)
+            return subprocess.CompletedProcess(args, 3, "", "Login token expired.")
+
+        with self.assertRaises(DevTunnelAuthError) as error:
+            create_or_reuse_tunnel(cli, "agentlink", runner)
+        self.assertEqual(commands, [[cli, "show", "agentlink"]])
+        self.assertIn(f'& "{cli}" user login -d', str(error.exception))
+
+    def test_expired_login_at_create_is_an_auth_error(self) -> None:
+        def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            if args[1] == "show":
+                return subprocess.CompletedProcess(args, 1, "", "Tunnel not found")
+            if args[1] == "list":
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(args, 3, "", "Login token expired.")
+
+        with self.assertRaises(DevTunnelAuthError):
+            create_or_reuse_tunnel("devtunnel", "agentlink", runner)
+
+    def test_expired_login_is_not_swallowed_in_other_setup_commands(self) -> None:
+        def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(args, 3, "Login token expired. private-output", "")
+
+        for operation in (
+            lambda: find_visible_tunnel_id("devtunnel", "agentlink", runner),
+            lambda: ensure_tunnel_port("devtunnel", "agentlink", 4317, runner),
+            lambda: issue_connect_token("devtunnel", "agentlink", runner),
+        ):
+            with self.subTest(operation=operation), self.assertRaises(DevTunnelAuthError) as error:
+                operation()
+            self.assertNotIn("private-output", str(error.exception))
+
+    def test_expired_user_show_requires_interactive_login_even_on_zero_exit(self) -> None:
+        def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(args, 0, "Login token expired.", "")
+
+        with patch("android_acp_bridge.devtunnel.subprocess.run") as login:
+            login.return_value = subprocess.CompletedProcess([], 0)
+            ensure_devtunnel_login("devtunnel", runner)
+            login.assert_called_once_with(["devtunnel", "user", "login", "-d"], check=False)
+
+    def test_auth_failure_exits_start_cleanly_without_traceback(self) -> None:
+        from android_acp_bridge.main import main
+
+        with (
+            patch("android_acp_bridge.main.setup_devtunnel", side_effect=DevTunnelAuthError("Sign in again.")),
+            patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            self.assertEqual(main(["start"]), 1)
+        self.assertEqual(stderr.getvalue(), "Sign in again.\n")
 
     def test_create_or_reuse_tunnel_reports_id_conflict(self) -> None:
         def runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
@@ -188,7 +250,19 @@ agentlink-cpc-peixi-3hwbj.jpe1      0                                           
             create_or_reuse_tunnel("devtunnel", "agentlink", runner)
 
     def test_default_tunnel_id_is_agentlink_prefixed(self) -> None:
-        self.assertEqual(default_tunnel_id(), "agentlink")
+        with patch("android_acp_bridge.devtunnel.socket.gethostname", return_value="PC.ONE"):
+            first = default_tunnel_id()
+            self.assertRegex(first, r"^agentlink-pc-one-[a-f0-9]{8}$")
+            self.assertEqual(first, default_tunnel_id())
+        with patch("android_acp_bridge.devtunnel.socket.gethostname", return_value="PC.TWO"):
+            self.assertNotEqual(first, default_tunnel_id())
+
+    def test_explicit_login_selects_same_provider_as_phone(self) -> None:
+        for provider, flag in (("github", "--github"), ("microsoft", "--entra")):
+            with self.subTest(provider=provider), patch("android_acp_bridge.devtunnel.subprocess.run") as login:
+                login.return_value = subprocess.CompletedProcess([], 0)
+                ensure_devtunnel_login("devtunnel", lambda args, timeout: subprocess.CompletedProcess(args, 0, "User", ""), provider)
+                login.assert_called_once_with(["devtunnel", "user", "login", "-d", flag], check=False)
 
     def test_ensure_devtunnel_login_treats_anonymous_show_as_logged_out(self) -> None:
         commands: list[list[str]] = []

@@ -66,10 +66,42 @@ GitHub Copilot CLI ACP execution is wired through the bridge when `copilot --acp
 
 The bridge prints both an Android pairing link and a compact CLI QR code on every startup.
 
-The Android app supports two onboarding paths:
+The Android app supports account discovery plus the two existing QR/link paths:
 
-1. Scan the QR code in the Machines tab with the built-in camera scanner.
-2. Paste the `acpclient://pair?data=...` link into the Machines tab.
+1. Sign in from Machines, find computers using the same Dev Tunnel identity,
+   select a computer, and compare/type the phone's confirmation code at its console.
+2. Scan the QR code in the Machines tab with the built-in camera scanner.
+3. Paste the `acpclient://pair?data=...` link into the Machines tab.
+
+Account login uses the providers' OAuth device authorization flow: copy the short
+code, complete sign-in in the external browser, and return to AgentLink. The app
+honors polling intervals, slow-down, denial, cancellation and expiry. It never
+collects a password. GitHub authorizes Microsoft's **Visual Studio Tunnel Service**
+application, whose public client ID is explicitly documented for clients by the
+Dev Tunnels SDK. This is not an AgentLink-owned GitHub application.
+
+Microsoft login uses the publisher's own public-client registration, defaulted by
+`agentlink.microsoftClientId` in `gradle.properties`. An explicit
+`AGENTLINK_MICROSOFT_CLIENT_ID` Gradle property overrides the environment and default;
+a nonempty environment variable overrides the default. An explicit empty Gradle
+override disables Microsoft login with an explanation. GitHub and QR pairing
+remain available. No user is asked to enter a client ID. Registration alone does
+not prove tenant consent or Dev Tunnels access; see publisher setup below.
+
+Signed-in accounts are separate from paired machines. Discovery lists only
+`agentlink`-labelled tunnels/ports from the management API. Account-paired machines
+save the provider/account ID and tunnel/cluster/port binding, not an identity token
+in the machine headers. Before HTTP and WebSocket connections, network workers
+obtain a connect-scoped tunnel token; the in-memory cache lasts at most five minutes.
+Microsoft refresh tokens rotate in encrypted storage when silent refresh succeeds.
+Expired/revoked GitHub credentials require interactive sign-in again: no GitHub
+client secret is embedded and no unsupported silent refresh is promised.
+
+Signing out clears this phone's account tokens and cached relay grants and closes
+account-backed foreground sockets. It does not delete chats, revoke the bridge's
+device credentials, or sign the browser out. A different account cannot reuse the
+previous account's relay grants. Address changes require explicit rediscovery and
+pairing rather than silently sending device credentials to another endpoint.
 
 The scanner only accepts `acpclient://pair` QR payloads. Camera permission is requested when the scanner opens.
 
@@ -78,6 +110,40 @@ The scanner only accepts `acpclient://pair` QR payloads. Camera permission is re
 Paired machine records include endpoint, bridge fingerprint, and device token. These are stored through encrypted shared preferences. Do not replace this with plain shared preferences unless a separate secure-storage design is documented first.
 
 Paired machine records may also include per-machine connection headers, such as `X-Tunnel-Authorization` for a private Microsoft Dev Tunnel. Treat these headers like short-lived credentials: store them only in the encrypted machine record, send them only to that machine endpoint, and do not log them.
+
+Account access/refresh tokens use separate encrypted preferences excluded from
+cloud backup and device transfer. Identity tokens go only to the provider and
+Dev Tunnels management API, never to a discovered bridge. Credential-bearing
+HTTP clients do not follow redirects.
+
+### Publisher setup for Microsoft login
+
+This requires real application registration and permission validation; a random
+GUID does not enable a usable login:
+
+1. Register an AgentLink public client in Microsoft Entra with the intended
+   supported account types (work/school and, if permitted, personal accounts).
+2. Enable public-client/device-code authentication. No client secret belongs in
+   Android. Configure the delegated Visual Studio Tunnel Service permissions
+   actually exposed/approved for this application and tenant.
+3. Validate that the application's user token can call the tunnel management API
+   and retrieve connect-scoped tokens for an owned tunnel. The implementation
+   requests `46da2f7e-b5ef-422a-88d4-2a7f9de6a0b2/.default`, `openid`, `profile`,
+   and `offline_access`; tenant consent and conditional-access rules still apply.
+   If that resource/permission is not available to the registration, leave the
+   feature disabled. The configured registration has been accepted by Microsoft's
+   device authorization endpoint. Real user consent and Dev Tunnels management
+   access have not yet been validated end to end.
+4. Set `agentlink.microsoftClientId` in `gradle.properties` for the public default,
+   or override through the GitHub Actions repository variable
+   `AGENTLINK_MICROSOFT_CLIENT_ID` or the same environment variable/Gradle property
+   locally. Rebuild the APK. The client ID is public configuration, not a secret.
+
+Relevant primary contracts:
+- https://github.com/microsoft/dev-tunnels/blob/main/ts/src/contracts/tunnelServiceProperties.ts
+- https://github.com/microsoft/dev-tunnels/blob/main/ts/src/management/tunnelManagementHttpClient.ts
+- https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
+- https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code
 
 Unread chat IDs are stored with chat data in encrypted shared preferences. Opening or deleting a chat clears its unread state and cancels any matching completion notification.
 

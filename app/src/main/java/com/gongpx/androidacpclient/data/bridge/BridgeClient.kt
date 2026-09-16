@@ -24,6 +24,9 @@ import com.gongpx.androidacpclient.data.model.toApprovalSnapshot
 import com.gongpx.androidacpclient.data.model.toBridgeApprovalRequest
 import com.gongpx.androidacpclient.data.model.toHistoryPage
 import com.gongpx.androidacpclient.data.model.toToolActivity
+import com.gongpx.androidacpclient.data.model.BridgeConnectionException
+import com.gongpx.androidacpclient.data.model.BridgeConnectionFailureCategory
+import com.gongpx.androidacpclient.data.tunnel.TunnelLoginRequired
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -43,8 +46,23 @@ import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
 
-class BridgeClient {
+class BridgeClient(
+    private val accountHeaders: ((String, Map<String, String>) -> Map<String, String>)? = null,
+) {
     private val webSocketClient = OkHttpClient.Builder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val url = request.url
+            val endpoint = "${url.scheme}://${url.host}" + if (url.port == 443 || url.port == 80) "" else ":${url.port}"
+            val headers = request.headers.names().associateWith { request.header(it).orEmpty() }
+            val updated = resolveAccountHeaders(endpoint, headers)
+            chain.proceed(request.newBuilder().apply {
+                removeHeader("X-Tunnel-Authorization")
+                updated.forEach { (key, value) -> header(key, value) }
+            }.build())
+        }
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(5, TimeUnit.SECONDS)
@@ -586,7 +604,7 @@ class BridgeClient {
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    notifyConnectionFailure(bridgeConnectionFailure(response?.code))
+                    notifyConnectionFailure(t.asConnectionFailure(response?.code))
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -615,7 +633,8 @@ class BridgeClient {
         connection.requestMethod = "GET"
         connection.connectTimeout = TIMEOUT_MS
         connection.readTimeout = TIMEOUT_MS
-        connection.setConnectionHeaders(headers)
+        connection.instanceFollowRedirects = false
+        connection.setConnectionHeaders(resolveAccountHeaders(endpoint, headers))
         return connection.useJsonResponse()
     }
 
@@ -625,8 +644,9 @@ class BridgeClient {
         connection.connectTimeout = TIMEOUT_MS
         connection.readTimeout = TIMEOUT_MS
         connection.doOutput = true
+        connection.instanceFollowRedirects = false
         connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-        connection.setConnectionHeaders(headers)
+        connection.setConnectionHeaders(if (path == "/pairing/redeem") headers else resolveAccountHeaders(endpoint, headers))
         connection.outputStream.use { stream ->
             stream.write(body.toString().toByteArray(Charsets.UTF_8))
         }
@@ -727,7 +747,7 @@ class BridgeClient {
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                        completeWithPartialOrFailure(bridgeConnectionFailure(response?.code))
+                        completeWithPartialOrFailure(t.asConnectionFailure(response?.code))
                     }
 
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -745,6 +765,21 @@ class BridgeClient {
         headers.forEach { (name, value) ->
             setRequestProperty(name, value)
         }
+    }
+
+    private fun Throwable.asConnectionFailure(httpStatus: Int?): BridgeConnectionException =
+        if (this is TunnelLoginRequired) BridgeConnectionException(
+            BridgeConnectionFailureCategory.Authentication, message ?: "Sign in again from Machines.",
+        ) else bridgeConnectionFailure(httpStatus)
+
+    private fun resolveAccountHeaders(endpoint: String, headers: Map<String, String>): Map<String, String> = try {
+        accountHeaders?.invoke(endpoint, headers) ?: headers
+    } catch (_: org.json.JSONException) {
+        throw IOException("The account service returned invalid tunnel credentials.")
+    } catch (_: IllegalArgumentException) {
+        throw IOException("The account service returned an unsupported tunnel address.")
+    } catch (_: IllegalStateException) {
+        throw IOException("The account credentials could not be saved securely.")
     }
 
     private fun HttpURLConnection.useJsonResponse(): JSONObject {

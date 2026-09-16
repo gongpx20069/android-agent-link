@@ -57,7 +57,34 @@ writes to the real user profile. HTTP access logs redact query strings, includin
 WebSocket device tokens.
 
 This durability does **not** renew Dev Tunnel connect tokens, extend their lifetime,
-or permit anonymous access. Expired relay credentials require explicit re-pairing.
+or permit anonymous access. Legacy QR relay credentials require re-pairing when
+expired. Account-backed connections separately obtain fresh connect tokens using
+the owner's identity; they still require the bridge device credential.
+
+### Account discovery boundaries
+
+OAuth device authorization happens only against the fixed provider endpoints in
+an external browser. GitHub uses the client ID published for client apps by the
+Dev Tunnels SDK; Microsoft uses AgentLink's own publisher-provided client ID.
+No client secrets are embedded. Microsoft account claims from the direct TLS
+token response identify the locally stored account; management API authorization
+is always performed by the tunnel service, not by decoded claims.
+
+Tunnel labels and device names are not proof of identity. Account pairing is
+enabled only in authenticated Dev Tunnel startup, requires exact local comparison
+and input of a random six-digit code, and cannot use the QR auto-approve option.
+Attempts expire after two minutes. One console request at a time and a minimum
+ten-second request interval bound prompting; an unanswered console input blocks
+additional prompts until dismissed. Device labels reject control characters.
+Poll credentials are random, supplied in POST bodies, and terminal approval is
+consumed only after durable device-token issuance. Storage failures are explicit.
+
+Account tokens are encrypted, excluded from backup/transfer, never logged, and
+never sent to bridges. Connect tokens are scoped to the selected tunnel and cached
+briefly in memory. Management pagination and forwarding origins are validated and
+credential-bearing clients refuse redirects. Saved bindings include the account
+ID; switching identities cannot reuse another account's grant. Sign-out is local,
+not remote revocation. Network failures never enable anonymous fallback.
 
 ## Pairing QR Security
 

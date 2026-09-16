@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--no-tailscale-setup", action="store_true", help="Skip automatic Tailscale install/login and only report current status.")
     start_parser.add_argument("--devtunnel-id", default=default_tunnel_id(), help="Microsoft Dev Tunnel ID to create or reuse when --transport devtunnel is selected.")
     start_parser.add_argument("--devtunnel-cli", help="Path to devtunnel CLI. Defaults to PATH or bridge\\.tools\\devtunnel.exe.")
+    start_parser.add_argument("--devtunnel-login", choices=("github", "microsoft"), help="Explicitly sign in with this provider to match the phone. Otherwise reuse the CLI account.")
     start_parser.add_argument("--auto-approve-pairing", action="store_true", help="Skip local pairing confirmation. Use only for tests or trusted local demos.")
     start_parser.add_argument("--server", choices=("stdlib", "fastapi"), default="stdlib", help="Server backend. Defaults to the standard-library backend.")
     start_parser.add_argument("--connection-header", action="append", default=[], metavar="NAME=VALUE", help="Header Android must send when connecting through a relay, e.g. X-Tunnel-Authorization='tunnel <token>'.")
@@ -81,6 +82,7 @@ def _start(args: argparse.Namespace) -> int:
                 tunnel_id=args.devtunnel_id,
                 local_port=args.port,
                 cli_path=args.devtunnel_cli,
+                login_provider=args.devtunnel_login,
             )
         except (DevTunnelAuthError, DevTunnelConflictError) as exc:
             print(str(exc), file=sys.stderr)
@@ -135,6 +137,7 @@ def _start(args: argparse.Namespace) -> int:
             config=config,
             pairing_store=pairing_store,
             require_local_pairing_confirmation=not args.auto_approve_pairing,
+            account_pairing_enabled=args.transport == "devtunnel",
         )
         if args.server == "fastapi":
             _run_fastapi(runtime)

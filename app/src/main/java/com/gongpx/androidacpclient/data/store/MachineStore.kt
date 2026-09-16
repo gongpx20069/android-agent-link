@@ -7,6 +7,7 @@ import com.gongpx.androidacpclient.data.model.Agent
 import com.gongpx.androidacpclient.data.model.ConnectionState
 import com.gongpx.androidacpclient.data.model.Machine
 import com.gongpx.androidacpclient.data.model.Workspace
+import com.gongpx.androidacpclient.data.tunnel.TunnelBinding
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -27,7 +28,9 @@ class MachineStore(context: Context) {
 
     fun upsert(machine: Machine) {
         val next = load().filterNot { it.id == machine.id } + machine
-        preferences.edit().putString(KEY_MACHINES, JSONArray(next.map { it.toJson() }).toString()).apply()
+        check(preferences.edit().putString(KEY_MACHINES, JSONArray(next.map { it.toJson() }).toString()).commit()) {
+            "Could not persist paired machine credentials."
+        }
     }
 
     fun remove(machineId: String) {
@@ -35,7 +38,9 @@ class MachineStore(context: Context) {
     }
 
     fun replaceAll(machines: List<Machine>) {
-        preferences.edit().putString(KEY_MACHINES, JSONArray(machines.map { it.toJson() }).toString()).apply()
+        check(preferences.edit().putString(KEY_MACHINES, JSONArray(machines.map { it.toJson() }).toString()).commit()) {
+            "Could not persist paired machine credentials."
+        }
     }
 
     private fun Machine.toJson(): JSONObject {
@@ -50,6 +55,7 @@ class MachineStore(context: Context) {
             .put("connectionState", connectionState.name)
             .put("workspaces", JSONArray(workspaces.map { it.toJson() }))
             .put("agents", JSONArray(agents.map { it.toJson() }))
+            .put("tunnelBinding", tunnelBinding?.toJson())
     }
 
     private fun JSONObject.toMachine(): Machine {
@@ -64,6 +70,7 @@ class MachineStore(context: Context) {
             connectionState = runCatching { ConnectionState.valueOf(optString("connectionState")) }.getOrDefault(ConnectionState.Unknown),
             workspaces = optJSONArray("workspaces").orEmpty().mapJsonObjects { it.toWorkspace() },
             agents = optJSONArray("agents").orEmpty().mapJsonObjects { it.toAgent() },
+            tunnelBinding = optJSONObject("tunnelBinding")?.let(TunnelBinding::fromJson),
         )
     }
 

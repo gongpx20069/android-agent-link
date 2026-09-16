@@ -1,5 +1,7 @@
 package com.gongpx.androidacpclient.data.model
 
+import com.gongpx.androidacpclient.data.tunnel.TunnelBinding
+
 data class PairingPayload(
     val version: Int,
     val type: String,
@@ -23,6 +25,7 @@ data class Machine(
     val connectionState: ConnectionState = ConnectionState.Unknown,
     val workspaces: List<Workspace> = emptyList(),
     val agents: List<Agent> = emptyList(),
+    val tunnelBinding: TunnelBinding? = null,
 )
 
 data class Workspace(

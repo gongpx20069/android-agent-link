@@ -16,6 +16,7 @@ from .config import BridgeConfig
 from .device_tokens import DeviceTokenStore
 from .history import HistoryError, HistoryStore
 from .pairing import PairingStore
+from .account_pairing import AccountPairing, AccountPairingError
 
 
 @dataclass(frozen=True)
@@ -127,11 +128,15 @@ class BridgeRuntime:
         pairing_store: PairingStore,
         require_local_pairing_confirmation: bool = True,
         agent_manager: AgentManager | None = None,
+        account_pairing_enabled: bool = False,
     ) -> None:
         self.config = config
         self.pairing_store = pairing_store
         self.require_local_pairing_confirmation = require_local_pairing_confirmation
         self._device_tokens = DeviceTokenStore(config.device_token_store)
+        self._console_pairing_lock = threading.Lock()
+        self.account_pairing_enabled = account_pairing_enabled
+        self._account_pairing = AccountPairing(self._pairing_result, self._confirm_account_pairing)
         self.agent_manager = agent_manager or AcpAgentManager()
         self._pending_approvals: dict[str, PendingApproval] = {}
         self._approval_results: dict[str, dict[str, Any]] = {}
@@ -154,7 +159,47 @@ class BridgeRuntime:
         self._history_loading_chats: set[str] = set()
 
     def health_response(self) -> dict[str, Any]:
-        return {"status": "ok", "bridgeVersion": __version__}
+        return {
+            "status": "ok", "bridgeVersion": __version__,
+            "machineId": self.config.machine_name, "machineName": self.config.machine_name,
+            "bridgeFingerprint": self.config.bridge_fingerprint,
+            "accountPairing": self.account_pairing_enabled,
+        }
+
+    def account_pairing_request(self, body: Any) -> dict[str, Any]:
+        if not self.account_pairing_enabled:
+            raise AccountPairingError(403, "account_pairing_disabled")
+        device = parse_device_info(body.get("device")) if isinstance(body, dict) else None
+        if device is None or len(device.name) > 80 or any(ord(c) < 32 or ord(c) > 126 for c in device.name):
+            raise AccountPairingError(400, "invalid_device_name")
+        return self._account_pairing.request(device.name)
+
+    def account_pairing_status(self, body: Any) -> dict[str, Any]:
+        if not self.account_pairing_enabled:
+            raise AccountPairingError(403, "account_pairing_disabled")
+        if not isinstance(body, dict) or any(
+            not isinstance(body.get(key), str) or not 1 <= len(body[key]) <= 128
+            for key in ("requestId", "pollToken")
+        ):
+            raise AccountPairingError(400, "invalid_pairing_request")
+        return self._account_pairing.poll(body["requestId"], body["pollToken"])
+
+    def _confirm_account_pairing(self, device_name: str, code: str) -> bool:
+        if not self._console_pairing_lock.acquire(blocking=False):
+            return False
+        try:
+            print(f"\nNew phone pairing request (unverified device label: {device_name}).", flush=True)
+            print(f"Compare code {code} with the code displayed in AgentLink on YOUR phone.", flush=True)
+            return input("Type that exact six-digit code to approve within 2 minutes, or Enter to deny: ").strip() == code
+        finally:
+            self._console_pairing_lock.release()
+
+    def _pairing_result(self) -> dict[str, str]:
+        return {
+            "machineId": self.config.machine_name,
+            "deviceToken": self.issue_device_token(),
+            "bridgeFingerprint": self.config.bridge_fingerprint,
+        }
 
     def agents_response(self) -> dict[str, Any]:
         return {"agents": [agent.to_wire() for agent in discover_agents()]}
@@ -255,11 +300,15 @@ class BridgeRuntime:
         if not self.require_local_pairing_confirmation:
             return True
 
+        if not self._console_pairing_lock.acquire(blocking=False):
+            return False
         prompt = f"Allow {device.name} ({device.platform}) to pair with this machine? [y/N] "
         try:
             answer = input(prompt)
         except EOFError:
             return False
+        finally:
+            self._console_pairing_lock.release()
         return answer.strip().lower() in {"y", "yes"}
 
     def _chat_prompt_updates(self, payload: dict[str, Any], emit: Callable[[dict[str, Any]], None] | None) -> list[dict[str, Any]]:

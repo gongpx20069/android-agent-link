@@ -34,6 +34,7 @@ import com.gongpx.androidacpclient.data.model.toApproval
 import com.gongpx.androidacpclient.data.store.ApprovalStore
 import com.gongpx.androidacpclient.data.store.ChatStore
 import com.gongpx.androidacpclient.data.store.MachineStore
+import com.gongpx.androidacpclient.data.tunnel.TunnelAccounts
 
 /**
  * The Activity must release all writers and connections before start, and call stop on the
@@ -41,7 +42,7 @@ import com.gongpx.androidacpclient.data.store.MachineStore
  */
 class ChatMonitorService : Service() {
     private val handler = Handler(Looper.getMainLooper())
-    private val bridgeClient = BridgeClient()
+    private lateinit var bridgeClient: BridgeClient
     private val monitored = linkedMapOf<String, MonitoredChat>()
     private lateinit var notifications: ChatNotificationManager
     private lateinit var chatStore: ChatStore
@@ -65,6 +66,7 @@ class ChatMonitorService : Service() {
         super.onCreate()
         instance = this
         notifications = ChatNotificationManager(this)
+        bridgeClient = BridgeClient(TunnelAccounts.get(this)::relayHeaders)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

@@ -10,6 +10,29 @@ The QR code does not create network connectivity by itself. It transfers endpoin
 
 ## Recommended Flow
 
+Account discovery is an alternative to scanning. Phone and bridge must use the
+same provider and account; a GitHub login cannot enumerate Entra-owned tunnels.
+For explicit provider selection on the computer:
+
+```powershell
+python .\bridge\run.py start --devtunnel-login github
+# Or, after configuring Microsoft login in the Android build:
+python .\bridge\run.py start --devtunnel-login microsoft
+```
+
+Without `--devtunnel-login`, startup reuses the current CLI account. Tunnel and
+port metadata are labelled `agentlink`, without enabling anonymous access.
+Default tunnel IDs are now deterministic per hostname (`agentlink-<host>-<hash>`)
+so different computers do not contend for a single `agentlink` tunnel. Existing
+users can pass `--devtunnel-id agentlink` to retain their prior address, or select
+the new computer entry and pair again; old tunnels are not deleted automatically.
+
+The phone lists discovered computers, requests pairing, and shows a six-digit
+confirmation code. The developer compares it with the bridge console and types
+the exact code within two minutes. Account pairing always requires this step,
+even if legacy QR auto-approval was explicitly enabled. Merely reaching the
+authenticated tunnel does not authorize operating the machine.
+
 ```text
 Start bridge on developer machine
   select transport (default: authenticated Dev Tunnel)
@@ -36,6 +59,15 @@ starting
   -> bridge_listening
   -> pairing_ready
 ```
+
+### `devtunnel_authenticating`
+
+A cached account returned by `devtunnel user show` does not guarantee that its
+login token is still valid. Authentication failures during tunnel lookup,
+creation, port setup, or connect-token issuance stop startup with an explicit
+login command using the resolved CLI path. They must not be treated as a missing
+tunnel or fall back to anonymous access. The user signs in again and restarts
+the bridge; this does not add continuous token renewal.
 
 ### `tailscale_cli_missing`
 
@@ -194,8 +226,11 @@ Android stores the device token in secure platform storage.
 
 ## Android UX
 
-Dev Tunnel access tokens are intentionally short-lived. AgentLink does not keep a
-tunnel alive or renew its connect token continuously. If relay authorization expires,
+Dev Tunnel access tokens are intentionally short-lived. Account-paired machines
+retrieve fresh connect tokens from the management service as needed, including
+after the old relay token expires. This requires a valid identity login and does
+not refresh the computer CLI login or keep a tunnel host running indefinitely.
+For legacy QR-paired machines, if relay authorization expires,
 restart the bridge as needed and scan its new pairing link to update the saved
 machine credentials. Re-pairing updates the existing machine without deleting chats.
 Bridge device authentication survives a normal bridge restart separately from the

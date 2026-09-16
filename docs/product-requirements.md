@@ -1,5 +1,18 @@
 # Product Requirements
 
+## Account-based computer discovery
+
+- Offer GitHub login and publisher-configured Microsoft login from Machines, with
+  QR/link pairing retained as a fallback.
+- Discover only AgentLink-labelled computers owned by the selected account.
+- First pairing requires matching-code confirmation on the computer; account
+  login alone never grants permission to operate it.
+- Obtain fresh relay credentials for saved account-backed computers without
+  requiring another QR scan while identity authorization remains valid.
+- Explicitly show login denial, expiry, configuration gaps and pairing failure.
+- Do not promise permanent login, computer-host uptime or unlimited mobile
+  background monitoring. Client ID/tenant setup belongs to the publisher, not users.
+
 ## Vision
 
 Create an Android app that lets a developer control coding agents running on multiple remote machines. The app should feel like a mobile chat client, but each chat is backed by a specific machine, workspace, and ACP agent session.

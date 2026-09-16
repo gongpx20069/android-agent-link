@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import socket
 import shutil
 import subprocess
 import sys
@@ -61,6 +63,29 @@ class DevTunnelConflictError(RuntimeError):
     pass
 
 
+def _has_auth_error(result: subprocess.CompletedProcess[str]) -> bool:
+    output = (result.stdout + "\n" + result.stderr).lower()
+    return any(marker in output for marker in (
+        "token expired", "token has expired", "unauthorized", "anonymous",
+        "not permitted", "not authenticated", "authentication required", "not logged in",
+    ))
+
+
+def _login_guidance(cli_path: str) -> str:
+    command = '& "' + cli_path.replace("`", "``").replace("$", "`$").replace('"', '`"') + '" user login -d'
+    return (
+        "Dev Tunnel login expired or access was rejected. "
+        f"Run `{command}` in PowerShell to sign in again with an account that can access the tunnel, "
+        "then retry bridge startup. Add `--github` for a GitHub account, or `--entra` for Microsoft; "
+        "use the same provider and account as the phone."
+    )
+
+
+def _raise_for_auth_error(cli_path: str, result: subprocess.CompletedProcess[str]) -> None:
+    if result.returncode != 0 and _has_auth_error(result):
+        raise DevTunnelAuthError(_login_guidance(cli_path))
+
+
 def default_runner(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -74,7 +99,10 @@ def default_runner(args: list[str], timeout: int) -> subprocess.CompletedProcess
 
 
 def default_tunnel_id() -> str:
-    return DEFAULT_TUNNEL_ID
+    host = socket.gethostname().lower()
+    name = re.sub(r"[^a-z0-9-]", "-", host).strip("-")[:32] or "computer"
+    suffix = hashlib.sha256(host.encode()).hexdigest()[:8]
+    return f"{DEFAULT_TUNNEL_ID}-{name}-{suffix}"
 
 
 def ensure_devtunnel_cli(
@@ -109,20 +137,27 @@ def ensure_devtunnel_cli(
     return str(local_cli)
 
 
-def ensure_devtunnel_login(cli_path: str, runner: CommandRunner = default_runner) -> None:
+def ensure_devtunnel_login(
+    cli_path: str, runner: CommandRunner = default_runner, login_provider: str | None = None,
+) -> None:
+    if login_provider not in (None, "github", "microsoft"):
+        raise ValueError("Unsupported Dev Tunnel login provider.")
     show = runner([cli_path, "user", "show"], 30)
-    output = (show.stdout + "\n" + show.stderr).lower()
-    if show.returncode == 0 and "anonymous" not in output:
+    if login_provider is None and show.returncode == 0 and not _has_auth_error(show):
         return
 
     print("Dev Tunnel login required. Starting device-code login...", flush=True)
-    login = subprocess.run([cli_path, "user", "login", "-d"], check=False)
+    args = [cli_path, "user", "login", "-d"]
+    if login_provider is not None:
+        args.append("--github" if login_provider == "github" else "--entra")
+    login = subprocess.run(args, check=False)
     if login.returncode != 0:
-        raise RuntimeError("devtunnel user login failed.")
+        raise DevTunnelAuthError("devtunnel user login failed. " + _login_guidance(cli_path))
 
 
 def create_or_reuse_tunnel(cli_path: str, tunnel_id: str, runner: CommandRunner = default_runner) -> str:
     show = runner([cli_path, "show", tunnel_id], 30)
+    _raise_for_auth_error(cli_path, show)
     shown_id = parse_tunnel_id(show.stdout)
     if show.returncode == 0 and shown_id is not None:
         return shown_id
@@ -132,15 +167,9 @@ def create_or_reuse_tunnel(cli_path: str, tunnel_id: str, runner: CommandRunner 
         return visible_id
 
     create = runner([cli_path, "create", tunnel_id], 60)
+    _raise_for_auth_error(cli_path, create)
     if create.returncode != 0:
         output = (create.stdout + "\n" + create.stderr).lower()
-        if "anonymous" in output or "unauthorized" in output or "not permitted" in output:
-            raise DevTunnelAuthError(
-                "Dev Tunnel creation was rejected because the CLI is not authenticated or lacks create access. "
-                "Run `devtunnel user login -d` if devtunnel is on PATH, or "
-                "`.\\bridge\\.tools\\devtunnel.exe user login -d` when using the bridge-downloaded CLI. "
-                "Then retry `android-acp-bridge start --transport devtunnel`."
-            )
         if "conflict with existing entity" in output or "already exists" in output:
             visible_id = find_visible_tunnel_id(cli_path, tunnel_id, runner)
             if visible_id is not None:
@@ -156,6 +185,7 @@ def create_or_reuse_tunnel(cli_path: str, tunnel_id: str, runner: CommandRunner 
         return created_id
 
     show_created = runner([cli_path, "show", tunnel_id], 30)
+    _raise_for_auth_error(cli_path, show_created)
     if show_created.returncode != 0:
         raise RuntimeError(_command_error("devtunnel show", show_created))
     return parse_tunnel_id(show_created.stdout) or tunnel_id
@@ -163,6 +193,7 @@ def create_or_reuse_tunnel(cli_path: str, tunnel_id: str, runner: CommandRunner 
 
 def find_visible_tunnel_id(cli_path: str, tunnel_id: str, runner: CommandRunner = default_runner) -> str | None:
     tunnels = runner([cli_path, "list"], 30)
+    _raise_for_auth_error(cli_path, tunnels)
     if tunnels.returncode != 0:
         return None
     for visible_id in parse_list_tunnel_ids(tunnels.stdout):
@@ -173,6 +204,7 @@ def find_visible_tunnel_id(cli_path: str, tunnel_id: str, runner: CommandRunner 
 
 def ensure_tunnel_port(cli_path: str, tunnel_id: str, port: int, runner: CommandRunner = default_runner) -> None:
     create_port = runner([cli_path, "port", "create", tunnel_id, "-p", str(port), "--protocol", "http"], 60)
+    _raise_for_auth_error(cli_path, create_port)
     if create_port.returncode == 0:
         return
 
@@ -184,6 +216,7 @@ def ensure_tunnel_port(cli_path: str, tunnel_id: str, port: int, runner: Command
 
 def issue_connect_token(cli_path: str, tunnel_id: str, runner: CommandRunner = default_runner) -> str:
     token = runner([cli_path, "token", tunnel_id, "--scopes", "connect"], 30)
+    _raise_for_auth_error(cli_path, token)
     if token.returncode != 0:
         raise RuntimeError(_command_error("devtunnel token", token))
     return parse_connect_token(token.stdout)
@@ -252,11 +285,20 @@ def setup_devtunnel(
     local_port: int,
     cli_path: str | None = None,
     runner: CommandRunner = default_runner,
+    login_provider: str | None = None,
 ) -> DevTunnelHost:
     resolved_cli = cli_path or ensure_devtunnel_cli(bridge_root, runner)
-    ensure_devtunnel_login(resolved_cli, runner)
+    ensure_devtunnel_login(resolved_cli, runner, login_provider)
     resolved_tunnel_id = create_or_reuse_tunnel(resolved_cli, tunnel_id, runner)
     ensure_tunnel_port(resolved_cli, resolved_tunnel_id, local_port, runner)
+    for args in (
+        [resolved_cli, "update", resolved_tunnel_id, "--add-labels", "agentlink"],
+        [resolved_cli, "port", "update", resolved_tunnel_id, "-p", str(local_port), "--add-labels", "agentlink"],
+    ):
+        labelled = runner(args, 60)
+        _raise_for_auth_error(resolved_cli, labelled)
+        if labelled.returncode != 0:
+            raise RuntimeError(_command_error("devtunnel discovery labels", labelled))
     connect_token = issue_connect_token(resolved_cli, resolved_tunnel_id, runner)
     print("Starting private Dev Tunnel host...", flush=True)
     return start_devtunnel_host(

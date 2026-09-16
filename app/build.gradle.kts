@@ -14,6 +14,13 @@ android {
         targetSdk = 35
         versionCode = (findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 1
         versionName = (findProperty("VERSION_NAME") as String?) ?: "0.0.0"
+        val microsoftClientId = providers.gradleProperty("AGENTLINK_MICROSOFT_CLIENT_ID")
+            .orElse(providers.environmentVariable("AGENTLINK_MICROSOFT_CLIENT_ID").filter { it.isNotBlank() })
+            .orElse(providers.gradleProperty("agentlink.microsoftClientId")).orElse("").get()
+        require(microsoftClientId.isEmpty() || microsoftClientId.matches(Regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"))) {
+            "AGENTLINK_MICROSOFT_CLIENT_ID must be an application client ID."
+        }
+        buildConfigField("String", "MICROSOFT_CLIENT_ID", "\"$microsoftClientId\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .device_tokens import DeviceTokenStoreError
+from .account_pairing import AccountPairingError
 from .runtime import BridgeRuntime, DeviceInfo as RuntimeDeviceInfo, InvalidPairingTokenError, PairingDeniedError
 
 
@@ -52,6 +53,22 @@ def create_app(runtime: BridgeRuntime) -> FastAPI:
             raise HTTPException(status_code=401, detail="Pairing token is invalid, expired, or already used.")
         except DeviceTokenStoreError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from None
+
+    def account_pairing(body: dict[str, Any], request: bool) -> dict[str, Any]:
+        try:
+            return runtime.account_pairing_request(body) if request else runtime.account_pairing_status(body)
+        except AccountPairingError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.code) from None
+        except DeviceTokenStoreError:
+            raise HTTPException(status_code=503, detail="device_token_store_unavailable") from None
+
+    @app.post("/pairing/request")
+    def request_account_pairing(body: dict[str, Any]) -> dict[str, Any]:
+        return account_pairing(body, True)
+
+    @app.post("/pairing/status")
+    def poll_account_pairing(body: dict[str, Any]) -> dict[str, Any]:
+        return account_pairing(body, False)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

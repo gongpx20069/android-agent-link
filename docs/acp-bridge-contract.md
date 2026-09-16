@@ -617,6 +617,33 @@ Approval requests must be written to the chat event log before they are sent to 
 
 ## Recovery contract
 
+### Account discovery and locally confirmed pairing
+
+Account-enabled Dev Tunnel hosts advertise the `agentlink` label on the tunnel
+and its bridge port. Discovery clients list only owned, labelled tunnels through
+the Microsoft management API; labels are discovery metadata, not authorization.
+Only service-provided HTTPS forwarding endpoints for labelled ports are used.
+
+Dev Tunnel startup enables `accountPairing` in `GET /health`, alongside
+`machineId`, `machineName`, and `bridgeFingerprint`. Other transports disable it.
+`POST /pairing/request` with `{device:{name,platform,appVersion}}` creates a
+two-minute pairing attempt and returns `requestId`, `pollToken`, `confirmationCode`,
+`expiresAt`, and `status:"pending"`. The client displays the code; the developer
+must type that exact code at the bridge console. Device labels are unverified.
+There is no automatic approval, including with `--auto-approve-pairing`.
+
+`POST /pairing/status` with `{requestId,pollToken}` returns pending/denied/expired,
+or approved plus `machineId`, `deviceToken`, `bridgeFingerprint`. The approved
+result is consumed once, after durable device-token issuance succeeds. Invalid
+poll credentials return 401; busy/rate-limited requests return 429; disabled
+account pairing returns 403; storage failure returns 503. Poll secrets are never
+placed in URLs. Only one console confirmation can be active; failed/expired
+attempts cannot issue a credential. QR redemption remains supported separately.
+
+Discovery does not remove bridge authentication. Android saves the resulting
+device credential and binds it to the selected account, tunnel, cluster and port.
+It never sends identity access/refresh tokens to a discovered bridge.
+
 Device authentication survives bridge restarts through a local, user-private store of
 token hashes. This does not renew Dev Tunnel access tokens or enable anonymous access.
 An expired relay credential requires explicit re-pairing.

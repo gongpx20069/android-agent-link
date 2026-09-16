@@ -43,6 +43,24 @@ Use `requirements-all.txt` instead of `requirements.txt` to install every option
 
 ### Microsoft Dev Tunnels (default)
 
+The updated Android app can discover the bridge without a QR code when both use
+the same account. For GitHub login on both sides:
+
+```powershell
+python .\run.py start --devtunnel-login github
+```
+
+On the phone, sign in with GitHub from Machines, choose the computer, and compare
+the six-digit confirmation code. Type the exact code in this console to approve.
+Keep the console available for first pairing. QR scanning remains available.
+For Microsoft use `--devtunnel-login microsoft`; the Android publisher must first
+configure the Microsoft client ID and validate tunnel-service permissions.
+Omit the flag to reuse the CLI's current account on later starts.
+
+Default tunnel IDs now include a hostname-derived suffix. Use `--devtunnel-id
+agentlink` to retain an older installation's fixed tunnel ID if needed. New
+discovery metadata labels the tunnel and port; it never enables anonymous access.
+
 ```powershell
 android-acp-bridge start
 ```
@@ -116,6 +134,14 @@ If `devtunnel` is not on PATH and the bridge downloaded its private copy, run:
 ```
 
 Then retry the bridge command. The bridge reports this as a setup error instead of printing a Python traceback.
+
+`Login token expired.` means the Dev Tunnel CLI login must be renewed, not the
+GitHub release login. Run `user login -d` with the same CLI executable used by
+the bridge, then start the bridge again. A repository-root `devtunnel.exe` takes
+precedence over PATH and `bridge\.tools\devtunnel.exe`; authentication errors print
+the resolved executable's login command. Failures during show/list/create, port
+setup, or connect-token issuance stop setup without falling back to anonymous
+access or treating an authentication failure as a missing tunnel.
 
 Optional overrides:
 

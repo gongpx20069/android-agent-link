@@ -262,8 +262,25 @@ discovery, history and configuration operations.
 Android distinguishes transport connectivity, last synchronization time and remote
 agent status. A failed connection does not imply an idle agent. Authentication
 failures require explicit retry/re-pairing rather than endlessly retrying unchanged
-credentials. Bridge device credentials survive restart; short-lived Dev Tunnel
-connect tokens are not automatically renewed.
+credentials. Bridge device credentials survive restart. For account-paired
+machines, a shared account service obtains fresh connect tokens on network workers;
+legacy QR headers are not automatically renewed.
+
+`TunnelAccounts` implements the two providers' device authorization flows and
+the documented Dev Tunnels REST contracts using the existing OkHttp dependency.
+It owns encrypted identity credentials, bounded pagination, account-bound relay
+caching, and the asynchronous locally confirmed pairing client. The UI and
+background service inject the same relay-header resolver into `BridgeClient`, so
+HTTP and WebSocket handshakes use consistent credentials without blocking the UI.
+Device authorization avoids an embedded browser, callback URI or client secret;
+it requires copying a short code into the provider's external browser.
+
+The bridge advertises labelled tunnel ports and serves bounded account-pairing
+requests separately from QR token redemption. A console-confirmation lock prevents
+overlapping prompts. Discovery through Microsoft management infrastructure needs
+no AgentLink cloud server, but still depends on supported provider authorization.
+Microsoft registration/consent is an explicit external setup requirement; an
+unconfigured build visibly disables it rather than pretending it works.
 
 Tool state is reduced from ACP partial updates. Absent fields preserve their previous
 values; supplied content collections replace the collection. The client retains

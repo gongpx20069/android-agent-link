@@ -95,6 +95,7 @@ jobs:
 
       - name: Build signed release APK
         env:
+          AGENTLINK_MICROSOFT_CLIENT_ID: ${{ vars.AGENTLINK_MICROSOFT_CLIENT_ID }}
           AGENTLINK_KEYSTORE_PATH: ${{ runner.temp }}/agentlink-signing/release.jks
           AGENTLINK_KEYSTORE_PASSWORD: ${{ secrets.AGENTLINK_RELEASE_KEYSTORE_PASSWORD }}
           AGENTLINK_KEY_ALIAS: ${{ secrets.AGENTLINK_RELEASE_KEY_ALIAS }}

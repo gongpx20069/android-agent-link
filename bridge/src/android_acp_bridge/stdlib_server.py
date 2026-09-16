@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from .device_tokens import DeviceTokenStoreError
+from .account_pairing import AccountPairingError
 
 from .runtime import BridgeRuntime, InvalidPairingTokenError, PairingDeniedError, parse_device_info
 
@@ -45,6 +46,20 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path in {"/pairing/request", "/pairing/status"}:
+            body = self._read_json_body()
+            try:
+                handler = (
+                    self.server.runtime.account_pairing_request
+                    if parsed.path == "/pairing/request"
+                    else self.server.runtime.account_pairing_status
+                )
+                self._send_json(HTTPStatus.OK, handler(body))
+            except AccountPairingError as exc:
+                self._send_json(HTTPStatus(exc.status), {"error": exc.code})
+            except DeviceTokenStoreError:
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "device_token_store_unavailable"})
+            return
         if parsed.path != "/pairing/redeem":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
@@ -85,7 +100,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             return None
-        if content_length <= 0:
+        if content_length <= 0 or content_length > 16_384:
             return None
         raw = self.rfile.read(content_length)
         try:

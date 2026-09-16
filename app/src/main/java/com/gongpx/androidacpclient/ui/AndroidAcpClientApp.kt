@@ -151,6 +151,7 @@ import com.gongpx.androidacpclient.data.model.mergeTimelineMessage
 import com.gongpx.androidacpclient.data.model.toolActivitySections
 import com.gongpx.androidacpclient.data.notification.ChatMonitorService
 import com.gongpx.androidacpclient.data.notification.shouldNotifyMonitoredCompletion
+import com.gongpx.androidacpclient.data.tunnel.TunnelAccounts
 import com.gongpx.androidacpclient.data.bridge.restoreQueuedPrompts
 import com.gongpx.androidacpclient.data.notification.ChatNotificationManager
 import com.gongpx.androidacpclient.data.notification.chatCompletionAttention
@@ -594,7 +595,8 @@ fun AgentLinkApp(
     val chatStore = remember { ChatStore(context.applicationContext) }
     val approvalStore = remember { ApprovalStore(context.applicationContext) }
     val appSettingsStore = remember { AppSettingsStore(context.applicationContext) }
-    val bridgeClient = remember { BridgeClient() }
+    val tunnelAccounts = remember { TunnelAccounts.get(context) }
+    val bridgeClient = remember { BridgeClient(tunnelAccounts::relayHeaders) }
     val chatNotificationManager = remember { ChatNotificationManager(context.applicationContext) }
     val updateClient = remember { UpdateClient() }
     val parser = remember { PairingLinkParser() }
@@ -1894,6 +1896,36 @@ fun AgentLinkApp(
                             padding = padding,
                             machines = machines,
                             statusMessage = statusMessage,
+                            accountPanel = {
+                                AccountDiscoveryCard(
+                                    chinese = strings == AppStrings.Chinese,
+                                    accounts = tunnelAccounts,
+                                    onAccountChanged = {
+                                        chats.filter { chat -> machines.any { it.id == chat.machineId && it.tunnelBinding != null } }.forEach { chat ->
+                                            authenticationRequiredChatIds.remove(chat.id)
+                                            statusSynchronizedChatIds.remove(chat.id)
+                                            chatConnections.remove(chat.id)?.close()
+                                        }
+                                    },
+                                    onPaired = { machine ->
+                                        val existing = machines.firstOrNull { it.id == machine.id }
+                                        require(existing == null || existing.bridgeFingerprint == machine.bridgeFingerprint) {
+                                            "A different saved computer has the same name. Remove it explicitly before replacing it."
+                                        }
+                                        upsertMachine(machine)
+                                        chats.filter { it.machineId == machine.id }.forEach { chat ->
+                                            authenticationRequiredChatIds.remove(chat.id)
+                                            statusSynchronizedChatIds.remove(chat.id)
+                                            chatConnections.remove(chat.id)?.close()
+                                        }
+                                        scope.launch {
+                                            bridgeClient.fetchMachineDetails(machine)
+                                                .onSuccess { upsertMachine(it) }
+                                                .onFailure { statusMessage = strings.pairedHealthFailed(it.message) }
+                                        }
+                                    },
+                                )
+                            },
                             onPairLink = ::pairFromLink,
                             onScanQr = { scannerOpen = true },
                             onRefreshMachine = { machine ->
@@ -3246,6 +3278,7 @@ private fun MachinesScreen(
     padding: PaddingValues,
     machines: List<Machine>,
     statusMessage: String?,
+    accountPanel: @Composable () -> Unit,
     onPairLink: (String) -> Unit,
     onScanQr: () -> Unit,
     onRefreshMachine: (Machine) -> Unit,
@@ -3255,6 +3288,7 @@ private fun MachinesScreen(
     var pairingLink by remember { mutableStateOf("") }
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item(key = "account-discovery") { accountPanel() }
         item {
             ElevatedCard(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
                 Column(Modifier.padding(18.dp)) {
