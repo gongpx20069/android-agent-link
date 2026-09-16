@@ -110,7 +110,7 @@ internal fun AccountDiscoveryCard(
                             }
                         }) { Text(text("Sign in with ${provider.name}", "使用 ${provider.name} 登录")) }
                     } else {
-                        OutlinedButton(enabled = !busy, onClick = {
+                        OutlinedButton(enabled = !busy && (provider != LoginProvider.Microsoft || accounts.microsoftEnabled), onClick = {
                             runOperation {
                                 selectedProvider = provider
                                 discovered = null
@@ -130,8 +130,8 @@ internal fun AccountDiscoveryCard(
                 }
             }
             if (!accounts.microsoftEnabled) Text(
-                text("Microsoft login is not enabled in this build: the publisher must complete app registration. QR pairing is still available.",
-                    "此构建尚未启用 Microsoft 登录：发布者需要先完成应用注册。仍可使用扫码配对。"),
+                text("Microsoft account discovery is temporarily unavailable because tunnel authorization has not been validated. Use Dev Tunnels QR pairing instead; no app registration is needed.",
+                    "Microsoft 账号发现暂不可用：隧道授权尚未验证通过。请使用 Dev Tunnels 扫码配对，无需注册应用。"),
                 style = MaterialTheme.typography.bodySmall,
             )
             login?.let { pending ->

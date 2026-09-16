@@ -279,8 +279,12 @@ The bridge advertises labelled tunnel ports and serves bounded account-pairing
 requests separately from QR token redemption. A console-confirmation lock prevents
 overlapping prompts. Discovery through Microsoft management infrastructure needs
 no AgentLink cloud server, but still depends on supported provider authorization.
-Microsoft registration/consent is an explicit external setup requirement; an
-unconfigured build visibly disables it rather than pretending it works.
+Microsoft account discovery is disabled in default and published builds after a
+personal-account tunnel authorization failure was reproduced independently of
+Android. Basic identity login succeeded, but does not authorize tunnel access.
+The implementation is retained for explicit local investigation only; publishing
+requires verified end-to-end authorization before removing the release override.
+Computer-side Dev Tunnels login and QR pairing remain independent and available.
 
 Tool state is reduced from ACP partial updates. Absent fields preserve their previous
 values; supplied content collections replace the collection. The client retains

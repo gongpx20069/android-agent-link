@@ -168,6 +168,22 @@ class TunnelAccountsTest {
     }
 
     @Test
+    fun disabledMicrosoftCannotUseSavedCredentialsButCanSignOut() = runBlocking {
+        val microsoft = LoginAccount(LoginProvider.Microsoft, "tenant:user", "Microsoft")
+        val store = MemoryStore(AccountTokens(microsoft, "still-valid", "refresh", Long.MAX_VALUE))
+        val service = service(
+            store = store,
+            paired = machine.copy(tunnelBinding = binding.copy(provider = microsoft.provider, accountId = microsoft.id)),
+            get = { _, _ -> error("Disabled Microsoft must not make network requests") },
+        )
+        assertFalse(service.microsoftEnabled)
+        assertTrue(runCatching { service.discover(microsoft.provider) }.exceptionOrNull() is IOException)
+        assertTrue(runCatching { service.relayHeaders(origin, emptyMap()) }.exceptionOrNull() is IOException)
+        service.signOut(microsoft.provider)
+        assertNull(store.tokens)
+    }
+
+    @Test
     fun credentialObjectsNeverIncludeTokensInToString() {
         assertFalse(AccountTokens(account, "SECRET", "REFRESH", null).toString().contains("SECRET"))
         assertFalse(DeviceLogin(account.provider, "SECRET", "CODE", "https://github.com/login/device", 1, 5).toString().contains("SECRET"))

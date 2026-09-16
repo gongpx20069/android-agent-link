@@ -82,13 +82,22 @@ domains. GitHub authorizes Microsoft's **Visual Studio Tunnel Service**
 application, whose public client ID is explicitly documented for clients by the
 Dev Tunnels SDK. This is not an AgentLink-owned GitHub application.
 
-Microsoft login uses the publisher's own public-client registration, defaulted by
-`agentlink.microsoftClientId` in `gradle.properties`. An explicit
+Microsoft phone account discovery is temporarily disabled in default and published
+builds. Live personal-account testing succeeded for basic `openid profile` login
+but failed for the full tunnel authorization request with a browser "code expired"
+message, reproduced outside Android. The exact authorization cause remains unresolved.
+QR pairing and computer-side Microsoft Dev Tunnels login are unaffected.
+
+The implementation remains available for explicit local investigation with a
+publisher-owned public-client registration. `agentlink.microsoftClientId` in
+`gradle.properties` is empty by default. An explicit
 `AGENTLINK_MICROSOFT_CLIENT_ID` Gradle property overrides the environment and default;
 a nonempty environment variable overrides the default. An explicit empty Gradle
-override disables Microsoft login with an explanation. GitHub and QR pairing
-remain available. No user is asked to enter a client ID. Registration alone does
-not prove tenant consent or Dev Tunnels access; see publisher setup below.
+override disables Microsoft login with an explanation. The release workflow
+explicitly passes this empty override, regardless of any environment or repository
+variable. Disabled builds also reject saved Microsoft credentials for discovery
+and relay requests; local sign-out remains available. GitHub and QR pairing remain
+available. No user is asked to enter a client ID or change app registration.
 
 Signed-in accounts are separate from paired machines. Discovery lists only
 `agentlink`-labelled tunnels/ports from the management API. Account-paired machines
@@ -118,7 +127,7 @@ cloud backup and device transfer. Identity tokens go only to the provider and
 Dev Tunnels management API, never to a discovered bridge. Credential-bearing
 HTTP clients do not follow redirects.
 
-### Publisher setup for Microsoft login
+### Microsoft login investigation (not a released feature)
 
 This requires real application registration and permission validation; a random
 GUID does not enable a usable login:
@@ -133,13 +142,14 @@ GUID does not enable a usable login:
    requests `46da2f7e-b5ef-422a-88d4-2a7f9de6a0b2/.default`, `openid`, `profile`,
    and `offline_access`; tenant consent and conditional-access rules still apply.
    If that resource/permission is not available to the registration, leave the
-   feature disabled. The configured registration has been accepted by Microsoft's
-   device authorization endpoint. Real user consent and Dev Tunnels management
-   access have not yet been validated end to end.
-4. Set `agentlink.microsoftClientId` in `gradle.properties` for the public default,
-   or override through the GitHub Actions repository variable
-   `AGENTLINK_MICROSOFT_CLIENT_ID` or the same environment variable/Gradle property
-   locally. Rebuild the APK. The client ID is public configuration, not a secret.
+   feature disabled. The observed registration had only Graph `User.Read` configured
+   and the tunnel resource was not found in its portal API search. This is not proof
+   that third-party access is impossible, but it is not a validated deployment.
+4. For local investigation only, set `AGENTLINK_MICROSOFT_CLIENT_ID` through an
+   environment variable or Gradle property and rebuild. The client ID is public
+   configuration, not a secret. Do not restore a default ID or remove the release
+   workflow's empty override until real login, discovery and connect authorization
+   have passed end to end.
 
 Relevant primary contracts:
 - https://github.com/microsoft/dev-tunnels/blob/main/ts/src/contracts/tunnelServiceProperties.ts

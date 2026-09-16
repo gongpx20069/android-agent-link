@@ -95,13 +95,13 @@ jobs:
 
       - name: Build signed release APK
         env:
-          AGENTLINK_MICROSOFT_CLIENT_ID: ${{ vars.AGENTLINK_MICROSOFT_CLIENT_ID }}
           AGENTLINK_KEYSTORE_PATH: ${{ runner.temp }}/agentlink-signing/release.jks
           AGENTLINK_KEYSTORE_PASSWORD: ${{ secrets.AGENTLINK_RELEASE_KEYSTORE_PASSWORD }}
           AGENTLINK_KEY_ALIAS: ${{ secrets.AGENTLINK_RELEASE_KEY_ALIAS }}
           AGENTLINK_KEY_PASSWORD: ${{ secrets.AGENTLINK_RELEASE_KEY_PASSWORD }}
         run: |
           gradle :app:assembleRelease \
+            -PAGENTLINK_MICROSOFT_CLIENT_ID= \
             -PVERSION_NAME="${{ steps.release.outputs.tag_name }}" \
             -PVERSION_CODE="${{ steps.release.outputs.version_code }}"
 

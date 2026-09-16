@@ -41,7 +41,7 @@ class TunnelAccounts internal constructor(
         // Published for use by client apps in the official Dev Tunnels SDK contracts.
         LoginProvider.GitHub -> "Iv1.e7b89e013f801f03"
         LoginProvider.Microsoft -> microsoftClientId.ifBlank {
-            throw IOException("Microsoft login is not configured in this build. The publisher must register AgentLink first.")
+            throw IOException("Microsoft account discovery is unavailable in this build. Use Dev Tunnels QR pairing instead.")
         }
     }
 
@@ -128,6 +128,7 @@ class TunnelAccounts internal constructor(
     )
 
     private fun usableTokens(provider: LoginProvider): AccountTokens {
+        if (provider == LoginProvider.Microsoft) clientId(provider)
         val tokens = store.load(provider) ?: throw TunnelLoginRequired()
         if (tokens.expiresAt == null || tokens.expiresAt > System.currentTimeMillis() + 120_000) return tokens
         if (provider != LoginProvider.Microsoft || tokens.refreshToken == null) throw TunnelLoginRequired()
