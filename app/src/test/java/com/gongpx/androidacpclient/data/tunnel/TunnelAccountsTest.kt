@@ -213,6 +213,29 @@ class TunnelAccountsTest {
     }
 
     @Test
+    fun acceptsMicrosoftDeviceLoginVerificationHost() = runBlocking {
+        val service = TunnelAccounts(
+            MemoryStore(AccountTokens(account, "identity-secret", null, null)),
+            { emptyList() },
+            { _, _ -> error("Unexpected account request") },
+            { url, body ->
+                assertEquals("https://login.microsoftonline.com/common/oauth2/v2.0/devicecode", url)
+                assertEquals("own-client-id", body["client_id"])
+                JSONObject("""{
+                    "device_code":"private","user_code":"code","verification_uri":"https://login.microsoft.com/device",
+                    "expires_in":900,"interval":5
+                }""")
+            },
+            { _, _, _ -> error("Unexpected pairing") },
+            microsoftClientId = "own-client-id",
+        )
+
+        val login = service.beginLogin(LoginProvider.Microsoft)
+
+        assertEquals("https://login.microsoft.com/device", login.verificationUri)
+    }
+
+    @Test
     fun emptyRegionsAreNotFailuresButRegionErrorsAreNeverHidden() = runBlocking {
         val empty = service(get = { _, _ -> JSONObject("""{"value":[{"regionName":"region","value":null,"error":null}]}""") })
         assertTrue(empty.discover(account.provider).isEmpty())

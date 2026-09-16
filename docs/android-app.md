@@ -76,7 +76,9 @@ The Android app supports account discovery plus the two existing QR/link paths:
 Account login uses the providers' OAuth device authorization flow: copy the short
 code, complete sign-in in the external browser, and return to AgentLink. The app
 honors polling intervals, slow-down, denial, cancellation and expiry. It never
-collects a password. GitHub authorizes Microsoft's **Visual Studio Tunnel Service**
+collects a password. Microsoft device login accepts the provider's exact official
+verification hosts, including `login.microsoft.com`, while rejecting lookalike
+domains. GitHub authorizes Microsoft's **Visual Studio Tunnel Service**
 application, whose public client ID is explicitly documented for clients by the
 Dev Tunnels SDK. This is not an AgentLink-owned GitHub application.
 

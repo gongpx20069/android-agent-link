@@ -63,7 +63,12 @@ class TunnelAccounts internal constructor(
         val parsed = URI(uri)
         require(parsed.scheme == "https" && parsed.rawUserInfo == null && parsed.port == -1 && when (provider) {
             LoginProvider.GitHub -> parsed.host == "github.com" && parsed.path == "/login/device"
-            LoginProvider.Microsoft -> parsed.host in setOf("microsoft.com", "www.microsoft.com", "login.microsoftonline.com")
+            LoginProvider.Microsoft -> parsed.host in setOf(
+                "login.microsoft.com",
+                "microsoft.com",
+                "www.microsoft.com",
+                "login.microsoftonline.com",
+            )
         }) { "Sign-in returned an unexpected verification address." }
         DeviceLogin(
             provider, json.getString("device_code"), json.getString("user_code"), uri,
