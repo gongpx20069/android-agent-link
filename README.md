@@ -16,6 +16,8 @@ from your phone. Your projects and agent processes stay on your computer.
 - **Follow work as it happens.** Read streaming replies, tool activity, and execution results.
 - **Respond from your phone.** Approve or deny requests that the agent sends for your decision.
 - **Pick up where you left off.** Resume available agent sessions and view recent history.
+- **Browse long conversations without loading everything.** Older saved messages and long
+  replies/tool outputs are paged; history is retained, not silently deleted.
 
 AgentLink is a remote control, not an on-phone agent runtime. Your computer must
 stay awake, online, and running the bridge while you use it.
@@ -46,6 +48,10 @@ from that source if prompted.
 Signed release APKs can update previous signed releases in place. A debug build
 may require uninstalling before switching to a release build; uninstalling removes
 its local app data.
+
+Upgrades migrate the older chat store automatically. Keep the app open during its
+first load; do not uninstall or clear data to address lag. The new encrypted chat
+database is not readable by older APKs, so downgrading is not a supported rollback.
 
 ### 2. Set up your computer once
 

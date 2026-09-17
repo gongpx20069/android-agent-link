@@ -25,7 +25,9 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Chat, approval, and machine list rows move left by only the fixed Delete-action width, keeping most of the row visible. Swiping right closes the action, and deletion still requires tapping Delete. Deleting a pending approval sends a deny decision before removing it locally.
 - Chat list rows and the chat detail header show a small status dot: busy while a prompt is running, idle otherwise.
 - Completed Agent responses show a red unread dot on the chat list until that chat is opened.
-- On startup, Android attaches every persisted Chat long enough to synchronize its Bridge status. Idle Chats disconnect after synchronization; busy Chats remain monitored until completion, including while another tab or Chat is open.
+- On startup, Android synchronizes persisted Chats with at most three unsynchronized
+  foreground attachments in flight, prioritizing the selected/busy chats. Idle Chats
+  disconnect after synchronization; busy Chats remain monitored until completion.
 - Foreground and background `chat.attach` requests include the phone's chat title
   as optional display metadata for the bridge terminal's numbered picker. It is
   refreshed on attachment, is compatible with older bridges, and does not mark
@@ -125,6 +127,47 @@ The scanner only accepts `acpclient://pair` QR payloads. Camera permission is re
 
 ## Storage
 
+Chats and approvals use a process-wide `ChatStore` shared by the Activity and monitor
+service. Initialization, migration, serialization, encryption and SQLite writes run
+on one IO worker. UI callbacks stage changed message records and metadata, with a
+100 ms write-behind interval. Adjacent text/thought deltas are combined in a bounded
+event pump; fully reduced tool snapshots may replace adjacent snapshots. Control
+events retain their order. UI delivery is scheduled at 32 ms intervals with a 4 ms
+drain budget (one indivisible callback may exceed it). The socket reader is
+backpressured at 256 queued entries or 2 MiB of estimated payload, and event delivery
+pauses while pending/in-flight persistence exceeds 4 Mi characters. A single larger
+event is allowed; these limits are not hard total-process memory ceilings.
+
+Messages, chat metadata, approval records and unread state have AES-256-GCM encrypted
+payloads in `chat-records.db`, using a dedicated Android Keystore key. Large encrypted
+records are split into 64 KiB database rows to avoid CursorWindow limits; the complete
+ciphertext authenticates all parts together. See the security model for index metadata
+and backup exclusions. Migration imports the legacy encrypted preferences in one
+transaction before removing their values. Failed imports retain the old data.
+Downgrading to an APK that only reads the legacy store is not supported.
+
+Event effects, approvals and replay checkpoints are staged under one lock and committed
+in the same database transaction. Every persistent/one-shot network send waits for
+the ordered durability barrier off the UI thread, preserving outbox and cancellation
+tombstones before transmission. A storage/application failure stops further writes
+and sends, displays an error, and requires restart/recovery; it never silently
+advances a cursor past unsaved effects.
+
+Idle chats normally retain at most 200 recent rows and approximately 512 Ki characters
+of message content, plus current command/config metadata. One oversized row and an
+unfinished turn are exceptions: unfinished-turn rows remain available for late tool
+updates. Old durable records are not deleted. Loading saved history opens a separate
+paged viewer with a Back to latest action; it does not grow the live timeline.
+Remote history pages are also saved locally. Current command/config updates replace
+their current state rather than accumulating one hidden control row per operation.
+
+Markdown parsing and expanded tool-section extraction run off main. Parsing consumes
+conflated source snapshots, so continued streaming cannot continually cancel a slow
+parse. Inline styling and table widths are remembered. Long replies and tool details
+have explicit page controls, and oversized tables show their original source instead
+of forcing an enormous layout. Timeline rows have stable local IDs and content types;
+approval cards are separate lazy items, and draft edits are isolated from the timeline.
+
 Paired machine records include endpoint, bridge fingerprint, and device token. These are stored through encrypted shared preferences. Do not replace this with plain shared preferences unless a separate secure-storage design is documented first.
 
 Paired machine records may also include per-machine connection headers, such as `X-Tunnel-Authorization` for a private Microsoft Dev Tunnel. Treat these headers like short-lived credentials: store them only in the encrypted machine record, send them only to that machine endpoint, and do not log them.
@@ -161,7 +204,8 @@ Relevant primary contracts:
 - https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
 - https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code
 
-Unread chat IDs are stored with chat data in encrypted shared preferences. Opening or deleting a chat clears its unread state and cancels any matching completion notification.
+Unread chat IDs are encrypted in the chat database. Opening or deleting a chat clears
+its unread state and cancels any matching completion notification.
 
 Chat records also store `acpSessionId` and `acpSessionResumable`. A session created only for model/config discovery remains non-resumable until its first prompt completes. Empty sessions are not expected to appear in the agent's resume list because they have no conversation history.
 

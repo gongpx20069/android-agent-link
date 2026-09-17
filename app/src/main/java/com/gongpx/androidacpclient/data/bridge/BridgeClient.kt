@@ -48,7 +48,14 @@ import org.json.JSONObject
 
 class BridgeClient(
     private val accountHeaders: ((String, Map<String, String>) -> Map<String, String>)? = null,
+    private val beforeSend: () -> Unit = {},
+    private val applyEvent: (() -> Unit) -> Unit = { it() },
+    private val readyForEvent: () -> Boolean = { true },
 ) {
+    private val sendExecutor = java.util.concurrent.ThreadPoolExecutor(
+        1, 1, 30, TimeUnit.SECONDS, java.util.concurrent.ArrayBlockingQueue(128),
+        java.util.concurrent.ThreadFactory { runnable -> Thread(runnable, "chat-send").apply { isDaemon = true } },
+    ).apply { allowCoreThreadTimeOut(true) }
     private val webSocketClient = OkHttpClient.Builder()
         .followRedirects(false)
         .followSslRedirects(false)
@@ -411,6 +418,7 @@ class BridgeClient(
         onApprovalSnapshot: (List<BridgeApprovalRequest>) -> Unit = {},
         onApprovalResolved: (String, String, Long) -> Unit = { _, _, _ -> },
         chatTitle: String? = null,
+        initialMessages: List<ChatMessage> = emptyList(),
     ): ChatConnection {
         val requestBuilder = Request.Builder().url(toWebSocketUrl(machine.endpoint, machine.deviceToken))
         machine.connectionHeaders.forEach { (name, value) ->
@@ -423,6 +431,7 @@ class BridgeClient(
         var attachReplayBoundary: Int? = null
         val intentionallyClosed = AtomicBoolean(false)
         val terminationNotified = AtomicBoolean(false)
+        val toolReducer = ToolStreamReducer(initialMessages)
         fun notifyConnectionFailure(error: Throwable) {
             synchronized(sendLock) {
                 socketReady = false
@@ -433,22 +442,51 @@ class BridgeClient(
                 }
             }
         }
+        val pump = ChatEventPump(
+            schedule = { mainHandler.postDelayed(it, 32) },
+            apply = applyEvent,
+            checkpoint = { if (!intentionallyClosed.get()) onEventId(it) },
+            deliver = { message, replay -> if (!intentionallyClosed.get()) onMessage(message, replay) },
+            failed = ::notifyConnectionFailure,
+            ready = readyForEvent,
+        )
         val connection = ChatConnection(chatId = chatId) { payload ->
-            synchronized(sendLock) {
-                if (intentionallyClosed.get()) {
-                    false
-                } else if (socketReady) {
-                    socket?.send(payload.toString()) == true
-                } else {
-                    pendingPayloads.add(payload)
-                    true
+            if (intentionallyClosed.get()) false else try {
+                sendExecutor.execute {
+                    try {
+                        beforeSend()
+                        synchronized(sendLock) {
+                            if (!intentionallyClosed.get()) {
+                                if (socketReady) {
+                                    check(socket?.send(payload.toString()) == true) { "Could not send chat request" }
+                                } else {
+                                    check(pendingPayloads.size < 128) { "Chat send queue is full" }
+                                    pendingPayloads.add(payload)
+                                }
+                            }
+                        }
+                    } catch (error: Exception) {
+                        notifyConnectionFailure(error)
+                        socket?.cancel()
+                    }
                 }
+                true
+            } catch (error: java.util.concurrent.RejectedExecutionException) {
+                notifyConnectionFailure(error)
+                false
             }
         }
         socket = webSocketClient.newWebSocket(
             requestBuilder.build(),
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
+                    try {
+                        beforeSend()
+                    } catch (error: Exception) {
+                        notifyConnectionFailure(error)
+                        webSocket.cancel()
+                        return
+                    }
                     synchronized(sendLock) {
                         if (intentionallyClosed.get()) {
                             webSocket.cancel()
@@ -512,14 +550,10 @@ class BridgeClient(
                     val replayBoundary = attachReplayBoundary
                     val isReplay = replayBoundary != null && eventId in 0..replayBoundary
                     fun postApplied(action: () -> Unit = {}) {
-                        mainHandler.post {
-                            if (intentionallyClosed.get()) return@post
-                            action()
-                            if (!intentionallyClosed.get() && eventId >= 0) onEventId(eventId)
-                        }
+                        pump.event(eventId, text.length * 2) { if (!intentionallyClosed.get()) action() }
                     }
                     when (event.optString("type")) {
-                        "bridge.accepted", "bridge.heartbeat" -> postApplied()
+                        "bridge.accepted", "bridge.heartbeat" -> if (eventId >= 0) postApplied()
                         "chat.attached" -> {
                             val latestEventId = event.optInt("latestEventId", 0)
                             attachReplayBoundary = latestEventId
@@ -530,7 +564,7 @@ class BridgeClient(
                                     (lastEventGeneration != null && eventGeneration != lastEventGeneration),
                             )
                             if (eventGeneration.isNotBlank()) {
-                                mainHandler.post {
+                                pump.event(-1, text.length * 2) {
                                     if (!intentionallyClosed.get()) onEventGeneration(eventGeneration, checkpointReset)
                                 }
                             }
@@ -550,14 +584,19 @@ class BridgeClient(
                         "operation.started" -> postApplied {
                             onPromptStarted(event.optString("operationId"), event.optString("content"), isReplay)
                         }
-                        "operation.done" -> postApplied {
-                            onOperationDone(
-                                event.optString("operationType"),
-                                event.optString("status"),
-                                event.optString("operationId"),
-                                event.optInt("queueRemaining", 0),
-                                isReplay,
-                            )
+                        "operation.done" -> {
+                            if (event.optString("operationType") == "chat.prompt" &&
+                                event.optString("status") in setOf("completed", "failed")
+                            ) toolReducer.finishTurn(event.optString("operationId"))
+                            postApplied {
+                                onOperationDone(
+                                    event.optString("operationType"),
+                                    event.optString("status"),
+                                    event.optString("operationId"),
+                                    event.optInt("queueRemaining", 0),
+                                    isReplay,
+                                )
+                            }
                         }
                         "chat.status" -> {
                             val isSnapshot = event.optBoolean(
@@ -600,7 +639,11 @@ class BridgeClient(
                         }
                         else -> {
                             val message = parseBridgeMessage(event.toString()).message
-                            postApplied { if (message != null) onMessage(message, isReplay) }
+                            if (message != null) {
+                                val prepared = toolReducer.reduce(message)
+                                val weight = maxOf(text.length.toLong(), prepared.text.length.toLong() + (prepared.details?.length ?: 0))
+                                pump.message(eventId, isReplay, prepared, (weight * 2).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                            } else postApplied()
                         }
                     }
                 }
@@ -621,6 +664,7 @@ class BridgeClient(
         )
         connection.setCloseHandler {
             intentionallyClosed.set(true)
+            pump.close()
             synchronized(sendLock) {
                 socketReady = false
                 pendingPayloads.clear()
@@ -693,6 +737,12 @@ class BridgeClient(
         allowPartialOnFailure: Boolean = false,
         onEvent: (JSONObject) -> Unit = {},
     ): BridgeSendResult<List<JSONObject>> {
+        try {
+            withContext(Dispatchers.IO) { beforeSend() }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            return BridgeSendResult(Result.failure(error))
+        }
         return suspendCancellableCoroutine { continuation ->
             val requestBuilder = Request.Builder().url(toWebSocketUrl(machine.endpoint, machine.deviceToken))
             machine.connectionHeaders.forEach { (name, value) ->
@@ -1068,9 +1118,10 @@ data class BridgeSendResult<T>(
     val accepted: Boolean = false,
 )
 
-private inline fun <T, R> BridgeSendResult<T>.map(transform: (T) -> R): BridgeSendResult<R> {
-    return BridgeSendResult(result.mapCatching(transform), accepted = accepted)
-}
+private suspend fun <T, R> BridgeSendResult<T>.map(transform: (T) -> R): BridgeSendResult<R> =
+    withContext(Dispatchers.Default) {
+        BridgeSendResult(result.mapCatching(transform), accepted = accepted)
+    }
 
 private fun Throwable.withReadableMessage(): Throwable {
     val readable = message ?: localizedMessage ?: javaClass.simpleName.ifBlank { "WebSocket connection failed" }

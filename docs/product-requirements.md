@@ -98,6 +98,15 @@ Permission modes for MVP:
 
 ### Chat Detail
 
+- Keep send/navigation responsive while streaming; do not synchronously serialize
+  the entire chat archive on the UI thread.
+- Retain older history on disk and browse it in explicit pages. Long replies/tool
+  outputs must remain accessible through page controls, with no silent truncation.
+- Preserve durable-before-send prompts/cancellations and atomic event/checkpoint
+  recovery while batching updates. Surface storage failures and stop unsafe sends.
+- Automatically migrate the legacy encrypted chat/approval data during upgrade;
+  do not require clearing app data. Explain that legacy APK downgrade is unsupported.
+
 - Show user prompts and agent responses.
 - Stream agent updates when available.
 - Show tool calls inline with status.

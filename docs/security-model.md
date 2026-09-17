@@ -168,6 +168,28 @@ Retries return the existing terminal result, including expiry, without changing 
 The bridge retains the latest 1,000 terminal decisions in memory; approvals are
 not restored across bridge restarts. A denial never falls back to an allow option.
 
+### Android chat storage
+
+Chat bodies, titles, workspace metadata, prompts, tool details, approvals and replay
+cursors are stored as authenticated AES-256-GCM payloads under a dedicated
+Android Keystore key. Record identity is authenticated as associated data. Each
+rewrite uses a fresh nonce. Large ciphertexts are split into small SQLite rows and
+authenticated after reassembly; missing/reordered/modified parts fail closed.
+
+This is record encryption, not whole-database encryption: opaque chat/message/
+approval IDs, row positions, role/kind enums, record sizes and table relationships
+remain visible in SQLite indexes. No plaintext transcript, tool body, command,
+workspace path, identity credential or device token is written to database payloads.
+The database is excluded from cloud backup/device transfer because its Keystore
+key cannot be transferred.
+
+Migration reads existing encrypted preferences and commits all imported data and
+the migration marker together before removing legacy values. It does not permit
+downgrade to a legacy-store-only APK. Storage failures are visible and block sends.
+User prompts/cancel tombstones pass a durability barrier before network transmission;
+received approval changes and their chat cursor commit together, rather than relying
+on separate encrypted preference commits.
+
 ### History snapshot boundaries
 
 Recent-history loads require the session's workspace instead of silently selecting

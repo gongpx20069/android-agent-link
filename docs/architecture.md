@@ -42,6 +42,30 @@ The Python bridge is optimized for MVP speed and cross-platform development. Use
 
 ## App Modules
 
+### Android streaming and persistence
+
+The current single app module uses a shared, ordered `ChatStore` rather than
+serializing the lifetime chat collection for each token. `ChatDatabase` stores
+encrypted message/approval records separately from chat metadata. The single IO
+writer batches changed rows, commits cursor/effects together, and supplies a
+durability barrier before network sends. Activity/service socket ownership remains
+explicit, but both owners use the same cache, write queue and failure state.
+
+The socket reader parses events and reduces tool JSON off main. `ChatEventPump`
+combines only adjacent compatible text/thought deltas or full tool snapshots; it
+keeps controls ordered, bounds queued work, and delivers small main-thread batches.
+The UI still owns its Compose state and applies the resulting callbacks on main;
+this is not a wholesale migration of UI business logic to a worker.
+
+Completed history is paged from disk; the live working set is a recent window plus
+unfinished-turn rows. Markdown parsing uses background conflated snapshots and
+bounded display pages. See `android-app.md` for thresholds and exceptions.
+
+Robolectric and OkHttp MockWebServer are test-only dependencies, added to exercise
+real SQLite transactions, legacy migration, large encrypted records, rollback,
+bounded history growth, and WebSocket durability ordering on hosts without a device.
+These tests do not establish phone frame-time or heap/GC performance.
+
 Planned Android modules:
 
 - `app`: Android entry point and navigation.

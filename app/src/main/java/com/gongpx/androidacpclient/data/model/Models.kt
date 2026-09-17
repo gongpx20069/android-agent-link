@@ -72,6 +72,8 @@ data class Chat(
     val historyHasMore: Boolean = false,
     val historyTotalMessages: Int = 0,
     val lastNotifiedOperationId: String? = null,
+    val timelineId: String = id,
+    val localHistoryBefore: Long? = null,
 )
 
 data class QueuedPrompt(
@@ -127,6 +129,8 @@ data class ChatMessage(
     val details: String? = null,
     val activityId: String? = null,
     val operationId: String? = null,
+    val localId: String = java.util.UUID.randomUUID().toString(),
+    val isToolSnapshot: Boolean = false,
 )
 
 enum class MessageRole {

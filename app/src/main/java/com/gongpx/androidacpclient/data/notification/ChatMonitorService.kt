@@ -35,6 +35,13 @@ import com.gongpx.androidacpclient.data.store.ApprovalStore
 import com.gongpx.androidacpclient.data.store.ChatStore
 import com.gongpx.androidacpclient.data.store.MachineStore
 import com.gongpx.androidacpclient.data.tunnel.TunnelAccounts
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The Activity must release all writers and connections before start, and call stop on the
@@ -50,6 +57,8 @@ class ChatMonitorService : Service() {
     private var acceptingCallbacks = false
     private var deadlineElapsedMillis = Long.MAX_VALUE
     private var ownedRequestEpoch = -1L
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var loadJob: Job? = null
 
     private class LaunchRequest(val epoch: Long, val chatIds: Set<String>)
 
@@ -66,7 +75,15 @@ class ChatMonitorService : Service() {
         super.onCreate()
         instance = this
         notifications = ChatNotificationManager(this)
-        bridgeClient = BridgeClient(TunnelAccounts.get(this)::relayHeaders)
+        chatStore = ChatStore(this)
+        bridgeClient = BridgeClient(
+            TunnelAccounts.get(this)::relayHeaders, chatStore::awaitDurable, { chatStore.batch(it) }, chatStore::readyForEvent,
+        )
+        scope.launch {
+            chatStore.failure.collect { failure ->
+                if (failure != null && acceptingCallbacks) stopWithWarning(R.string.monitor_storage_error)
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -84,7 +101,7 @@ class ChatMonitorService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (_: RuntimeException) {
-            persistStartFailure(this, ids)
+            persistStartFailure(this@ChatMonitorService, ids)
             finishMonitoring()
             return START_NOT_STICKY
         }
@@ -102,30 +119,37 @@ class ChatMonitorService : Service() {
     private fun beginMonitoring(ids: Set<String>) {
         releaseOwnership()
         acceptingCallbacks = true
-        try {
-            chatStore = ChatStore(this)
-            approvalStore = ApprovalStore(this)
-            val machines = MachineStore(this).load().associateBy { it.id }
-            chatStore.load().filter { it.id in ids }.forEach { chat ->
-                val machine = machines[chat.machineId]
-                when {
-                    chat.bridgeResyncRequired -> warn(chat, R.string.monitor_resync_error)
-                    machine == null -> warn(chat, R.string.monitor_machine_missing)
-                    else -> monitored[chat.id] = MonitoredChat(chat, machine)
+        val request = ownedRequestEpoch
+        loadJob = scope.launch {
+            try {
+                val machines = withContext(Dispatchers.IO) {
+                    approvalStore = ApprovalStore(this@ChatMonitorService)
+                    MachineStore(this@ChatMonitorService).load().associateBy { it.id }
                 }
+                val chats = chatStore.loadAsync()
+                if (!acceptingCallbacks || request != ownedRequestEpoch || request != requestEpoch) return@launch
+                chats.filter { it.id in ids }.forEach { chat ->
+                    val machine = machines[chat.machineId]
+                    when {
+                        chat.bridgeResyncRequired -> warn(chat, R.string.monitor_resync_error)
+                        machine == null -> warn(chat, R.string.monitor_machine_missing)
+                        else -> monitored[chat.id] = MonitoredChat(chat, machine)
+                    }
+                }
+                if (monitored.isEmpty()) {
+                    finishMonitoring()
+                } else {
+                    handler.postDelayed(
+                        { stopWithWarning(R.string.monitor_timeout) },
+                        (deadlineElapsedMillis - SystemClock.elapsedRealtime()).coerceAtLeast(0),
+                    )
+                    monitored.values.toList().forEach { connect(it) }
+                }
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                persistStartFailure(this@ChatMonitorService, ids)
+                stopWithWarning(R.string.monitor_storage_error)
             }
-            if (monitored.isEmpty()) {
-                finishMonitoring()
-            } else {
-                handler.postDelayed(
-                    { stopWithWarning(R.string.monitor_timeout) },
-                    (deadlineElapsedMillis - SystemClock.elapsedRealtime()).coerceAtLeast(0),
-                )
-                monitored.values.toList().forEach { connect(it) }
-            }
-        } catch (_: RuntimeException) {
-            persistStartFailure(this, ids)
-            stopWithWarning(R.string.monitor_storage_error)
         }
     }
 
@@ -164,6 +188,7 @@ class ChatMonitorService : Service() {
                 sessionResumable = chat.acpSessionResumable,
                 // Do not resend durable queue entries until attach has ruled out a history gap/reset.
                 queuedPrompts = emptyList(),
+                initialMessages = chat.messages,
                 onMessage = { message, _ ->
                     apply { persist(state, state.chat.copy(messages = state.chat.messages.mergeTimelineMessage(message))) }
                 },
@@ -337,8 +362,7 @@ class ChatMonitorService : Service() {
     }
 
     private fun persist(state: MonitoredChat, chat: Chat) {
-        chatStore.upsert(chat)
-        state.chat = chat
+        state.chat = chatStore.upsert(chat)
     }
 
     private fun warn(chat: Chat, messageId: Int) {
@@ -373,6 +397,8 @@ class ChatMonitorService : Service() {
     // Also cancels already posted retries and invalidates callbacks queued by OkHttp.
     private fun releaseOwnership() {
         acceptingCallbacks = false
+        loadJob?.cancel()
+        loadJob = null
         handler.removeCallbacksAndMessages(null)
         monitored.values.forEach { state ->
             state.connectionEpoch++
@@ -394,6 +420,7 @@ class ChatMonitorService : Service() {
 
     override fun onDestroy() {
         releaseOwnership()
+        scope.cancel()
         if (instance === this) instance = null
         super.onDestroy()
     }
@@ -446,19 +473,23 @@ class ChatMonitorService : Service() {
         }
 
         private fun persistWarning(context: Context, ids: Set<String>, messageId: Int) {
-            val message = context.getString(messageId)
-            val saved = runCatching {
-                val store = ChatStore(context)
-                val notifications = ChatNotificationManager(context)
-                store.load().filter { it.id in ids }.forEach {
-                    store.upsert(it.copy(connectionError = message))
-                    notifications.showMonitorError(it.id, it.title, message)
-                }
-            }
-            if (saved.isFailure) {
-                runCatching {
+            CoroutineScope(Dispatchers.IO).launch {
+                val message = context.getString(messageId)
+                val saved = runCatching {
+                    val store = ChatStore(context)
                     val notifications = ChatNotificationManager(context)
-                    ids.forEach { notifications.showMonitorError(it, context.getString(R.string.app_name), message) }
+                    store.load()
+                    val warned = store.recordConnectionErrors(ids, message)
+                    store.awaitDurable()
+                    warned.forEach {
+                        notifications.showMonitorError(it.id, it.title, message)
+                    }
+                }
+                if (saved.isFailure) {
+                    runCatching {
+                        val notifications = ChatNotificationManager(context)
+                        ids.forEach { notifications.showMonitorError(it, context.getString(R.string.app_name), message) }
+                    }
                 }
             }
         }

@@ -81,6 +81,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.conflate
+import com.gongpx.androidacpclient.data.model.MarkdownBlock
+import com.gongpx.androidacpclient.data.model.parseMarkdownDocument
+import com.gongpx.androidacpclient.data.model.markdownPages
+import com.gongpx.androidacpclient.data.model.detailTextPage
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.foundation.rememberScrollState
@@ -596,7 +605,9 @@ fun AgentLinkApp(
     val approvalStore = remember { ApprovalStore(context.applicationContext) }
     val appSettingsStore = remember { AppSettingsStore(context.applicationContext) }
     val tunnelAccounts = remember { TunnelAccounts.get(context) }
-    val bridgeClient = remember { BridgeClient(tunnelAccounts::relayHeaders) }
+    val bridgeClient = remember {
+        BridgeClient(tunnelAccounts::relayHeaders, chatStore::awaitDurable, { chatStore.batch(it) }, chatStore::readyForEvent)
+    }
     val chatNotificationManager = remember { ChatNotificationManager(context.applicationContext) }
     val updateClient = remember { UpdateClient() }
     val parser = remember { PairingLinkParser() }
@@ -620,6 +631,8 @@ fun AgentLinkApp(
     val sessionLoadingChatIds = remember { mutableStateListOf<String>() }
     val snackbar = remember { SnackbarHostState() }
     var storesLoaded by remember { mutableStateOf(false) }
+    var storageError by remember { mutableStateOf<String?>(null) }
+    var historyDialogChat by remember { mutableStateOf<Chat?>(null) }
     var notificationsEnabled by remember { mutableStateOf(chatNotificationManager.notificationsEnabled()) }
     var selectedTab by remember { mutableStateOf(AppTab.Chats) }
     var selectedChatId by remember { mutableStateOf<String?>(null) }
@@ -647,10 +660,17 @@ fun AgentLinkApp(
         machineStore.upsert(machine)
     }
 
-    fun upsertChat(chat: Chat) {
+    fun upsertChat(chat: Chat, prepend: Boolean = false) {
+        if (storageError != null) return
+        val saved = try {
+            chatStore.upsert(chat, prepend)
+        } catch (error: IllegalStateException) {
+            if (chatStore.failure.value == null) throw error
+            storageError = strings.reliability("Chat storage failed. Sending is stopped.", "聊天存储失败，已停止发送。")
+            return
+        }
         val index = chats.indexOfFirst { it.id == chat.id }
-        if (index >= 0) chats[index] = chat else chats.add(chat)
-        chatStore.upsert(chat)
+        if (index >= 0) chats[index] = saved else chats.add(saved)
     }
 
     fun refreshApprovals() {
@@ -698,17 +718,35 @@ fun AgentLinkApp(
         }
         upsertChat(current.copy(
             messages = messages,
+            timelineId = if (replace) UUID.randomUUID().toString() else current.timelineId,
+            localHistoryBefore = if (replace) null else current.localHistoryBefore,
             historyId = page.historyId,
             historyNextBefore = page.nextBefore,
             historyHasMore = page.hasMore,
             historyTotalMessages = page.totalMessages,
             lastBridgeEventId = if (!prepend) page.latestEventId ?: current.lastBridgeEventId else current.lastBridgeEventId,
             bridgeEventGeneration = if (!prepend) page.eventGeneration ?: current.bridgeEventGeneration else current.bridgeEventGeneration,
-        ))
+        ), prepend = prepend)
     }
 
     fun loadOlderHistory(chat: Chat) {
         if (chat.id in loadingHistoryChatIds) return
+        if (chat.localHistoryBefore != null) {
+            loadingHistoryChatIds.add(chat.id)
+            launchBridge {
+                try {
+                    val page = chatStore.older(chat)
+                    if (chats.none { it.id == chat.id && it.timelineId == chat.timelineId }) return@launchBridge
+                    historyDialogChat = chat.copy(messages = page, localHistoryBefore = if (page.isEmpty()) null else Long.MAX_VALUE)
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException) throw error
+                    showChatAttention(chat.id, strings.reliability("Could not load saved history.", "无法加载已保存的历史记录。"))
+                } finally {
+                    loadingHistoryChatIds.remove(chat.id)
+                }
+            }
+            return
+        }
         val machine = machines.firstOrNull { it.id == chat.machineId } ?: return
         val sessionId = chat.acpSessionId ?: return
         val historyId = chat.historyId ?: return
@@ -717,7 +755,15 @@ fun AgentLinkApp(
         launchBridge {
             try {
                 bridgeClient.loadHistoryPage(machine, chat.id, sessionId, historyId, before, sessionLoadMessageLimit)
-                    .onSuccess { applyHistoryPage(chat.id, it, prepend = true) }
+                    .onSuccess {
+                        val current = chats.firstOrNull { current -> current.id == chat.id } ?: return@onSuccess
+                        if (current.timelineId != chat.timelineId || current.acpSessionId != sessionId || current.historyId != historyId) return@onSuccess
+                        applyHistoryPage(chat.id, it, prepend = true)
+                        historyDialogChat = chat.copy(
+                            messages = it.messages, historyNextBefore = it.nextBefore,
+                            historyHasMore = it.hasMore, localHistoryBefore = null,
+                        )
+                    }
                     .onFailure { error ->
                         showChatAttention(chat.id, strings.reliability(
                             "Could not load older history: ${error.message}. Reopen the session to refresh its snapshot.",
@@ -737,6 +783,7 @@ fun AgentLinkApp(
     }
 
     fun setChatUnread(chatId: String, unread: Boolean) {
+        if (storageError != null || !storesLoaded) return
         if (unread) {
             if (chatId !in unreadChatIds) unreadChatIds.add(chatId)
         } else {
@@ -1226,7 +1273,7 @@ fun AgentLinkApp(
             ).result
                 .onSuccess { events ->
                     val current = chats.firstOrNull { it.id == chat.id } ?: return@onSuccess
-                    upsertChat(current.copy(messages = current.messages + events))
+                    upsertChat(current.copy(messages = events.fold(current.messages) { messages, event -> messages.mergeMessage(event) }))
                 }
                 .onFailure {
                     val current = chats.firstOrNull { current -> current.id == chat.id } ?: return@onFailure
@@ -1375,7 +1422,7 @@ fun AgentLinkApp(
     }
 
     fun ensureChatConnection(chat: Chat): Boolean {
-        if (!appInForeground.value || !uiOwnsConnections || !storesLoaded ||
+        if (storageError != null || !appInForeground.value || !uiOwnsConnections || !storesLoaded ||
             chat.id in authenticationRequiredChatIds || chat.id in sessionLoadingChatIds
         ) return false
         if (chat.id in chatConnections) return true
@@ -1392,6 +1439,7 @@ fun AgentLinkApp(
             sessionId = chat.acpSessionId,
             sessionResumable = chat.acpSessionResumable,
             queuedPrompts = emptyList(),
+            initialMessages = chat.messages,
             onMessage = { event, isReplay ->
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
                 val current = chats.firstOrNull { it.id == chat.id }
@@ -1532,6 +1580,7 @@ fun AgentLinkApp(
                 if (chatConnections[chat.id] === connection) recoverTruncatedHistory(chat.id)
             },
             onFailure = {
+                if (chatStore.failure.value != null) return@openChatConnection
                 if (chatConnections[chat.id] === connection) {
                     chatConnections.remove(chat.id)
                     statusSynchronizedChatIds.remove(chat.id)
@@ -1549,24 +1598,34 @@ fun AgentLinkApp(
     }
 
     LaunchedEffect(Unit) {
-        machines.clear()
-        machines.addAll(machineStore.load())
-        val storedChats = chatStore.load()
-        chats.clear()
-        chats.addAll(storedChats)
-        refreshApprovals()
-        busyChatIds.clear()
-        busyChatIds.addAll(
-            storedChats
-                .filter { chat -> chat.queuedPrompts.any { queued -> !queued.removing } }
-                .map { it.id },
-        )
-        unreadChatIds.clear()
-        unreadChatIds.addAll(chatStore.loadUnreadChatIds().filter { unreadChatId -> chats.any { it.id == unreadChatId } })
-        storesLoaded = true
-        checkForUpdate(manual = false)
+        try {
+            val storedMachines = withContext(Dispatchers.IO) { machineStore.load() }
+            val storedChats = chatStore.loadAsync()
+            machines.addAll(storedMachines)
+            chats.addAll(storedChats)
+            refreshApprovals()
+            unreadChatIds.addAll(chatStore.loadUnreadChatIds().filter { id -> chats.any { it.id == id } })
+            storesLoaded = true
+            checkForUpdate(manual = false)
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            storageError = strings.reliability("Could not load saved data. Restart to retry.", "无法加载已保存的数据，请重启后重试。")
+        }
     }
 
+    LaunchedEffect(Unit) {
+        chatStore.failure.collect { failure ->
+            if (failure != null) {
+                storageError = strings.reliability(
+                    "Chat storage failed. New messages are not confirmed saved; sending is stopped. Restart to retry.",
+                    "聊天存储失败，新消息尚未确认保存，已停止发送。请重启后重试。",
+                )
+                chatConnections.values.toList().forEach { it.close() }
+                chatConnections.clear()
+                foregroundJobs.toList().forEach { it.cancel() }
+            }
+        }
+    }
     LaunchedEffect(notificationPermissionRevision) {
         notificationsEnabled = chatNotificationManager.notificationsEnabled()
     }
@@ -1574,7 +1633,7 @@ fun AgentLinkApp(
     fun handOffToBackground() {
         if (!uiOwnsConnections) return
         uiOwnsConnections = false
-        if (!storesLoaded) return
+        if (!storesLoaded || storageError != null) return
         val monitored = chats.filter {
             it.id in busyChatIds || it.id !in statusSynchronizedChatIds ||
                 it.queuedPrompts.isNotEmpty() || approvals.any { approval -> approval.chatId == it.id && approval.status.isActionable() }
@@ -1608,11 +1667,18 @@ fun AgentLinkApp(
     }
 
     LaunchedEffect(appInForeground.value, uiOwnsConnections, storesLoaded) {
-        if (!storesLoaded) return@LaunchedEffect
+        if (!storesLoaded || storageError != null) return@LaunchedEffect
         if (appInForeground.value && uiOwnsConnections) {
             ChatMonitorService.stop(context.applicationContext)
+            try {
+                chatStore.loadAsync()
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                storageError = strings.reliability("Could not reload saved data. Sending is stopped.", "无法重新加载已保存的数据，已停止发送。")
+                return@LaunchedEffect
+            }
             chats.clear()
-            chats.addAll(chatStore.load())
+            chats.addAll(chatStore.snapshot())
             refreshApprovals()
             unreadChatIds.clear()
             unreadChatIds.addAll(chatStore.loadUnreadChatIds())
@@ -1660,7 +1726,12 @@ fun AgentLinkApp(
         while (true) {
             val unsynchronizedChats = chats.filter { it.id !in statusSynchronizedChatIds && it.id !in authenticationRequiredChatIds }
             if (unsynchronizedChats.isEmpty()) break
-            unsynchronizedChats.forEach(::ensureChatConnection)
+            val inFlight = chatConnections.keys.count { it !in statusSynchronizedChatIds }
+            unsynchronizedChats
+                .filter { it.id !in chatConnections }
+                .sortedByDescending { it.id == selectedChatId || it.id in busyChatIds }
+                .take((3 - inFlight).coerceAtLeast(0))
+                .forEach(::ensureChatConnection)
             delay(retryDelayMillis)
             retryDelayMillis = (retryDelayMillis * 2).coerceAtMost(30_000L)
         }
@@ -1724,6 +1795,41 @@ fun AgentLinkApp(
 
     MaterialTheme {
         CompositionLocalProvider(LocalAppStrings provides strings) {
+        storageError?.let { error ->
+            AlertDialog(
+                onDismissRequest = {},
+                title = { Text(strings.reliability("Storage error", "存储错误")) },
+                text = { Text(error) },
+                confirmButton = {},
+            )
+        }
+        historyDialogChat?.let { page ->
+            AlertDialog(
+                onDismissRequest = { historyDialogChat = null },
+                title = { Text(strings.reliability("Saved history", "已保存的历史")) },
+                text = {
+                    LazyColumn(Modifier.heightIn(max = 480.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (page.messages.isEmpty()) item {
+                            Text(strings.reliability("Beginning of saved history.", "已到本地历史开头。"))
+                        }
+                        items(page.messages, key = { it.localId }, contentType = { it.kind }) { ChatTimelineItem(it) }
+                    }
+                },
+                confirmButton = {
+                    OutlinedButton(onClick = { historyDialogChat = null }) {
+                        Text(strings.reliability("Back to latest", "返回最新消息"))
+                    }
+                },
+                dismissButton = {
+                    if (page.localHistoryBefore != null || page.historyHasMore) {
+                        OutlinedButton(
+                            enabled = page.id !in loadingHistoryChatIds,
+                            onClick = { loadOlderHistory(page) },
+                        ) { Text(strings.reliability("Older", "更早记录")) }
+                    }
+                },
+            )
+        }
         val activeChat = chats.firstOrNull { it.id == selectedChatId }
         val removingPromptIds = activeChat?.queuedPrompts
             ?.filter { it.removing }
@@ -1852,19 +1958,21 @@ fun AgentLinkApp(
                                 }
                             },
                             onSendMessage = { chat, message ->
-                                val machine = machines.firstOrNull { it.id == chat.machineId }
+                                if (storageError != null) return@ChatsScreen
+                                val current = chats.firstOrNull { it.id == chat.id } ?: return@ChatsScreen
+                                val machine = machines.firstOrNull { it.id == current.machineId }
                                 if (machine == null) {
-                                    upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
+                                    upsertChat(current.withMessage(MessageRole.System, strings.machineUnavailable))
                                 } else {
                                     val operationId = "op_" + UUID.randomUUID()
-                                    pendingLocalPromptStartEventIds[chat.id] = chat.lastBridgeEventId
+                                    pendingLocalPromptStartEventIds[chat.id] = current.lastBridgeEventId
                                     if (chat.id !in activePromptOperationIds) {
                                         activePromptOperationIds[chat.id] = operationId
                                     }
                                     if (chat.id !in busyChatIds) busyChatIds.add(chat.id)
-                                    val updated = chat.copy(
+                                    val updated = current.copy(
                                         agentStatus = "busy",
-                                        queuedPrompts = chat.queuedPrompts + QueuedPrompt(
+                                        queuedPrompts = current.queuedPrompts + QueuedPrompt(
                                             operationId = operationId,
                                             text = message,
                                             createdAtMillis = System.currentTimeMillis(),
@@ -1875,11 +1983,11 @@ fun AgentLinkApp(
                                     val activeConnection = chatConnections[chat.id]
                                     val sent = activeConnection?.sendPrompt(
                                         operationId,
-                                        chat.agentId,
-                                        chat.workspacePath,
+                                        current.agentId,
+                                        current.workspacePath,
                                         message,
-                                        chat.acpSessionId,
-                                        chat.acpSessionResumable,
+                                        current.acpSessionId,
+                                        current.acpSessionResumable,
                                     ) == true
                                     if (!sent) {
                                         if (activeConnection != null) {
@@ -2410,12 +2518,15 @@ private fun ChatDetailScreen(
     onCommand: (AvailableCommand) -> Unit,
 ) {
     val strings = LocalAppStrings.current
-    var message by androidx.compose.runtime.saveable.rememberSaveable(chat.id) { mutableStateOf("") }
-    val listState = rememberLazyListState()
+    val visibleMessages = remember(chat.messages) {
+        chat.messages.filter { it.kind != ChatMessageKind.CommandUpdate && it.kind != ChatMessageKind.ConfigUpdate }
+    }
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = visibleMessages.size + approvals.size)
     var previousMessageCount by remember(chat.id) { mutableStateOf(0) }
     var previousFirstMessage by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     BackHandler(onBack = onBack)
-    val commands = remember(chat.messages) {
+    val commandUpdate = chat.messages.lastOrNull { it.kind == ChatMessageKind.CommandUpdate }
+    val commands = remember(commandUpdate) {
         val advertisedCommands = chat.availableCommands()
         buildList {
             add(BUILT_IN_MODEL_COMMAND)
@@ -2425,14 +2536,15 @@ private fun ChatDetailScreen(
             addAll(advertisedCommands.filterNot { it.name in builtIns }.sortedBy { COMMON_COMMAND_ORDER.indexOf(it.name).let { index -> if (index < 0) Int.MAX_VALUE else index } })
         }
     }
-    LaunchedEffect(chat.id, chat.messages.size) {
-        val nearBottom = (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= previousMessageCount - 2
-        val prepended = previousMessageCount > 0 && previousFirstMessage != chat.messages.firstOrNull()
-        if (chat.messages.isNotEmpty() && !loadingHistory && !prepended && (previousMessageCount == 0 || nearBottom)) {
-            listState.scrollToItem(chat.messages.size)
+    LaunchedEffect(chat.id, visibleMessages.size, visibleMessages.lastOrNull()?.localId) {
+        val nearBottom = (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= previousMessageCount + approvals.size - 2
+        val prepended = visibleMessages.size > previousMessageCount && previousMessageCount > 0 &&
+            previousFirstMessage?.localId != visibleMessages.firstOrNull()?.localId
+        if (visibleMessages.isNotEmpty() && !loadingHistory && !prepended && (previousMessageCount == 0 || nearBottom)) {
+            listState.scrollToItem(visibleMessages.size + approvals.size)
         }
-        previousMessageCount = chat.messages.size
-        previousFirstMessage = chat.messages.firstOrNull()
+        previousMessageCount = visibleMessages.size
+        previousFirstMessage = visibleMessages.firstOrNull()
     }
     val density = LocalDensity.current
     val isImeVisible = WindowInsets.ime.getBottom(density) > 0
@@ -2505,13 +2617,13 @@ private fun ChatDetailScreen(
                 contentPadding = PaddingValues(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                item {
+                item(key = "history-header", contentType = "header") {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (chat.bridgeResyncRequired) Text(strings.reliability(
                             "History has a gap. Recovery waits for the active turn to finish; this transcript is not complete.",
                             "历史记录存在缺口，待当前任务结束后恢复；当前显示的记录不完整。",
                         ), color = MaterialTheme.colorScheme.error)
-                        if (chat.historyHasMore) {
+                        if (chat.historyHasMore || chat.localHistoryBefore != null) {
                             Text(strings.reliability(
                                 "Showing a recent history page, not the full session.",
                                 "当前仅显示部分历史，并非完整会话。",
@@ -2520,12 +2632,12 @@ private fun ChatDetailScreen(
                                 Text(if (loadingHistory) strings.loadingSessions else strings.reliability("Load older history", "加载更早记录"))
                             }
                         }
-                        approvals.forEach { approval ->
-                            ApprovalCard(approval, onApprovalDecision)
-                        }
                     }
                 }
-                items(chat.messages) { item ->
+                items(approvals, key = { "approval:${it.id}" }, contentType = { "approval" }) { approval ->
+                    ApprovalCard(approval, onApprovalDecision)
+                }
+                items(visibleMessages, key = { it.localId }, contentType = { it.kind }) { item ->
                     ChatTimelineItem(item)
                 }
             }
@@ -2591,30 +2703,28 @@ private fun ChatDetailScreen(
                         }
                         Spacer(Modifier.height(5.dp))
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        CompactPromptField(
-                            value = message,
-                            onValueChange = { message = it },
-                            modifier = Modifier.weight(1f),
-                        )
-                        Button(
-                            enabled = message.isNotBlank(),
-                            onClick = {
-                                onSendMessage(message)
-                                message = ""
-                            },
-                            modifier = Modifier.defaultMinSize(minWidth = 68.dp, minHeight = 42.dp),
-                        ) {
-                            Text(if (isBusy) strings.appendPrompt else strings.send)
-                        }
-                    }
+                    ChatPromptComposer(chat.id, isBusy, onSendMessage)
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ChatPromptComposer(chatId: String, isBusy: Boolean, onSend: (String) -> Unit) {
+    val strings = LocalAppStrings.current
+    var message by androidx.compose.runtime.saveable.rememberSaveable(chatId) { mutableStateOf("") }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        CompactPromptField(message, { message = it }, modifier = Modifier.weight(1f))
+        Button(
+            enabled = message.isNotBlank(),
+            onClick = {
+                val submitted = message
+                message = ""
+                onSend(submitted)
+            },
+            modifier = Modifier.defaultMinSize(minWidth = 68.dp, minHeight = 42.dp),
+        ) { Text(if (isBusy) strings.appendPrompt else strings.send) }
     }
 }
 
@@ -2841,64 +2951,66 @@ private fun ChatTimelineItem(item: ChatMessage) {
 
 @Composable
 private fun MarkdownMessageText(text: String, color: Color) {
-    val lines = text.lines()
-    var codeFenceLength: Int? = null
-    val codeLines = mutableListOf<String>()
-
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        var lineIndex = 0
-        while (lineIndex < lines.size) {
-            val line = lines[lineIndex]
-            val fenceLength = markdownCodeFenceDelimiterLength(line, codeFenceLength)
-            if (fenceLength != null) {
-                if (codeFenceLength != null) {
-                    CodeBlock(codeLines.joinToString("\n"))
-                    codeLines.clear()
-                    codeFenceLength = null
-                } else {
-                    codeFenceLength = fenceLength
-                }
-                lineIndex++
-                continue
-            }
-
-            if (codeFenceLength != null) {
-                codeLines.add(line)
-                lineIndex++
-                continue
-            }
-
-            val table = parseMarkdownTable(lines, lineIndex)
-            if (table != null) {
-                MarkdownTableBlock(table.table, color)
-                lineIndex += table.consumedLineCount
-                continue
-            }
-
-            val trimmed = line.trim()
-            when {
-                trimmed.isBlank() -> Spacer(Modifier.height(4.dp))
-                trimmed.startsWith("### ") -> Text(parseInlineMarkdown(trimmed.removePrefix("### ")), color = color, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall)
-                trimmed.startsWith("## ") -> Text(parseInlineMarkdown(trimmed.removePrefix("## ")), color = color, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
-                trimmed.startsWith("# ") -> Text(parseInlineMarkdown(trimmed.removePrefix("# ")), color = color, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
-                trimmed.startsWith("- ") || trimmed.startsWith("* ") -> Text(parseInlineMarkdown("• " + trimmed.drop(2)), color = color)
-                trimmed.startsWith("> ") -> QuoteBlock(trimmed.removePrefix("> "), color)
-                else -> Text(parseInlineMarkdown(line), color = color)
-            }
-            lineIndex++
+    val strings = LocalAppStrings.current
+    val latestText by rememberUpdatedState(text)
+    val pages by produceState<List<List<MarkdownBlock>>>(emptyList()) {
+        androidx.compose.runtime.snapshotFlow { latestText }.conflate().collect { source ->
+            value = withContext(Dispatchers.Default) { markdownPages(parseMarkdownDocument(source) { ensureActive() }) }
         }
-        if (codeFenceLength != null && codeLines.isNotEmpty()) {
-            CodeBlock(codeLines.joinToString("\n"))
+    }
+    var page by remember { mutableStateOf(0) }
+    val pageCount = pages.size.coerceAtLeast(1)
+    val visiblePage = page.coerceAtMost(pageCount - 1)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (pages.isEmpty() && text.isNotEmpty()) Text(strings.reliability("Rendering...", "正在排版…"), color = color)
+        pages.getOrNull(visiblePage).orEmpty().forEach { block ->
+            when (block) {
+                is MarkdownBlock.Code -> CodeBlock(block.text)
+                is MarkdownBlock.Table -> MarkdownTableBlock(block.table, color)
+                is MarkdownBlock.Source -> {
+                    Text(strings.reliability("Large table shown as source", "大表格以原文显示"), style = MaterialTheme.typography.labelSmall)
+                    CodeBlock(block.text)
+                }
+                is MarkdownBlock.Line -> {
+                    val line = block.text
+                    val trimmed = line.trim()
+                    when {
+                        trimmed.isBlank() -> Spacer(Modifier.height(4.dp))
+                        trimmed.startsWith("### ") -> Text(parseInlineMarkdown(trimmed.removePrefix("### ")), color = color, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall)
+                        trimmed.startsWith("## ") -> Text(parseInlineMarkdown(trimmed.removePrefix("## ")), color = color, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleMedium)
+                        trimmed.startsWith("# ") -> Text(parseInlineMarkdown(trimmed.removePrefix("# ")), color = color, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                        trimmed.startsWith("- ") || trimmed.startsWith("* ") -> Text(parseInlineMarkdown("• " + trimmed.drop(2)), color = color)
+                        trimmed.startsWith("> ") -> QuoteBlock(trimmed.removePrefix("> "), color)
+                        else -> Text(parseInlineMarkdown(line), color = color)
+                    }
+                }
+            }
+        }
+        if (pageCount > 1) {
+            Text(strings.reliability(
+                "Long response: page ${visiblePage + 1} / $pageCount (all content retained)",
+                "长回复：第 ${visiblePage + 1} / $pageCount 页（内容完整保留）",
+            ), style = MaterialTheme.typography.labelSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(enabled = visiblePage > 0, onClick = { page = visiblePage - 1 }) {
+                    Text(strings.reliability("Previous", "上一页"))
+                }
+                OutlinedButton(enabled = visiblePage + 1 < pageCount, onClick = { page = visiblePage + 1 }) {
+                    Text(strings.reliability("Next", "下一页"))
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun MarkdownTableBlock(table: MarkdownTable, color: Color) {
-    val columnWidths = table.headers.indices.map { columnIndex ->
-        val longestCell = (listOf(table.headers[columnIndex]) + table.rows.map { it[columnIndex] })
-            .maxOf { it.length }
-        (longestCell * 7 + 28).coerceIn(96, 220).dp
+    val columnWidths = remember(table) {
+        table.headers.indices.map { columnIndex ->
+            val longestCell = (listOf(table.headers[columnIndex]) + table.rows.map { it[columnIndex] })
+                .maxOf { it.length }
+            (longestCell * 7 + 28).coerceIn(96, 220).dp
+        }
     }
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -2975,7 +3087,10 @@ private fun QuoteBlock(text: String, color: Color) {
     }
 }
 
-private fun parseInlineMarkdown(input: String): AnnotatedString {
+@Composable
+private fun parseInlineMarkdown(input: String): AnnotatedString = remember(input) { buildInlineMarkdown(input) }
+
+private fun buildInlineMarkdown(input: String): AnnotatedString {
     val builder = AnnotatedString.Builder()
     var index = 0
     while (index < input.length) {
@@ -3083,22 +3198,43 @@ private fun AgentActivityItem(item: ChatMessage) {
             if (expanded && !item.details.isNullOrBlank()) {
                 Spacer(Modifier.height(8.dp))
                 Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)) {
-                    val sections = remember(item.details) { toolActivitySections(item.details) }
+                    val sections by produceState<List<Pair<String, String>>?>(null, item.details) {
+                        value = withContext(Dispatchers.Default) {
+                            toolActivitySections(item.details).ifEmpty { listOf(strings.details to item.details.orEmpty()) }
+                        }
+                    }
                     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        sections.ifEmpty { listOf(strings.details to item.details.orEmpty()) }.forEach { (title, text) ->
+                        if (sections == null) Text(strings.reliability("Loading details...", "正在加载详情…"))
+                        sections.orEmpty().forEach { (title, text) ->
                             Text(title, style = MaterialTheme.typography.labelLarge)
-                            androidx.compose.foundation.text.selection.SelectionContainer {
-                                Text(
-                                    text = text,
-                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                                    fontFamily = FontFamily.Monospace,
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
+                            PagedDetailText(text)
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun PagedDetailText(text: String) {
+    val strings = LocalAppStrings.current
+    var page by remember { mutableStateOf(0) }
+    val count = ((text.length + 4095) / 4096).coerceAtLeast(1)
+    val current = page.coerceAtMost(count - 1)
+    androidx.compose.foundation.text.selection.SelectionContainer {
+        Text(
+            detailTextPage(text, current),
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    if (count > 1) {
+        Text(strings.reliability("Details page ${current + 1}/$count", "详情第 ${current + 1}/$count 页"), style = MaterialTheme.typography.labelSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(enabled = current > 0, onClick = { page = current - 1 }) { Text(strings.reliability("Previous", "上一页")) }
+            OutlinedButton(enabled = current + 1 < count, onClick = { page = current + 1 }) { Text(strings.reliability("Next", "下一页")) }
         }
     }
 }
