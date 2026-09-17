@@ -463,6 +463,7 @@ class TerminalClient:
         if command == "/help":
             self.say("/chats (choose by number) | /use <number> | /new <agent-id> <absolute workspace>\n"
                      "/model (model picker) | /tools (focus tool group) | /pairing (phone QR/link)\n"
+                     "/allow-all (session permissions; choose then y to confirm)\n"
                      "Tab focus | Enter expand | arrows/PgUp/PgDn browse | Left/Right page | Esc input\n"
                      "/approvals | /approve <approval-id> | /deny <approval-id> | /pair y|n\n"
                      "/send <text> (including a leading /) | /quit (stops bridge; /quit! while busy)")

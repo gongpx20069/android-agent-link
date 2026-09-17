@@ -196,6 +196,7 @@ or older evicted entries have explicit notices. Full Android delivery is unchang
 | `/use 2` | Switch directly to chat number 2. |
 | `/tools` | Focus the latest collapsible tool group. |
 | `/model` | Select an advertised model for the current shared chat. |
+| `/allow-all` | Choose session permission setting, Enter to review, then `y` to apply. |
 | `/new copilot-cli C:\Repos\my-project` | Create a terminal-local chat for an installed agent. |
 | `/approvals` | Review pending approval details. |
 | `/approve <approval-id>`, `/deny <approval-id>` | Decide a request; approval requires reviewing it first. |
@@ -208,8 +209,14 @@ For a shared conversation, **create/open it on Android first**. A terminal-local
 `/new` chat is not automatically added to the phone's Chats list. Chat selection
 and terminal history are not persisted across bridge restarts.
 Agent-advertised slash commands also appear in the menu. Unknown commands are
-rejected; terminal input never executes a local shell. `/resume` and `/allow-all`
-remain Android picker actions, not automatically forwarded terminal commands.
+rejected; terminal input never executes a local shell. `/resume` remains an Android
+picker action. `/allow-all` (also `/allow_all`) refreshes the agent's permission
+setting, supports On/Off for boolean options and advertised select choices, and
+requires a separate `y` confirmation after Enter. `n` returns to selection; Esc
+cancels without changing anything. Enabling it may let the agent execute commands
+or edit files without asking in this shared session. Existing approvals are not
+automatically accepted. Changes are refused while busy and synchronized to Android
+only after agent confirmation; unsupported agents are reported explicitly.
 
 This mode displays conversation content rather than bridge event logs, even if
 `--log-level debug` is supplied. Runtime errors remain visible. Pairing uses

@@ -352,8 +352,14 @@ agent-provided choices, and verifies the confirmed value. Chat/session selection
 is pinned to the request. The runtime reserves idle chats across config changes,
 rejecting prompts/history/config races. Session mismatches are checked under the
 agent's chat lock. Configuration responses are sequenced/broadcast to the phone
-and observer without another attach. `/resume` and permission-changing picker
-commands remain explicit Android actions.
+and observer without another attach. `/resume` remains an explicit Android action.
+`/allow-all` uses the same `ConfigPicker` and async config request path, matching
+Android's normalized permission option names. Boolean options become string-valued
+Off/On choices; select options keep advertised values. A separate confirmation
+state requires `y` after choice selection, displays the shared chat/current/target
+values and risk, and never resolves pending approvals. Boolean confirmation accepts
+the agent's boolean or equivalent string result; success still requires the
+requested value. The status area displays the latest permission configuration.
 
 Interactive pairing uses a bounded confirmation broker with the same runtime
 console lock. `/pair y|n` answers a displayed request; there is no competing

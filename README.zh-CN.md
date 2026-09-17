@@ -176,6 +176,7 @@ Agent 回复支持 **Markdown**，包括标题、强调、代码和表格，流�
 | `/use 2` | 直接切换到编号 2 的聊天。 |
 | `/tools` | 定位最新的可折叠工具组。 |
 | `/model` | 为当前共享聊天选择 agent 提供的模型。 |
+| `/allow-all` | 选择当前会话权限，回车查看确认页，再按 `y` 应用。 |
 | `/new copilot-cli C:\Repos\my-project` | 为已安装的 agent 创建终端本地会话。 |
 | `/approvals` | 查看待审批请求的详细内容。 |
 | `/approve <approval-id>`、`/deny <approval-id>` | 批准或拒绝；批准前必须先查看详情。 |
@@ -188,7 +189,12 @@ Agent 回复支持 **Markdown**，包括标题、强调、代码和表格，流�
 终端 `/new` 创建的会话不会自动加入 Android 的 Chats 列表。
 终端会话选择和输入历史不会跨 bridge 重启保存。
 Agent 声明支持的斜杠命令也会出现在菜单里。未知命令明确拒绝，不会在本机执行 shell。
-`/resume` 和 `/allow-all` 暂时仍使用 Android 的会话/权限选择器，不会被终端自动转发。
+`/resume` 暂时仍使用 Android 的会话选择器。
+`/allow-all`（也支持 `/allow_all`）会刷新 agent 的权限配置：布尔配置显示 On/Off，
+选择类型显示 agent 提供的选项。方向键选择、回车进入风险确认页，按 `y` 应用，
+`n` 返回选择，`Esc` 取消。开启后，agent 可能不再逐次询问就执行命令或修改文件，
+作用于当前手机/电脑共享会话；不会自动批准已有的待审批请求。
+任务或审批进行中禁止修改，只有 agent 确认后才报告成功并同步 Android；不支持时明确提示。
 
 此模式显示对话内容，不打印 bridge 事件日志，即使传入 `--log-level debug` 也一样；
 运行错误仍会显示。配对统一使用 `/pair y|n`，避免与聊天输入抢键盘，

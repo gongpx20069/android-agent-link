@@ -156,7 +156,23 @@ class Transcript:
 
 def model_option(options: list[dict[str, Any]]) -> dict[str, Any] | None:
     return next((option for option in options
-                 if option.get("category") == "model" or str(option.get("id", "")).lower() == "model"), None)
+                 if isinstance(option, dict)
+                 and (option.get("category") == "model" or str(option.get("id", "")).lower() == "model")), None)
+
+
+def allow_all_option(options: list[dict[str, Any]]) -> dict[str, Any] | None:
+    keys = {"allowall", "allowallpermissions", "autoapprove", "autoapproval"}
+    return next((option for option in options if isinstance(option, dict) and any(
+        "".join(c for c in str(option.get(field, "")).lower() if c.isalnum()) in keys
+        for field in ("id", "name", "category")
+    )), None)
+
+
+def config_value(option: dict[str, Any]) -> str:
+    value = option.get("currentValue", "")
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def model_choices(option: dict[str, Any]) -> list[tuple[str, str]]:

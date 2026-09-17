@@ -64,6 +64,9 @@ Chat
 - Provide slash completion and an agent-backed `/model` picker. Confirm changes
   before displaying success and synchronize configuration to the phone. Reject
   busy/stale-session changes without freezing input or bypassing approval.
+- Provide `/allow-all` through the same shared configuration path: display current
+  state, support advertised boolean/select choices, require a separate risk
+  confirmation, and never auto-resolve pending approvals or invent unsupported options.
 - Keep prompts and approval details literal. Markdown must not execute code,
   fetch images, open links or pass remote terminal control sequences through.
 - Avoid duplicate input echoes and per-update tool lines. Retain bounded completed

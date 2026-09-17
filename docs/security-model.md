@@ -259,8 +259,16 @@ session operation. Requests are pinned to their chat/session; stale session
 selections are rejected under the agent lock. Configuration broadcasts reuse the
 authenticated Android subscriber, not a new endpoint or anonymous attach.
 Unknown slash commands are not prompts or shell commands; advertised agent
-commands use the existing prompt/approval path. `/resume` and `/allow-all` are
-reserved for Android's explicit session/permission UX.
+commands use the existing prompt/approval path. `/resume` is reserved for Android's
+explicit session UX. `/allow-all` is a terminal configuration picker, never a
+prompt or a raw CLI flag. Only agent-advertised boolean/select permission options
+are offered. Enter selects but does not apply: a separate risk confirmation
+identifies the shared session and target value and requires `y`; `n` returns to
+selection and Esc cancels. Automatic permission may let the agent execute commands
+or modify files without per-action prompts. Configuration never approves existing
+requests, and runtime busy/approval/session guards remain authoritative. There is
+no bridge-wide auto-approval toggle, arbitrary inline value or unsupported-agent
+fallback. Agent confirmation is required before reporting success.
 
 - Bridge runtime logging is metadata-only at both `info` and `debug`: no prompt,
   reply/thought body, tool title/content/arguments, raw error payload or request URL

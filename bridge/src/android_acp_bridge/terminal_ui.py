@@ -26,7 +26,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
 from .terminal_render import MarkdownStream, display_text
-from .terminal_state import Entry, Transcript, model_choices, model_option
+from .terminal_state import Entry, Transcript, allow_all_option, config_value, model_choices, model_option
 
 if TYPE_CHECKING:
     from .terminal import TerminalClient
@@ -54,18 +54,26 @@ def wrap_display_line(fragments: list[tuple[str, str]], width: int) -> list[list
 
 
 @dataclass
-class ModelPicker:
+class ConfigPicker:
     chat_id: str
     session_id: str | None
     config_id: str
     current: str
     choices: list[tuple[str, str]]
     selected: int = 0
+    command: str = "/model"
+    boolean: bool = False
+    confirming: bool = False
+
+    @property
+    def title(self) -> str:
+        return "Allow all" if self.command == "/allow-all" else "Model"
 
 
 class SlashCompleter(Completer):
     COMMANDS = {
         "/model": "Choose the model for this chat",
+        "/allow-all": "Change session permissions (explicit confirmation)",
         "/tools": "Focus expandable tools",
         "/chats": "Choose shared phone chat by number",
         "/use": "Switch to a chat number",
@@ -93,7 +101,7 @@ class SlashCompleter(Completer):
             chat = self.client.chats.get(self.client.selected or "")
             for command in chat.commands if chat else []:
                 name = "/" + command["name"].lstrip("/")
-                if name not in {"/resume", "/allow-all", "/allow_all"}:
+                if name not in {"/resume", "/allow_all"}:
                     commands.setdefault(name, "Agent: " + command["description"])
         for name, description in commands.items():
             if name.startswith(word):
@@ -176,7 +184,7 @@ class FullScreenTerminal:
         self.previous_console_write = self.client.runtime.console.write if self.client.runtime else None
         if self.client.runtime:
             self.client.runtime.console.write = self.write
-        self.picker: ModelPicker | None = None
+        self.picker: ConfigPicker | None = None
         self.show_pairing = False
         self.pairing_line = 0
         self.pairing_column = 0
@@ -246,6 +254,8 @@ class FullScreenTerminal:
             chat = self.client.chats.get(self.client.selected or "")
             option = model_option(chat.config_options) if chat else None
             model = display_text(str(option.get("currentValue", "unknown"))) if option else "not loaded (/model)"
+            permission = allow_all_option(chat.config_options) if chat else None
+            allow_all = display_text(config_value(permission)) if permission else "unknown"
             state = chat.status if chat else "No chat"
             queued = chat.queued_count if chat else 0
             attention = self.client.toolbar(500)
@@ -256,11 +266,11 @@ class FullScreenTerminal:
             if pending:
                 extra += f" | {pending} approval(s): /approvals"
         if self.config_busy:
-            extra += " | Loading/changing model..."
+            extra += " | Loading/changing config..."
         if self.show_pairing:
             hint = "PAIRING QR/link | arrows scroll | Esc returns to chat | restart bridge if expired"
         return [
-            ("", f" {state} | Model: {model[:80]} | Queue: {queued}{extra}\n"),
+            ("", f" {state} | Model: {model[:40]} | Allow all: {allow_all[:20]} | Queue: {queued}{extra}\n"),
             ("", f" {hint}\n"),
             ("", " Tab focus | Enter expand | PgUp/PgDn scroll | Left/Right details page | Esc input | /help"),
         ]
@@ -338,16 +348,34 @@ class FullScreenTerminal:
         for key, delta in (("up", -1), ("down", 1)):
             @kb.add(key, filter=picking)
             def pick(event, delta=delta):
-                if self.picker:
+                if self.picker and not self.picker.confirming:
                     self.picker.selected = (self.picker.selected + delta) % len(self.picker.choices)
 
         @kb.add("enter", filter=picking)
         def confirm(event):
             picker = self.picker
             if picker:
+                if picker.command == "/allow-all":
+                    picker.confirming = True
+                    return
                 self.picker = None
                 self.app.layout.focus(self.input_control)
-                self.start(self.set_model(picker))
+                self.config_busy = True
+                self.start(self.set_config(picker))
+
+        @kb.add("y", filter=picking)
+        def confirm_permissions(event):
+            picker = self.picker
+            if picker and picker.confirming:
+                self.picker = None
+                self.app.layout.focus(self.input_control)
+                self.config_busy = True
+                self.start(self.set_config(picker))
+
+        @kb.add("n", filter=picking)
+        def decline_permissions(event):
+            if self.picker and self.picker.confirming:
+                self.picker.confirming = False
 
         for key, delta in (("up", -1), ("down", 1), ("pageup", -12), ("pagedown", 12)):
             @kb.add(key, filter=pairing)
@@ -376,20 +404,21 @@ class FullScreenTerminal:
             self.pairing_line = self.pairing_column = 0
             self.app.layout.focus(self.pairing_control)
             return True
-        if command in {"/resume", "/allow-all", "/allow_all"}:
+        if command == "/resume":
             self.write("Use Android's session/permission picker for this action. It is not forwarded as an ordinary terminal command.")
             return True
-        if command == "/model":
-            if line.strip() != "/model":
-                self.write("Use /model and choose an advertised model; arbitrary model IDs are not accepted.")
+        if command in {"/model", "/allow-all", "/allow_all"}:
+            normalized = "/allow-all" if command == "/allow_all" else command
+            if line.strip() != command:
+                self.write(f"Use {normalized} and choose an advertised setting; inline values are not accepted.")
             elif self.config_busy:
-                self.write("A model request is already in progress.")
+                self.write("A configuration request is already in progress.")
             elif self.client._choosing_chat:
-                self.write("Finish or cancel /chats selection before opening /model.")
+                self.write(f"Finish or cancel /chats selection before opening {normalized}.")
             else:
                 self.config_busy = True
                 self.model_request_id += 1
-                self.start(self.open_models(self.client.selected or "", self.model_request_id))
+                self.start(self.open_config(self.client.selected or "", self.model_request_id, normalized))
             return True
         if command == "/tools":
             rows = [r for r in self.transcript.visible(self.client.selected) if r.kind == "Tools"]
@@ -429,7 +458,7 @@ class FullScreenTerminal:
             if chat is None or not chat.agent_id or not chat.workspace:
                 raise ValueError("Choose a chat first with /chats.")
             if chat.status in {"busy", "waitingApproval"}:
-                raise ValueError("Chat is busy. Finish its task or approval before changing models.")
+                raise ValueError("Chat is busy. Finish its task or approval before changing configuration.")
             return {"chatId": chat_id, "agentId": chat.agent_id, "workspacePath": chat.workspace,
                     "sessionId": chat.session_id, "sessionResumable": chat.resumable}
 
@@ -451,50 +480,58 @@ class FullScreenTerminal:
             raise ValueError("Agent returned an invalid configuration response.")
         return options
 
-    async def open_models(self, chat_id: str, request_id: int) -> None:
+    async def open_config(self, chat_id: str, request_id: int, command: str) -> None:
         self.config_busy = True
+        title = "Allow all" if command == "/allow-all" else "Model"
         try:
             payload = self.config_payload(chat_id)
             options = await self.config_request({**payload, "type": "session.refreshConfigOptions"})
-            option = model_option(options)
-            choices = model_choices(option) if option else []
-            if option is None or option.get("type") != "select" or not choices:
-                raise ValueError("This agent does not advertise a selectable model.")
+            option = allow_all_option(options) if command == "/allow-all" else model_option(options)
+            boolean = command == "/allow-all" and option is not None and option.get("type") == "boolean"
+            choices = ([("false", "Off"), ("true", "On")] if boolean else
+                       model_choices(option) if option and option.get("type") == "select" else [])
+            if not option or not isinstance(option.get("id"), str) or not option["id"] or not choices:
+                raise ValueError(f"This agent does not advertise a selectable {title.lower()} setting.")
             if self.client.selected != chat_id:
-                self.write("Model list loaded for the previous chat. Use /model in the selected chat.")
+                self.write(f"{title} list loaded for the previous chat. Use {command} in the selected chat.")
                 return
             if (request_id != self.model_request_id or self.buffer.text
                     or not self.app.layout.has_focus(self.input_control)):
-                self.write("Model list refreshed without interrupting input. Use /model when ready.")
+                self.write(f"{title} list refreshed without interrupting input. Use {command} when ready.")
                 return
             with self.client._lock:
                 session = self.client.chats[chat_id].session_id
-            current = str(option.get("currentValue", ""))
-            self.picker = ModelPicker(chat_id, session, str(option["id"]), current, choices,
-                                      next((i for i, (value, _) in enumerate(choices) if value == current), 0))
+            current = config_value(option)
+            self.picker = ConfigPicker(chat_id, session, option["id"], current, choices,
+                                      next((i for i, (value, _) in enumerate(choices) if value == current), 0),
+                                      command, boolean)
             self.app.layout.focus(self.picker_control)
         except Exception as error:
-            self.write("Model: " + display_text(str(error))[:1024])
+            self.write(title + ": " + display_text(str(error))[:1024])
         finally:
             self.config_busy = False
             self.app.invalidate()
 
-    async def set_model(self, picker: ModelPicker) -> None:
+    async def set_config(self, picker: ConfigPicker) -> None:
         self.config_busy = True
         try:
+            if picker.command == "/allow-all" and not picker.confirming:
+                raise ValueError("Permission changes require explicit confirmation.")
             payload = self.config_payload(picker.chat_id)
-            if payload["sessionId"] != picker.session_id:
-                raise ValueError("Session changed. Reopen /model before selecting.")
+            if self.client.selected != picker.chat_id or payload["sessionId"] != picker.session_id:
+                raise ValueError(f"Session changed. Reopen {picker.command} before selecting.")
             value, label = picker.choices[picker.selected]
             options = await self.config_request({
                 **payload, "type": "session.setConfigOption", "configId": picker.config_id, "value": value,
             })
             actual = next((o for o in options if isinstance(o, dict) and o.get("id") == picker.config_id), None)
-            if actual is None or actual.get("currentValue") != value:
-                raise ValueError("Agent did not confirm the selected model; refresh /model.")
-            self.write(f"[{self.client.chat_label(picker.chat_id)}] Model changed: {label}")
+            actual_value = config_value(actual) if actual is not None and picker.boolean else (
+                actual.get("currentValue") if actual is not None else None)
+            if actual_value != value:
+                raise ValueError(f"Agent did not confirm the selected setting; refresh {picker.command}.")
+            self.write(f"[{self.client.chat_label(picker.chat_id)}] {picker.title} changed: {label}")
         except Exception as error:
-            self.write("Model change failed: " + display_text(str(error))[:1024])
+            self.write(picker.title + " change failed: " + display_text(str(error))[:1024])
         finally:
             self.config_busy = False
             self.app.invalidate()
@@ -503,7 +540,15 @@ class FullScreenTerminal:
         picker = self.picker
         if picker is None:
             return []
-        lines = [("", " Model | " + self.client.chat_label(picker.chat_id) + "\n"),
+        if picker.confirming:
+            value, label = picker.choices[picker.selected]
+            return [("", " Allow all | " + self.client.chat_label(picker.chat_id) + "\n\n"),
+                    ("", f" Current: {display_text(picker.current)}\n Set to: {label} ({display_text(value)})\n\n"),
+                    ("class:notice", " Enabling automatic permission may let the agent run commands\n"
+                     " and modify files without asking. Scope: this shared session.\n"
+                     " Existing pending approvals are not approved by this command.\n\n"),
+                    ("", " y: apply | n: back | Esc: cancel (no change)")]
+        lines = [("", f" {picker.title} | " + self.client.chat_label(picker.chat_id) + "\n"),
                  ("", " Up/Down choose | Enter confirm | Esc cancel\n\n")]
         start = max(0, picker.selected - 4)
         for i, (value, label) in enumerate(picker.choices[start:start + 8], start):

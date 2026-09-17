@@ -19,6 +19,13 @@ No extra attach or subscriber replacement is required. Failures retain the exist
 failed tool-update shape. Configuration values are authoritative only after an
 agent response, never optimistically on selection.
 
+The terminal `/allow-all` picker reuses these requests, with no new permission API.
+It sends the actual advertised config ID and exact select value; advertised boolean
+options use string values `"true"`/`"false"`, consistent with Android. A boolean
+`currentValue` in the response is normalized for confirmation/display. The CLI
+requires an explicit permission confirmation before sending the set request;
+existing pending approvals and busy-session guards are unchanged.
+
 Preferred MVP transport:
 
 - WebSocket for interactive chat, streaming updates, and approvals.

@@ -256,6 +256,19 @@ errors, not silently forwarded `/model` prompts. Confirmed changes are sequenced
 and broadcast to Android through its existing subscriber. No Android update is
 required for the existing config-update event shape.
 
+`/allow-all` (alias `/allow_all`) uses the same asynchronous configuration picker
+and shared-session guards. It matches the Android option names (`allow_all`,
+`allowAll`, `Allow All`, `allowAllPermissions`, `autoApprove`, `autoApproval`) across
+ID, name and category. Advertised boolean options offer Off/On with string wire
+values `"false"`/`"true"`; select options preserve the exact advertised values.
+No option is invented for an unsupported agent. Enter opens a separate risk
+confirmation showing the chat, current value and requested value: `y` applies,
+`n` goes back and Esc cancels. Repeated Enter does not authorize the change.
+Enabling automatic permission may allow command execution/file modification
+without per-action prompts in this shared session. It never resolves existing
+pending approvals. Confirmed values appear in the status area and are broadcast
+to Android. Busy/stale sessions, rejection and unconfirmed values remain errors.
+
 Agent Markdown (headings, emphasis, code, tables) is rendered in place and cached,
 including incomplete streaming text, without repeating the final reply. Replies
 over 8 Ki characters use source-text pages to keep layout bounded; tool details
@@ -281,11 +294,11 @@ Links/images do not fetch resources or execute code. `NO_COLOR=1` enables monoch
 - `/send <text>` can send messages beginning with `/`. Unknown commands are
   rejected, never run as shell commands. Advertised agent commands are available
   directly and in completion; reserved names keep AgentLink meaning. `/resume`
-  and `/allow-all` remain explicit Android picker actions.
+  remains an explicit Android picker action; `/allow-all` is the local config picker.
 - `/quit` stops the bridge when idle; `/quit!` permits stopping during active work.
   Ctrl+C clears input only; Ctrl+D requests ordinary quit. EOF/closing the terminal stops the bridge. Shutdown
   disconnects Android and denies outstanding pairing; it is not a promise that
-  an external agent's already-running command is cancelled. An in-flight model
+  an external agent's already-running command is cancelled. An in-flight configuration
   request completes under the agent's bounded timeout before worker shutdown.
 
 `--interactive` requires a TTY and `--server stdlib`. Missing dependencies and

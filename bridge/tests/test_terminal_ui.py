@@ -8,11 +8,12 @@ import unittest
 from unittest.mock import patch
 
 from android_acp_bridge.config import BridgeConfig
+from android_acp_bridge.acp_agent import AcpAgentError
 from android_acp_bridge.console_log import ConsoleLog
 from android_acp_bridge.pairing import PairingStore
 from android_acp_bridge.runtime import BridgeRuntime
 from android_acp_bridge.terminal import TerminalClient
-from android_acp_bridge.terminal_state import Transcript, project_tool, model_choices
+from android_acp_bridge.terminal_state import Transcript, project_tool, model_choices, allow_all_option, config_value
 from test_runtime import FakeAgentManager, BlockingAgentManager
 
 HAS_INTERACTIVE = all(importlib.util.find_spec(module) for module in ("prompt_toolkit", "rich", "markdown_it"))
@@ -21,6 +22,26 @@ HAS_INTERACTIVE = all(importlib.util.find_spec(module) for module in ("prompt_to
 def update(kind: str, chat: str = "one", operation: str = "op", **fields):
     return {"type": "session/update", "chatId": chat, "operationId": operation,
             "update": {"sessionUpdate": kind, **fields}}
+
+
+class PermissionAgentManager(FakeAgentManager):
+    def __init__(self, option=None, error=None, confirm=True):
+        super().__init__()
+        self.option = option or {"id": "allow_all", "name": "Allow All", "type": "boolean", "currentValue": False}
+        self.changes = []
+        self.error = error
+        self.confirm = confirm
+
+    def refresh_config_options(self, *args, **kwargs):
+        return [update("config_option_update", configOptions=[self.option.copy()])]
+
+    def set_config_option(self, chat_id, agent_id, workspace_path, config_id, value, *args):
+        self.changes.append((chat_id, config_id, value))
+        if self.error:
+            raise AcpAgentError(self.error)
+        if self.confirm:
+            self.option["currentValue"] = value == "true" if self.option["type"] == "boolean" else value
+        return self.refresh_config_options()
 
 
 class TranscriptTests(unittest.TestCase):
@@ -69,6 +90,16 @@ class TranscriptTests(unittest.TestCase):
             {"group": "Provider", "options": [{"value": "model-a", "name": "\x1b[2JModel A"}]},
             {"value": "model-b", "name": "Model B"},
         ]}), [("model-a", "Model A"), ("model-b", "Model B")])
+
+    def test_permission_names_match_android_and_booleans_keep_wire_values(self):
+        for key in ("allow_all", "allowAll", "Allow All", "allow-all-permissions", "autoApprove", "autoApproval"):
+            for field in ("id", "category", "name"):
+                option = {field: key}
+                self.assertIs(allow_all_option([None, {}, option]), option)
+        self.assertIsNone(allow_all_option([{"id": "model"}]))
+        self.assertEqual(config_value({"currentValue": True}), "true")
+        self.assertEqual(config_value({"currentValue": False}), "false")
+        self.assertEqual(config_value({"currentValue": "custom"}), "custom")
 
 
 class SharedConfigTests(unittest.TestCase):
@@ -385,8 +416,7 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("without interrupting", self.screen())
 
     async def test_reserved_commands_and_display_eviction_cannot_authorize(self):
-        for command in ("/resume", "/allow-all", "/allow_all"):
-            self.ui.submit(command)
+        self.ui.submit("/resume")
         await asyncio.sleep(0.2)
         self.assertFalse(self.runtime._prompt_operations)
         self.assertIn("Android", self.screen())
@@ -399,6 +429,104 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
         for index in range(150):
             self.ui.write(str(index))
         self.assertFalse(self.client._reviewed)
+
+    async def test_allow_all_requires_confirmation_and_syncs_on_and_off(self):
+        manager = PermissionAgentManager()
+        self.runtime.agent_manager = manager
+        subscriber = self.runtime._chat_emitters["one"]
+        for command, value, keys in (("/allow-all", "true", b"\x1b[B\r"), ("/allow_all", "false", b"\x1b[A\r")):
+            self.pipe.send_text(command + "\r")
+            await asyncio.sleep(0.25)
+            self.assertIsNotNone(self.ui.picker)
+            count = len(manager.changes)
+            self.pipe.send_bytes(keys)
+            await asyncio.sleep(0.15)
+            self.assertTrue(self.ui.picker.confirming)
+            self.assertIn("without asking", self.screen())
+            self.assertEqual(len(manager.changes), count)
+            self.pipe.send_bytes(b"\r")
+            await asyncio.sleep(0.1)
+            self.assertEqual(len(manager.changes), count)
+            self.pipe.send_text("y")
+            await asyncio.sleep(0.25)
+            self.assertEqual(manager.changes[-1], ("one", "allow_all", value))
+            self.assertIsNone(self.ui.picker)
+            self.assertIn("Allow all changed", self.screen())
+            self.assertEqual(config_value(self.client.chats["one"].config_options[0]), value)
+        self.assertIs(self.runtime._chat_emitters["one"], subscriber)
+        configs = [e for e in self.phone if e.get("update", {}).get("sessionUpdate") == "config_option_update"]
+        self.assertTrue(all("eventId" in e for e in configs))
+        self.assertEqual(configs[-1]["update"]["configOptions"][0]["currentValue"], False)
+        self.assertFalse(self.runtime._prompt_operations)
+
+    async def test_allow_all_cancel_back_and_inline_values_do_not_apply(self):
+        manager = PermissionAgentManager()
+        self.runtime.agent_manager = manager
+        self.ui.submit("/allow-all true")
+        await asyncio.sleep(0.15)
+        self.assertIsNone(self.ui.picker)
+        self.ui.submit("/allow-all")
+        await asyncio.sleep(0.2)
+        self.pipe.send_bytes(b"\x1b[B\r")
+        await asyncio.sleep(0.15)
+        self.pipe.send_text("n")
+        await asyncio.sleep(0.1)
+        self.assertFalse(self.ui.picker.confirming)
+        self.pipe.send_bytes(b"\r\x1b")
+        await asyncio.sleep(0.6)
+        self.assertIsNone(self.ui.picker)
+        self.assertFalse(manager.changes)
+
+    async def test_allow_all_select_preserves_exact_ids_and_values(self):
+        manager = PermissionAgentManager({
+            "id": "permission-policy", "name": "Auto Approve", "type": "select",
+            "currentValue": "ask-first", "options": [
+                {"value": "ask-first", "name": "Ask"}, {"value": "all-tools", "name": "Allow"},
+            ],
+        })
+        self.runtime.agent_manager = manager
+        self.ui.submit("/allow-all")
+        await asyncio.sleep(0.2)
+        self.pipe.send_bytes(b"\x1b[B\ry")
+        await asyncio.sleep(0.25)
+        self.assertEqual(manager.changes, [("one", "permission-policy", "all-tools")])
+        self.assertIn("Allow all changed", self.screen())
+
+    async def test_allow_all_unsupported_busy_and_stale_session_fail_closed(self):
+        self.ui.submit("/allow-all")
+        await asyncio.sleep(0.2)
+        self.assertIsNone(self.ui.picker)
+        self.assertIn("does not advertise", self.screen())
+        manager = PermissionAgentManager()
+        self.runtime.agent_manager = manager
+        self.ui.submit("/allow-all")
+        await asyncio.sleep(0.2)
+        self.client.chats["one"].session_id = "replacement"
+        self.pipe.send_bytes(b"\x1b[B\ry")
+        await asyncio.sleep(0.2)
+        self.assertFalse(manager.changes)
+        self.assertIn("Session changed", self.screen())
+        self.ui.submit("/allow-all")
+        await asyncio.sleep(0.2)
+        self.client.chats["one"].status = "waitingApproval"
+        self.pipe.send_bytes(b"\x1b[B\ry")
+        await asyncio.sleep(0.2)
+        self.assertFalse(manager.changes)
+        self.assertIn("Chat is busy", self.screen())
+        self.assertFalse(self.runtime._configuring_chats)
+
+    async def test_allow_all_agent_rejection_or_unconfirmed_value_is_not_success(self):
+        for manager in (PermissionAgentManager(error="Permission setting rejected"), PermissionAgentManager(confirm=False)):
+            self.runtime.agent_manager = manager
+            self.ui.submit("/allow-all")
+            await asyncio.sleep(0.2)
+            self.pipe.send_bytes(b"\x1b[B\ry")
+            await asyncio.sleep(0.25)
+            self.assertEqual(len(manager.changes), 1)
+            self.assertIn("Allow all change failed", self.screen())
+            self.assertNotIn("Allow all changed:", self.screen())
+            self.assertFalse(self.ui.config_busy)
+            self.assertFalse(self.runtime._configuring_chats)
 
     async def test_rerender_uses_cached_old_messages_and_failure_stays_visible(self):
         for i in range(80):
