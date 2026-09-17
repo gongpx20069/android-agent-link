@@ -57,6 +57,13 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Common command chips are prioritized before other ACP-advertised commands: `model`, `resume`, and `allow-all`.
 - Built-in `allow-all` opens an on/off picker when the ACP agent exposes the `allow_all` session config option.
 - Agent/system message bubbles render basic Markdown: headings, bullets, quotes, fenced code blocks, pipe tables, bold, italic, inline code, and link-style text. Tables honor Markdown column alignment and scroll horizontally when wider than the message bubble.
+- Message bodies support long-press text selection. Copy all copies the original
+  message source across pages; code sections and expanded activity/detail sections
+  have explicit copy actions. Tool expansion is restricted to the header so detail
+  selection does not collapse the card. Clipboard errors are shown to the user.
+  Copy refuses text above 128 Ki UTF-16 code units rather than risking oversized
+  Android Binder transfers or silently truncating; smaller visible text remains
+  selectable. Streamed messages copy the current source snapshot on click.
 - Collapsible agent activity cards for ACP `tool_call` and `tool_call_update` events.
 - ACP `plan` updates render as a dedicated compact progress card with step status and priority indicators; each full plan update replaces the previous card instead of appearing as a Tool Call activity.
 - Approval list with approve/deny actions backed by ACP `session/request_permission`.

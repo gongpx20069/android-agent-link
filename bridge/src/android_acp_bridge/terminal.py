@@ -464,6 +464,8 @@ class TerminalClient:
             self.say("/chats (choose by number) | /use <number> | /new <agent-id> <absolute workspace>\n"
                      "/model (model picker) | /tools (focus tool group) | /qrcode or /pairing (phone QR/link)\n"
                      "/allow-all (session permissions; choose then y to confirm)\n"
+                     "/copy (latest reply) | Ctrl+Y in conversation (selected message/tool)\n"
+                     "/mouse (toggle app mouse handling for native text selection)\n"
                      "Tab focus | Enter expand | arrows/PgUp/PgDn browse | Left/Right page | Esc input\n"
                      "/approvals | /approve <approval-id> | /deny <approval-id> | /pair y|n\n"
                      "/send <text> (including a leading /) | /quit (stops bridge; /quit! while busy)")

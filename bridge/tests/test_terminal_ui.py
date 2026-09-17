@@ -494,6 +494,58 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.ui.show_pairing)
         self.assertIn("incoming 29", self.screen())
 
+    async def test_copy_latest_uses_retained_source_not_page_or_other_chat(self):
+        source = "# Title\n```python\n  print('\u4e2d\u6587')\n```\n" + "body\n" * 3000
+        row = self.ui.transcript.add("one", "copy", "Agent", source)
+        row.page = 1
+        self.ui.transcript.add("two", "other", "Agent", "wrong chat")
+        with patch("android_acp_bridge.terminal_ui.copy_text") as copy:
+            self.pipe.send_text("/copy\r")
+            await asyncio.sleep(0.3)
+            copy.assert_called_once_with(source)
+        self.assertFalse(self.runtime._prompt_operations)
+        self.assertIn("Copied retained source", self.screen())
+
+    async def test_copy_selected_tool_warns_when_truncated_and_preserves_draft(self):
+        self.client.observe_event(update("tool_call", toolCallId="tool", rawOutput="x" * 100000))
+        await asyncio.sleep(0.2)
+        self.pipe.send_text("draft")
+        await asyncio.sleep(0.1)
+        self.ui.submit("/tools")
+        with patch("android_acp_bridge.terminal_ui.copy_text") as copy:
+            self.pipe.send_bytes(b"\x1b[B\x19")
+            await asyncio.sleep(0.3)
+            self.assertEqual(copy.call_count, 1)
+            copied = json.loads(copy.call_args.args[0])
+            self.assertLess(len(copied[0]["rawOutput"]), 100000)
+        self.assertEqual(self.ui.buffer.text, "draft")
+        self.assertTrue(any("not be the full output" in row.text for row in self.ui.transcript.entries))
+
+    async def test_copy_includes_reply_segments_around_tools_and_mouse_toggle(self):
+        self.ui.transcript.add("one", "op", "Agent", "Before tool")
+        self.ui.transcript.add("one", "op", "Tools")
+        self.ui.transcript.add("one", "op", "Agent", "After tool")
+        with patch("android_acp_bridge.terminal_ui.copy_text") as copy:
+            self.ui.submit("/copy")
+            await asyncio.sleep(0.2)
+            copy.assert_called_once_with("Before tool\n\nAfter tool")
+        self.ui.submit("/mouse")
+        self.assertFalse(self.ui.app.mouse_support())
+        self.ui.submit("/mouse")
+        self.assertTrue(self.ui.app.mouse_support())
+
+    async def test_copy_errors_and_no_automatic_clipboard_writes(self):
+        with patch("android_acp_bridge.terminal_ui.copy_text", side_effect=RuntimeError("Clipboard unavailable")) as copy:
+            self.client.observe_event(update("agent_message_chunk", text="sensitive"))
+            await asyncio.sleep(0.2)
+            copy.assert_not_called()
+            self.ui.submit("/copy")
+            await asyncio.sleep(0.25)
+            copy.assert_called_once_with("sensitive")
+            self.assertIn("Copy failed", self.screen())
+            self.assertFalse(self.ui.copy_busy)
+            self.assertNotIn("Copied retained source", self.screen())
+
     async def test_wrapped_unbroken_tool_output_is_scrollable_and_cjk_safe(self):
         from android_acp_bridge.terminal_ui import wrap_display_line
         from prompt_toolkit.utils import get_cwidth
@@ -655,7 +707,10 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
         with patch("android_acp_bridge.terminal_ui.MarkdownStream", side_effect=AssertionError("old Markdown reparsed")):
             self.ui.render_conversation(60)
         self.client.observe_event(update("tool_call", toolCallId="bad", title="Failed task", status="failed"))
-        await asyncio.sleep(0.2)
+        for _ in range(30):
+            await asyncio.sleep(0.1)
+            if "Failed: Failed task" in self.screen():
+                break
         self.assertIn("Failed: Failed task", self.screen())
         row = next(r for r in self.ui.transcript.entries if r.kind == "Tools")
         self.assertFalse(row.expanded)

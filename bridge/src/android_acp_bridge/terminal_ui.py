@@ -27,6 +27,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
 from .terminal_render import MarkdownStream, display_text
+from .terminal_clipboard import copy_text
 from .terminal_state import Entry, Transcript, allow_all_option, config_value, model_choices, model_option
 
 if TYPE_CHECKING:
@@ -85,6 +86,8 @@ class SlashCompleter(Completer):
         "/pair": "Confirm phone pairing: y / n",
         "/pairing": "Show startup phone pairing QR/link",
         "/qrcode": "Show phone pairing QR/link (Esc returns)",
+        "/copy": "Copy latest retained agent reply to the local clipboard",
+        "/mouse": "Toggle app mouse handling for native terminal text selection",
         "/send": "Send literal text, including a leading /",
         "/help": "Commands and shortcuts",
         "/quit": "Stop bridge (use /quit! while busy)",
@@ -210,6 +213,8 @@ class FullScreenTerminal:
         self.config_busy = False
         self.model_request_id = 0
         self.command_busy = False
+        self.copy_busy = False
+        self.mouse_enabled = True
         self.tasks: set[asyncio.Task] = set()
         self.render_cache: dict[int, tuple[tuple[Any, ...], list[list[tuple[str, str]]]]] = {}
         self.line_cache: dict[int, tuple[tuple[Any, ...], list[list[tuple[str, str]]], dict[int, tuple[int, str | None]]]] = {}
@@ -243,7 +248,7 @@ class FullScreenTerminal:
         ])
         self.app: Application[None] = Application(
             layout=Layout(layout, focused_element=self.input_control), key_bindings=kb,
-            full_screen=True, mouse_support=True, min_redraw_interval=0.05, refresh_interval=0.5,
+            full_screen=True, mouse_support=Condition(lambda: self.mouse_enabled), min_redraw_interval=0.05, refresh_interval=0.5,
             color_depth=ColorDepth.DEPTH_1_BIT if os.environ.get("NO_COLOR") else None,
             style=Style.from_dict({
                 "heading": "reverse bold", "status": "reverse", "prompt": "bold",
@@ -299,7 +304,7 @@ class FullScreenTerminal:
         return [
             ("", f" {state} | Model: {model[:40]} | Allow all: {allow_all[:20]} | Queue: {queued}{extra}\n"),
             ("", f" {hint}\n"),
-            ("", " Tab focus | Enter expand | PgUp/PgDn scroll | Esc input/latest | /help"),
+            ("", " Tab focus | Enter expand | Ctrl+Y copy row | Esc input/latest | /help"),
         ]
 
     def _bindings(self) -> KeyBindings:
@@ -381,6 +386,11 @@ class FullScreenTerminal:
         def toggle(event):
             self.toggle()
 
+        @kb.add("c-y", filter=browsing)
+        def copy_selected(event):
+            row, tool_id = self.selected_entry()
+            self.request_copy(row, tool_id)
+
         for key, delta in (("left", -1), ("right", 1)):
             @kb.add(key, filter=browsing)
             def page(event, delta=delta):
@@ -440,6 +450,23 @@ class FullScreenTerminal:
 
     def submit(self, line: str) -> bool:
         command = line.strip().split(" ", 1)[0]
+        if command == "/mouse":
+            self.mouse_enabled = not self.mouse_enabled
+            self.write("App mouse handling enabled." if self.mouse_enabled else
+                       "App mouse handling disabled. Drag to select text and use your terminal's Copy action; /mouse restores tool clicks.")
+            return True
+        if command == "/copy":
+            if line.strip() != "/copy":
+                self.write("Use /copy for the latest reply, or Ctrl+Y on a conversation row for that message/tool.")
+            else:
+                rows = [row for row in self.transcript.entries if row.chat_id == self.client.selected and row.kind == "Agent"]
+                if rows:
+                    reply = [row for row in rows if row.operation == rows[-1].operation]
+                    self.request_copy_text("\n\n".join(row.text for row in reply),
+                                           any(row.truncated for row in reply) or bool(self.transcript.evicted))
+                else:
+                    self.write("No retained message to copy.")
+            return True
         if command in {"/pairing", "/qrcode"}:
             self.show_pairing = True
             self.pairing_line = self.pairing_column = 0
@@ -481,6 +508,40 @@ class FullScreenTerminal:
         self.command_busy = True
         self.start(self.execute(line))
         return True
+
+    def request_copy(self, row: Entry | None, tool_id: str | None = None) -> None:
+        if row is None:
+            self.write("No retained message to copy.")
+            return
+        incomplete = row.truncated
+        if row.kind == "Tools":
+            tools = [row.tools[tool_id]] if tool_id in row.tools else list(row.tools.values())
+            text = json.dumps([tool.fields for tool in tools], ensure_ascii=False, indent=2)
+            incomplete |= any(tool.truncated for tool in tools)
+        else:
+            text = row.text
+        self.request_copy_text(text, incomplete)
+
+    def request_copy_text(self, text: str, incomplete: bool) -> None:
+        if self.copy_busy:
+            self.write("Clipboard write already in progress.")
+            return
+        if not text:
+            self.write("This row has no text to copy.")
+            return
+        self.copy_busy = True
+        self.start(self.copy_content(text, incomplete))
+
+    async def copy_content(self, text: str, incomplete: bool) -> None:
+        try:
+            await asyncio.to_thread(copy_text, text)
+            self.write("Copied retained source to this computer's clipboard."
+                       + (" WARNING: terminal content was truncated/evicted; this may not be the full output." if incomplete else ""))
+        except (RuntimeError, UnicodeError) as error:
+            self.write("Copy failed: " + display_text(str(error))[:512])
+        finally:
+            self.copy_busy = False
+            self.app.invalidate()
 
     async def execute(self, line: str) -> None:
         try:

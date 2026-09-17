@@ -193,12 +193,25 @@ fall back to source with a notice. Links/images never open or download resources
 prompts, tool details and approvals remain literal. `NO_COLOR=1` enables monochrome.
 The terminal is a bounded live display, not an archive: oversized replies/details
 or older evicted entries have explicit notices. Full Android delivery is unchanged.
+Use `/copy` for the latest retained reply, or focus a message/tool with Tab and
+arrows then press Ctrl+Y to copy that row's retained source, across its display
+pages. Truncation/eviction is reported. Copy writes to the bridge computer's
+clipboard, not to a phone or SSH client's clipboard; failures are explicit.
+`/mouse` disables application mouse handling for native terminal selection;
+run it again to restore tool clicks. Ctrl+C still clears input, not copies.
+
+On Android, long-press message text to select it, or use **Copy all** for the
+message's raw source across pages. Code sections and expanded tool details also
+have copy buttons. Very large text above 128 Ki UTF-16 code units is refused
+without replacing the clipboard; select a smaller portion instead.
 
 | Terminal command | Action |
 | --- | --- |
 | `/chats` | Show recognizable chats, then enter a number to choose. Enter cancels. |
 | `/use 2` | Switch directly to chat number 2. |
 | `/tools` | Focus the latest collapsible tool group. |
+| `/copy` | Copy the latest retained agent reply (Markdown source) to this computer's clipboard. |
+| `/mouse` | Toggle app mouse handling to use native terminal text selection. |
 | `/model` | Select an advertised model for the current shared chat. |
 | `/allow-all` | Choose session permission setting, Enter to review, then `y` to apply. |
 | `/new copilot-cli C:\Repos\my-project` | Create a terminal-local chat for an installed agent. |

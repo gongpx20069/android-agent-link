@@ -72,6 +72,11 @@ Chat
   confirmation, and never auto-resolve pending approvals or invent unsupported options.
 - Keep prompts and approval details literal. Markdown must not execute code,
   fetch images, open links or pass remote terminal control sequences through.
+- Provide explicit terminal copying of the latest reply or selected message/tool,
+  with source formatting preserved and retention-limit warnings. Support native
+  terminal selection by disabling app mouse handling. Android messages support
+  long-press selection and source/code/detail copy buttons across retained pages;
+  oversized clipboard requests fail visibly, never silently truncate.
 - Avoid duplicate input echoes and per-update tool lines. Retain bounded completed
   tool groups and show failed tool titles even while collapsed.
 - Keep pairing and approval explicit through one input controller, with default

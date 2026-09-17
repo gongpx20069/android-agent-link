@@ -314,6 +314,16 @@ invalidated by revision/width. Replies over 8 Ki characters use explicit source
 pages; tools use literal JSON detail pages. This avoids arbitrarily expensive
 Markdown/layout work while keeping bounded retained content accessible.
 
+Explicit `/copy` and conversation Ctrl+Y snapshot retained source and write it
+to a local clipboard utility in a worker thread. No remote OSC52 or shell
+interpolation is used; contents travel via stdin, with bounded timeouts and
+explicit errors. `/mouse` dynamically disables app mouse reporting for native
+terminal selection. Android wraps each message body in SelectionContainer and
+provides copy actions for source text/code/detail sections. Clipboard source is
+not reconstructed from visible pages. A 128 Ki UTF-16 limit rejects oversized
+Android writes without replacing the clipboard; there is no extra transcript
+cache or continuous clipboard work on streaming updates.
+
 Only agent replies are formatted: prompts, labels, tool summaries and approval
 details remain literal. Remote control sequences are removed before parsing;
 only locally generated styling is decoded into prompt-toolkit formatted fragments.

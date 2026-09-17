@@ -47,6 +47,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -2901,6 +2902,36 @@ private fun ResumeDialog(state: ResumeDialogState, onDismiss: () -> Unit, onSele
 }
 
 @Composable
+private fun CopyTextButton(text: String, label: String? = null) {
+    val context = LocalContext.current
+    val strings = LocalAppStrings.current
+    androidx.compose.foundation.text.selection.DisableSelection {
+        androidx.compose.material3.TextButton(
+            enabled = text.isNotEmpty(),
+            colors = ButtonDefaults.textButtonColors(contentColor = androidx.compose.material3.LocalContentColor.current),
+            onClick = {
+                val message = if (text.length > MAX_CLIPBOARD_CHARACTERS) {
+                    strings.reliability(
+                        "Too large for the clipboard. Select text or copy a smaller section; nothing was copied.",
+                        "内容过大，无法安全写入剪贴板。请选中文字或复制较小片段；本次未复制。",
+                    )
+                } else {
+                    try {
+                        copyPlainText(context, text)
+                        strings.reliability("Copied", "已复制")
+                    } catch (_: RuntimeException) {
+                        strings.reliability("Copy failed. Clipboard unavailable.", "复制失败，剪贴板不可用。")
+                    }
+                }
+                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+            },
+        ) {
+            Text(label ?: strings.reliability("Copy all", "复制全文"))
+        }
+    }
+}
+
+@Composable
 private fun ChatTimelineItem(item: ChatMessage) {
     if (item.kind == ChatMessageKind.CommandUpdate || item.kind == ChatMessageKind.ConfigUpdate) {
         return
@@ -2939,11 +2970,14 @@ private fun ChatTimelineItem(item: ChatMessage) {
                 if (!isUser) {
                     Text(item.role.name, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = textColor.copy(alpha = 0.75f))
                 }
-                if (isUser) {
-                    Text(item.text, color = textColor)
-                } else {
-                    MarkdownMessageText(item.text, textColor)
+                SelectionContainer {
+                    if (isUser) {
+                        Text(item.text, color = textColor)
+                    } else {
+                        MarkdownMessageText(item.text, textColor)
+                    }
                 }
+                CopyTextButton(item.text)
             }
         }
     }
@@ -3066,12 +3100,15 @@ private fun MarkdownTableRow(
 @Composable
 private fun CodeBlock(code: String) {
     Surface(shape = RoundedCornerShape(10.dp), color = Color.Black.copy(alpha = 0.10f)) {
-        Text(
-            text = code,
-            modifier = Modifier.padding(10.dp),
-            fontFamily = FontFamily.Monospace,
-            style = MaterialTheme.typography.bodySmall,
-        )
+        Column {
+            CopyTextButton(code, LocalAppStrings.current.reliability("Copy code section", "复制代码片段"))
+            Text(
+                text = code,
+                modifier = Modifier.padding(10.dp),
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
 }
 
@@ -3183,12 +3220,10 @@ private fun AgentActivityItem(item: ChatMessage) {
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.70f),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded },
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Column(Modifier.padding(12.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }, horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
                     Text(item.title ?: strings.agentActivity, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                     Text(item.text, style = MaterialTheme.typography.bodySmall)
@@ -3196,6 +3231,7 @@ private fun AgentActivityItem(item: ChatMessage) {
                 Text(if (expanded) strings.hide else strings.details, style = MaterialTheme.typography.labelMedium)
             }
             if (expanded && !item.details.isNullOrBlank()) {
+                CopyTextButton(item.details)
                 Spacer(Modifier.height(8.dp))
                 Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)) {
                     val sections by produceState<List<Pair<String, String>>?>(null, item.details) {
@@ -3222,6 +3258,7 @@ private fun PagedDetailText(text: String) {
     var page by remember { mutableStateOf(0) }
     val count = ((text.length + 4095) / 4096).coerceAtLeast(1)
     val current = page.coerceAtMost(count - 1)
+    CopyTextButton(text)
     androidx.compose.foundation.text.selection.SelectionContainer {
         Text(
             detailTextPage(text, current),
@@ -3258,6 +3295,7 @@ private fun AgentPlanItem(item: ChatMessage) {
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
+            CopyTextButton(item.details ?: item.text)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,

@@ -302,6 +302,18 @@ Links/images do not fetch resources or execute code. `NO_COLOR=1` enables monoch
   rejected, never run as shell commands. Advertised agent commands are available
   directly and in completion; reserved names keep AgentLink meaning. `/resume`
   remains an explicit Android picker action; `/allow-all` is the local config picker.
+- `/copy` copies retained agent-text segments of the latest response in the selected
+  chat, preserving Markdown source and all retained pages. Ctrl+Y in conversation
+  focus copies the current message, tool, or tool group (literal JSON). Truncated
+  content/eviction is explicitly warned about; this is not a history download.
+- `/mouse` toggles application mouse handling so native terminal drag-selection
+  and Copy can be used. Keyboard navigation still works; Ctrl+C still clears input.
+  Clipboard writes target the bridge computer, not an SSH client's desktop.
+  Windows uses PowerShell Set-Clipboard; macOS uses pbcopy; Linux uses an available
+  wl-copy, xclip or xsel. No utility is installed automatically. Missing/unavailable
+  desktop clipboards and timeouts are explicit errors. Content goes through stdin,
+  not command arguments or executable shell text, and utility error bodies are
+  not logged. Copy runs off the UI loop and never happens on incoming messages.
 - `/quit` stops the bridge when idle; `/quit!` permits stopping during active work.
   Ctrl+C clears input only; Ctrl+D requests ordinary quit. EOF/closing the terminal stops the bridge. Shutdown
   disconnects Android and denies outstanding pairing; it is not a promise that

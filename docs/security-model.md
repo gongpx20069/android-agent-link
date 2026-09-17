@@ -253,6 +253,15 @@ history eviction clears terminal approval-review markers; re-review or use Andro
 The startup pairing QR/link remains available in a separate `/pairing` view, never
 added to the transcript/cache as an ordinary message.
 
+Android copy buttons and terminal `/copy`/Ctrl+Y are explicit local clipboard
+writes, never triggered by agent events. The clipboard can contain sensitive
+conversation/tool content and may be visible to OS clipboard history/sync or
+other clipboard consumers. No clipboard read or network transfer is introduced.
+The terminal passes sanitized retained text through stdin to a fixed local
+clipboard command without shell interpolation, and suppresses utility stderr
+to avoid echoing private content. Missing utilities, failures and truncation are
+explicit. Android refuses oversized writes without altering existing contents.
+
 `/model` only offers agent-advertised values and waits for confirmed state before
 reporting success. Configuration is refused during prompts, approvals or another
 session operation. Requests are pinned to their chat/session; stale session
