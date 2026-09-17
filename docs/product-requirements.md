@@ -55,7 +55,13 @@ Chat
   Other chats display only task/approval notices.
 - Keep input compact and show chat, runtime status, busy elapsed time, queue size,
   and contextual hints in a persistent width-aware status bar. Preserve drafts
-  during refresh/resize, support monochrome, and retain plain-text code indentation.
+  during refresh/resize and support monochrome.
+- Render agent Markdown headings, emphasis, lists, quotes, code blocks and tables.
+  Stream stable blocks once, retaining incomplete blocks until a boundary or
+  completion. Bound pending content and explicitly show original text for
+  oversized blocks or layouts that cannot fit, without dropping Android events.
+- Keep prompts and approval details literal. Markdown must not execute code,
+  fetch images, open links or pass remote terminal control sequences through.
 - Avoid duplicate input echoes and per-update tool lines. Show running tools in
   the status bar and retain readable completion/failure summaries in scrollback.
 - Keep pairing and approval explicit through one input controller, with default

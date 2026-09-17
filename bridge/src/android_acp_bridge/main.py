@@ -79,7 +79,7 @@ def _start(args: argparse.Namespace) -> int:
         if args.server != "stdlib":
             print("--interactive requires --server stdlib; the optional FastAPI backend does not run ACP chat.", file=sys.stderr)
             return 1
-        if importlib.util.find_spec("prompt_toolkit") is None:
+        if any(importlib.util.find_spec(module) is None for module in ("prompt_toolkit", "rich", "markdown_it")):
             print("Terminal chat requires: python -m pip install -r requirements-interactive.txt (run from bridge).", file=sys.stderr)
             return 1
         if not sys.stdin.isatty() or not sys.stdout.isatty():

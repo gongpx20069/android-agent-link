@@ -215,9 +215,15 @@ broker accepts approval only after the request is displayed and before expiry;
 exit denies pending pairing. Terminal approval requires reviewed details, and
 truncated requests must be approved on Android instead.
 
-All displayed remote text is treated as plain text. ANSI/OSC escapes, clipboard
-escape sequences and other control/bidi formatting characters are stripped;
-remote content is never interpreted as terminal markup or a command. The bounded
+Agent replies may be rendered as Markdown in interactive mode. Prompts, labels,
+tool summaries and approval details remain literal. ANSI/OSC escapes, clipboard
+sequences and control/bidi formatting characters are stripped before parsing and
+again from rendered text segments, including controls decoded from entities.
+Only locally generated style sequences reach the prompt-safe stdout proxy.
+Markdown code is never executed, links never open automatically, and image
+placeholders never fetch remote or local resources. HTML is unsupported.
+Pending Markdown is bounded; overflow and layouts too narrow for content warn
+explicitly and display plain text rather than silently dropping content. The bounded
 display queue excludes tokens and protocol credential payloads. Its overflow
 does not authorize requests or drop Android events.
 

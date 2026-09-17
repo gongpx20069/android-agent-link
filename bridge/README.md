@@ -247,7 +247,26 @@ submitted input display, so the accepted user message appears once rather than
 twice. In-progress tool updates change the bar instead of printing lines;
 completion/failure summaries retain the tool title even for status-only updates.
 Selected-chat completion notices no longer repeat the full chat label.
-Replies and code remain plain text, without Markdown or ANSI interpretation.
+Agent replies render Markdown headings, emphasis, lists, quotes, inline code,
+highlighted fenced code and tables. The `interactive` extra includes Rich for
+rendering and markdown-it-py for streaming block boundaries; existing installs
+must rerun the requirements command above.
+
+Rendering is block-streamed, not token-by-token: complete paragraphs/blocks enter
+scrollback once, while incomplete trailing blocks wait for a boundary or operation
+completion. The bar shows when a Markdown block is being received. Interleaved
+tool or approval notices do not prematurely close code fences. Switching chats or
+exiting flushes pending text. Table cells fold rather than ellipsize. Layouts too
+narrow for their nesting/table structure show original text with an explicit notice.
+At most 64 Ki characters are pending; overflow warns and displays the remainder
+of that reply as plain text. Later reference definitions cannot restyle already
+printed blocks, and raw HTML is not supported.
+
+Only agent replies are formatted. User messages, tool/approval details and labels
+remain literal. Remote control sequences are stripped before and after Markdown
+parsing; local styling is emitted through the prompt-safe stdout proxy. Links
+remain text, images are placeholders, and no resources are fetched or executed.
+`NO_COLOR=1` applies to both Markdown and the status bar.
 This is a scrollback-friendly prompt, not a full-screen alternate-screen app.
 
 - `/new <agent-id> <absolute workspace>` creates a local chat; it does not
@@ -323,7 +342,7 @@ Run these commands from the `bridge` directory.
 | --- | --- |
 | `requirements.txt` | Base bridge runtime. |
 | `requirements-fastapi.txt` | Base runtime plus the optional FastAPI server backend. |
-| `requirements-interactive.txt` | Base runtime plus the optional prompt-toolkit terminal client. |
+| `requirements-interactive.txt` | Base runtime plus prompt-toolkit, Rich and markdown-it-py for terminal chat. |
 | `requirements-all.txt` | Base runtime plus all optional extras. |
 
 ## Commands

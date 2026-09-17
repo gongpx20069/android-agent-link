@@ -4,28 +4,20 @@ import asyncio
 import json
 import os
 import queue
-import re
 import secrets
 import sys
 import threading
 import time
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from .runtime import BridgeRuntime
 from .stdlib_server import BridgeHTTPServer
+from .terminal_render import MarkdownStream, display_text
 
 if TYPE_CHECKING:
     from prompt_toolkit import PromptSession
-
-
-def display_text(value: str) -> str:
-    # Treat all remote content as plain text, never terminal escape sequences.
-    value = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", value)
-    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
-    return "".join(c for c in value if c in "\n\t" or not unicodedata.category(c).startswith("C"))
 
 
 @dataclass
@@ -76,6 +68,8 @@ class TerminalClient:
         self._announced_chats: set[str] = set()
         self._choosing_chat = False
         self._chat_choices: dict[str, str] = {}
+        self.markdown: MarkdownStream | None = None
+        self._markdown_key: tuple[str, str] | None = None
 
     @staticmethod
     def _write(text: str) -> None:
@@ -87,6 +81,19 @@ class TerminalClient:
             self.write("\n")
             self._stream = None
         self.write(display_text(text) + "\n")
+
+    def _write_markdown(self, text: str) -> None:
+        if not text:
+            return
+        if self._stream != self._markdown_key:
+            self.say("\nAgent >")
+            self._stream = self._markdown_key
+        self.write(text)
+
+    def _finish_markdown(self) -> None:
+        if self.markdown is not None:
+            self.markdown.finish()
+        self._markdown_key = None
 
     def _chat(self, chat_id: str) -> TerminalChat | None:
         chat = self.chats.get(chat_id)
@@ -168,6 +175,8 @@ class TerminalClient:
                                if chat_id == self.selected and tool.status not in {"completed", "failed", "cancelled"}), None)
                 if active:
                     hint = f"Tool: {active.title} [{active.status}]"
+                elif self.markdown and self.markdown.pending:
+                    hint = f"Receiving Markdown block ({len(self.markdown.pending)} chars)"
             return (
                 fit_toolbar_line([(state_style, f" {state} "), ("class:context", f"| {heading}")], width)
                 + [("", "\n")]
@@ -175,6 +184,8 @@ class TerminalClient:
             )
 
     def _select_chat(self, chat_id: str) -> None:
+        if chat_id != self.selected:
+            self._finish_markdown()
         self.selected = chat_id
         self._choosing_chat = False
         self._chat_choices.clear()
@@ -286,6 +297,7 @@ class TerminalClient:
             return question.approved and time.monotonic() < question.expires and not self._closed
 
     def close(self) -> None:
+        self._finish_markdown()
         with self._lock:
             self._closed = True
             if self._pairing is not None:
@@ -321,10 +333,16 @@ class TerminalClient:
             nonlocal fragment_key
             if not fragments or fragment_key is None:
                 return
-            if self._stream != fragment_key:
-                self.say("\nAgent >")
-                self._stream = fragment_key
-            self.write(display_text("".join(fragments)))
+            if self.markdown is not None:
+                if self._markdown_key != fragment_key:
+                    self._finish_markdown()
+                    self._markdown_key = fragment_key
+                self.markdown.feed("".join(fragments))
+            else:
+                if self._stream != fragment_key:
+                    self.say("\nAgent >")
+                    self._stream = fragment_key
+                self.write(display_text("".join(fragments)))
             fragments.clear()
 
         for _ in range(256):
@@ -354,6 +372,8 @@ class TerminalClient:
                 else:
                     self.say(f"[{label}] New task. /chats to switch.")
             elif kind == "operation.done":
+                if self._markdown_key == (chat_id, str(item["operationId"])):
+                    self._finish_markdown()
                 prefix = "" if selected else f"[{label}] "
                 self.say(f"{prefix}Task {item.get('status', 'finished')}.")
                 self._tools = {key: value for key, value in self._tools.items() if key[0] != chat_id}
@@ -586,7 +606,7 @@ def create_terminal_session(client: TerminalClient) -> PromptSession[str]:
     from prompt_toolkit.styles import Style
 
     # Styled fragments keep untrusted titles out of HTML/ANSI parsers.
-    return PromptSession(
+    session: PromptSession[str] = PromptSession(
         history=DummyHistory(),
         bottom_toolbar=lambda: client.toolbar(max(0, get_app().output.get_size().columns - 1)),
         refresh_interval=0.5,
@@ -601,6 +621,10 @@ def create_terminal_session(client: TerminalClient) -> PromptSession[str]:
             "hint": "bg:ansiblack ansibrightblack",
         }),
     )
+    client.markdown = MarkdownStream(
+        client._write_markdown, client.say, lambda: max(4, session.output.get_size().columns - 1),
+    )
+    return session
 
 
 def run_interactive(runtime: BridgeRuntime, client: TerminalClient) -> None:
@@ -611,7 +635,7 @@ def run_interactive(runtime: BridgeRuntime, client: TerminalClient) -> None:
         worker = threading.Thread(target=server.serve_forever, name="bridge-interactive-server", daemon=True)
         worker.start()
         try:
-            with patch_stdout():
+            with patch_stdout(raw=True):
                 client.say("\nAgentLink | Terminal chat + Android\n"
                            "Open a phone chat to begin; /chats to choose. New messages only.\n"
                            "Enter sends | Ctrl+C clears input | /help for commands")

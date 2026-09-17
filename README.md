@@ -165,9 +165,20 @@ The input stays short (`You >`); a two-line bottom bar keeps the current chat,
 Ready/Working/Approval status, elapsed busy time and queue size visible. It also
 shows the running tool or useful commands. Long labels fit the terminal width.
 Tool progress updates stay in that bar; only completion/failure summaries enter
-the conversation. Submitted input is not echoed a second time. Replies remain
-plain text, preserving code indentation rather than interpreting terminal markup.
-Set `NO_COLOR=1` before starting if you prefer monochrome status indicators.
+the conversation. Submitted input is not echoed a second time.
+
+Agent replies render **Markdown**: headings, bold/italic text, lists, quotes,
+inline code, syntax-highlighted code blocks and tables. Completed blocks appear
+once as the reply arrives; an unfinished paragraph/list/code block waits for its
+boundary or reply completion, with a receiving indicator in the bar. Table cells
+wrap rather than silently losing text. Links are shown as text and images as
+placeholders, without opening or downloading them. Approval details stay literal.
+Set `NO_COLOR=1` before starting for monochrome rendering.
+
+If upgrading an existing terminal installation, rerun the interactive-extra
+install command above to add the Markdown dependencies. Extremely narrow/deep
+layouts explicitly fall back to original text; blocks exceeding 64 Ki characters
+switch the rest of that reply to plain text with a notice.
 
 | Terminal command | Action |
 | --- | --- |

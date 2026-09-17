@@ -14,7 +14,9 @@ dependencies = [
 
 [project.optional-dependencies]
 interactive = [
-  "prompt-toolkit>=3.0.52,<4.0"
+  "prompt-toolkit>=3.0.52,<4.0",
+  "rich>=14.1,<15.0",
+  "markdown-it-py>=3.0,<5.0"
 ]
 fastapi = [
   "fastapi>=0.115,<1.0",

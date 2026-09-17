@@ -269,8 +269,27 @@ becomes HTML/ANSI markup. `NO_COLOR` selects monochrome depth. `erase_when_done`
 removes the submitted prompt display; operation acceptance supplies the single
 conversation echo. In-progress tools remain in the toolbar and terminal states
 produce one line, preserving the latest known title on status-only updates.
-Conversation text retains whitespace and code indentation; no Markdown renderer,
-new dependency or alternate-screen transcript is introduced.
+Agent replies use Rich Markdown in the optional `interactive` extra.
+`markdown-it-py` supplies top-level block boundaries instead of a handwritten
+Markdown parser. Completed blocks enter scrollback once; the unfinished trailing
+block waits for a safe boundary or operation completion. Lists and fenced code
+remain together. This deliberately trades token-by-token text display for stable
+block rendering without duplicating the whole answer or using an alternate screen.
+Tool/pairing notices do not terminate an unfinished Markdown block. Switching
+chats, ending the operation or exiting flushes pending selected-chat text.
+
+Only agent replies are formatted: prompts, labels, tool summaries and approval
+details remain literal. Remote control sequences are removed before parsing;
+only locally generated SGR styling reaches prompt-toolkit's raw stdout proxy.
+Hyperlinks are displayed as text, images as placeholders; no remote resource is
+fetched and no code executes. Width follows the terminal and `NO_COLOR` disables
+color. Table columns use folding rather than ellipsis overflow. Layouts whose
+nesting or column count cannot fit the terminal display original text with an
+explicit notice, rather than silently losing content. Pending Markdown is capped
+at 64 Ki characters; overflow explicitly warns
+and streams the remainder of that response as plain text instead of growing
+memory or dropping Android events. References defined in later rendered blocks
+are not retroactively resolved. Raw HTML is not supported.
 
 The runtime's optional `LocalClient` observer receives request metadata and each
 new sequenced event before fan-out. It does not register as the Android chat

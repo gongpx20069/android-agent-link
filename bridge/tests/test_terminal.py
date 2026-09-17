@@ -20,6 +20,8 @@ from android_acp_bridge.terminal import run_interactive
 from android_acp_bridge.stdlib_server import BridgeHTTPServer
 from test_runtime import BlockingAgentManager, FakeAgentManager, wait_for_event
 
+HAS_INTERACTIVE = all(importlib.util.find_spec(module) for module in ("prompt_toolkit", "rich", "markdown_it"))
+
 
 class TerminalTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -333,7 +335,17 @@ class TerminalTests(unittest.TestCase):
                 self.assertEqual(main(["start", "--interactive"]), 1)
             setup.assert_not_called()
 
-    @unittest.skipUnless(importlib.util.find_spec("prompt_toolkit"), "Install requirements-interactive.txt")
+    def test_missing_markdown_dependency_fails_before_tunnel_setup(self) -> None:
+        for missing in ("rich", "markdown_it"):
+            with patch("android_acp_bridge.main.setup_devtunnel") as setup, \
+                    patch("android_acp_bridge.main.importlib.util.find_spec",
+                          side_effect=lambda name: None if name == missing else object()), \
+                    patch("sys.stderr", new_callable=io.StringIO) as error:
+                self.assertEqual(main(["start", "--interactive"]), 1)
+                self.assertIn("requirements-interactive.txt", error.getvalue())
+                setup.assert_not_called()
+
+    @unittest.skipUnless(HAS_INTERACTIVE, "Install requirements-interactive.txt")
     def test_real_interactive_server_is_responsive_and_stops_on_quit(self) -> None:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.application import create_app_session
@@ -378,7 +390,7 @@ class TerminalTests(unittest.TestCase):
         self.assertTrue(self.client._closed)
 
 
-@unittest.skipUnless(importlib.util.find_spec("prompt_toolkit"), "Install requirements-interactive.txt for terminal UI tests")
+@unittest.skipUnless(HAS_INTERACTIVE, "Install requirements-interactive.txt for terminal UI tests")
 class TerminalInputTests(unittest.IsolatedAsyncioTestCase):
     def test_toolbar_width_status_and_safe_labels(self) -> None:
         from prompt_toolkit.utils import get_cwidth
