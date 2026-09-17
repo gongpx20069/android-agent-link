@@ -165,6 +165,10 @@ Local transport is for testing and does not make the computer remotely reachable
 
 ## Need help?
 
+The computer terminal now shows task and tool summaries instead of streamed
+message fragments. For more diagnostic metadata, add `--log-level debug` to the
+bridge start command. This does not change streaming replies on your phone.
+
 | Problem | What to try |
 | --- | --- |
 | `android-acp-bridge` is not recognized | Use the explicit `.\.venv\Scripts\python.exe .\bridge\run.py start` command above, from the repository folder. |

@@ -254,6 +254,27 @@ Each batch member keeps its own operation ID and receives individual `operation.
 
 The WebSocket reader and writer run independently so the bridge can accept queue and approval messages while an ACP prompt request is still running. Chat events are serialized through the connection writer and remain replayable by `eventId`.
 
+### Console observability
+
+`ConsoleLog` consumes new business events at `_append_event`, before transport
+fan-out. It never changes the wire event or its replay record. Transport callbacks
+do not log each delivery, and chat attach logs one replay-count summary. Unsequenced
+one-shot responses are observed separately; legacy history loads summarize the
+response rather than replaying tool logs.
+
+Metadata-only summaries are keyed by `(chatId, operationId)` with sparse tool-state
+tracking by `toolCallId`. Completed/failed/cancelled operations release their state.
+The logger stores counters, timing, identifiers and statuses, never message bodies.
+State is capped at 256 operations and 512 tool/approval entries per operation;
+capacity loss produces a warning rather than unbounded growth.
+
+The CLI owns a single progress worker, started with the server and joined on exit.
+Using a monotonic clock, it reports each active operation at most once per 15
+seconds, including quiet periods and approval waits. Concurrent console writes
+are serialized. Pairing input defers routine output into a counter, not a backlog;
+warnings and errors can still interrupt the prompt. Dev Tunnels subprocess output
+is outside this gate. Log-level filtering never changes Android event delivery.
+
 ### Recovery and ownership
 
 Persistent chat channels are implemented. One-shot requests remain for bounded

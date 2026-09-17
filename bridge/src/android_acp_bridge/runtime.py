@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import secrets
 import threading
-import json
 import time
 from copy import deepcopy
 from collections import deque
@@ -17,6 +16,7 @@ from .device_tokens import DeviceTokenStore
 from .history import HistoryError, HistoryStore
 from .pairing import PairingStore
 from .account_pairing import AccountPairing, AccountPairingError
+from .console_log import ConsoleLog
 
 
 @dataclass(frozen=True)
@@ -41,12 +41,6 @@ class PendingApproval:
     requested: dict[str, Any]
     emit: Callable[[dict[str, Any]], None] | None
     decision: str | None = None
-
-
-@dataclass
-class AgentChunkLogBuffer:
-    text: str = ""
-    suppressed: bool = False
 
 
 @dataclass
@@ -129,8 +123,10 @@ class BridgeRuntime:
         require_local_pairing_confirmation: bool = True,
         agent_manager: AgentManager | None = None,
         account_pairing_enabled: bool = False,
+        console: ConsoleLog | None = None,
     ) -> None:
         self.config = config
+        self.console = console or ConsoleLog()
         self.pairing_store = pairing_store
         self.require_local_pairing_confirmation = require_local_pairing_confirmation
         self._device_tokens = DeviceTokenStore(config.device_token_store)
@@ -140,7 +136,6 @@ class BridgeRuntime:
         self.agent_manager = agent_manager or AcpAgentManager()
         self._pending_approvals: dict[str, PendingApproval] = {}
         self._approval_results: dict[str, dict[str, Any]] = {}
-        self._agent_chunk_logs: dict[str, AgentChunkLogBuffer] = {}
         self._prompt_queues: dict[str, deque[PromptOperation]] = {}
         self._active_prompts: dict[str, PromptOperation] = {}
         self._prompt_operations: dict[tuple[str, str], PromptOperation] = {}
@@ -188,9 +183,10 @@ class BridgeRuntime:
         if not self._console_pairing_lock.acquire(blocking=False):
             return False
         try:
-            print(f"\nNew phone pairing request (unverified device label: {device_name}).", flush=True)
-            print(f"Compare code {code} with the code displayed in AgentLink on YOUR phone.", flush=True)
-            return input("Do the codes match? Allow this phone to pair within 2 minutes? [y/N] ").strip().lower() in {"y", "yes"}
+            with self.console.pairing_prompt():
+                print(f"\nNew phone pairing request (unverified device label: {device_name}).", flush=True)
+                print(f"Compare code {code} with the code displayed in AgentLink on YOUR phone.", flush=True)
+                return input("Do the codes match? Allow this phone to pair within 2 minutes? [y/N] ").strip().lower() in {"y", "yes"}
         finally:
             self._console_pairing_lock.release()
 
@@ -242,26 +238,15 @@ class BridgeRuntime:
             return responses
 
         message_type = payload.get("type")
-        if message_type == "chat.prompt":
-            self._log_client_prompt(payload)
-
-        def logging_emit(response: dict[str, Any]) -> None:
-            self._log_response(response)
-            if emit is not None:
-                emit(response)
-        if emit is not None:
-            setattr(logging_emit, "_connection_id", getattr(emit, "_connection_id", id(emit)))
-
         if message_type == "chat.attach":
-            responses = self._chat_attach_response(payload, logging_emit if emit is not None else None)
-            self._log_responses(responses)
+            responses = self._chat_attach_response(payload, emit)
             return responses
         if message_type == "chat.prompt":
-            responses = self._chat_prompt_updates(payload, logging_emit if emit is not None else None)
+            responses = self._chat_prompt_updates(payload, emit)
             self._log_responses(responses)
             return responses
         if message_type == "chat.prompt.remove":
-            responses = self._remove_queued_prompt(payload, logging_emit if emit is not None else None)
+            responses = self._remove_queued_prompt(payload, emit)
             self._log_responses(responses)
             return responses
         if message_type == "session.list":
@@ -270,7 +255,12 @@ class BridgeRuntime:
             return responses
         if message_type == "session.load":
             responses = self._session_load_response(payload)
-            self._log_responses(responses)
+            failures = sum(
+                1 for response in responses
+                if isinstance(response.get("update"), dict) and response["update"].get("status") == "failed"
+            )
+            self.console.message("warning" if failures else "info", "history.response",
+                                 chat=payload.get("chatId", "-"), events=len(responses), failed_entries=failures)
             return responses
         if message_type == "session.loadRecent":
             responses = self._session_load_recent_response(payload)
@@ -304,7 +294,8 @@ class BridgeRuntime:
             return False
         prompt = f"Allow {device.name} ({device.platform}) to pair with this machine? [y/N] "
         try:
-            answer = input(prompt)
+            with self.console.pairing_prompt():
+                answer = input(prompt)
         except EOFError:
             return False
         finally:
@@ -639,7 +630,7 @@ class BridgeRuntime:
         with self._event_lock:
             if event.get("type") == "chat.status":
                 self._chat_status[operation.chat_id] = _string_or_default(event.get("status"), "idle")
-            enriched = self._append_event(operation.chat_id, event)
+            enriched = self._append_event(operation.chat_id, event, log_operation_id=operation.operation_id)
             self._publish_prompt_transport(operation, enriched)
 
     def _publish_prompt_transport(self, operation: PromptOperation, event: dict[str, Any]) -> None:
@@ -784,7 +775,6 @@ class BridgeRuntime:
                 self._next_event_ids[chat_id] = 1
                 self._chat_event_generations[chat_id] = secrets.token_hex(16)
                 self._chat_status[chat_id] = "idle"
-                self._agent_chunk_logs.pop(chat_id, None)
                 page["latestEventId"] = 0
                 page["eventGeneration"] = self._chat_event_generations[chat_id]
             return [
@@ -964,6 +954,9 @@ class BridgeRuntime:
                     },
                     status_snapshot,
                 ]
+                self.console.observe(responses[0])
+                for response in resync_responses:
+                    self.console.observe(response)
                 if emit is not None:
                     self._chat_emitters[chat_id] = emit
                     for response in responses:
@@ -1006,7 +999,7 @@ class BridgeRuntime:
                     pending.condition.notify_all()
             return result
 
-    def _append_event(self, chat_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    def _append_event(self, chat_id: str, event: dict[str, Any], log_operation_id: str | None = None) -> dict[str, Any]:
         with self._event_lock:
             event_id = self._next_event_ids.get(chat_id, 1)
             self._next_event_ids[chat_id] = event_id + 1
@@ -1018,6 +1011,7 @@ class BridgeRuntime:
             log.append(enriched)
             if len(log) > CHAT_EVENT_LOG_LIMIT:
                 del log[: len(log) - CHAT_EVENT_LOG_LIMIT]
+            self.console.observe(enriched, log_operation_id)
             return enriched
 
     def _chat_status_event(
@@ -1123,53 +1117,13 @@ class BridgeRuntime:
             update.setdefault("chatId", chat_id)
         return [self._session_binding_event(chat_id, binding) for binding in bindings] + updates + [{"type": "bridge.done", "chatId": chat_id}]
 
-    def _log_client_prompt(self, payload: dict[str, Any]) -> None:
-        chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
-        agent_id = _string_or_default(payload.get("agentId"), "unknown-agent")
-        workspace_path = _string_or_default(payload.get("workspacePath"), "")
-        content = _string_or_default(payload.get("content"), "")
-        print(
-            f"[bridge] <- client chat={chat_id} agent={agent_id} cwd={_truncate_log(workspace_path, 40)} prompt=\"{_truncate_log(content)}\"",
-            flush=True,
-        )
-
     def _log_responses(self, responses: list[dict[str, Any]]) -> None:
         for response in responses:
-            self._log_response(response)
+            # Sequenced events were logged at creation, not once per transport/replay.
+            if "eventId" not in response and response.get("type") != "approval.resolved":
+                self.console.observe(response)
         if any(response.get("type") == "bridge.done" for response in responses):
-            for response in responses:
-                chat_id = response.get("chatId")
-                if isinstance(chat_id, str):
-                    self._flush_agent_chunk_log(chat_id)
-
-    def _log_response(self, response: dict[str, Any]) -> None:
-        chat_id = _string_or_default(response.get("chatId"), "unknown-chat")
-        if _is_agent_message_chunk(response):
-            self._buffer_agent_chunk_log(chat_id, _agent_message_text(response))
-            return
-        self._flush_agent_chunk_log(chat_id)
-        summary = _summarize_response(response)
-        if summary is None:
-            return
-        print(f"[bridge] -> android chat={chat_id} {summary}", flush=True)
-
-    def _buffer_agent_chunk_log(self, chat_id: str, text: str) -> None:
-        if not text.strip():
-            return
-        buffer = self._agent_chunk_logs.setdefault(chat_id, AgentChunkLogBuffer())
-        if buffer.suppressed:
-            return
-        buffer.text += text
-        if len(buffer.text) >= 50:
-            print(f"[bridge] -> android chat={chat_id} agent_message_chunk \"{_truncate_log(buffer.text, 50)}\"", flush=True)
-            buffer.text = ""
-            buffer.suppressed = True
-
-    def _flush_agent_chunk_log(self, chat_id: str) -> None:
-        buffer = self._agent_chunk_logs.pop(chat_id, None)
-        if buffer is None or buffer.suppressed or not buffer.text.strip():
-            return
-        print(f"[bridge] -> android chat={chat_id} agent_message_chunk \"{_truncate_log(buffer.text, 50)}\"", flush=True)
+            self.console.finish_responses({str(response.get("chatId", "-")) for response in responses})
 
 
 def parse_device_info(value: Any) -> DeviceInfo | None:
@@ -1211,56 +1165,6 @@ def _same_emitter(
 ) -> bool:
     emitter_id = getattr(emitter, "_connection_id", id(emitter))
     return any(getattr(other, "_connection_id", id(other)) == emitter_id for other in others)
-
-
-def _truncate_log(value: Any, limit: int = 80) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    normalized = " ".join(text.split())
-    return normalized if len(normalized) <= limit else normalized[: limit - 1] + "…"
-
-
-def _summarize_response(response: dict[str, Any]) -> str | None:
-    response_type = response.get("type")
-    if response_type == "approval.requested":
-        summary = _string_or_default(response.get("summary"), "Agent requests approval")
-        return f"approval.requested \"{_truncate_log(summary)}\""
-    if response_type != "session/update":
-        return None
-
-    update = response.get("update") if isinstance(response.get("update"), dict) else {}
-    update_kind = _string_or_default(update.get("sessionUpdate"), "session/update")
-    if update_kind == "agent_message_chunk":
-        text = _agent_message_text(response)
-        if not text.strip():
-            return None
-        return f"{update_kind} \"{_truncate_log(text)}\""
-    if update_kind in {"tool_call", "tool_call_update"}:
-        title = _string_or_default(update.get("title"), _string_or_default(update.get("toolCallId"), "tool"))
-        status = _string_or_default(update.get("status"), "")
-        content = update.get("content")
-        detail = title if content is None else f"{title} {content}"
-        status_part = f" status={status}" if status else ""
-        return f"{update_kind}{status_part} \"{_truncate_log(detail)}\""
-    if update_kind == "config_option_update":
-        options = update.get("configOptions")
-        count = len(options) if isinstance(options, list) else 0
-        return f"{update_kind} \"{count} option(s)\""
-    return f"{update_kind} \"{_truncate_log(update)}\""
-
-
-def _is_agent_message_chunk(response: dict[str, Any]) -> bool:
-    if response.get("type") != "session/update":
-        return False
-    update = response.get("update") if isinstance(response.get("update"), dict) else {}
-    return update.get("sessionUpdate") == "agent_message_chunk"
-
-
-def _agent_message_text(response: dict[str, Any]) -> str:
-    update = response.get("update") if isinstance(response.get("update"), dict) else {}
-    text = _string_or_default(update.get("text"), "")
-    if not text and isinstance(update.get("content"), dict):
-        text = _string_or_default(update["content"].get("text"), "")
-    return text
 
 
 def _latest_visible_messages(updates: list[Any], limit: int) -> list[dict[str, Any]]:

@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 import queue
-import re
 import struct
 import threading
 from http import HTTPStatus
@@ -91,9 +90,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, response)
 
     def log_message(self, format: str, *args: Any) -> None:
-        # Request lines include the WebSocket device token; never log query strings.
-        message = re.sub(r"\?[^\s\"]*", "?[redacted]", format % args)
-        print(f"{self.address_string()} - {message}")
+        # Never format the raw request, URL, query or header-bearing parser errors.
+        self.server.runtime.console.message("debug", "http.diagnostic")
+
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        status = int(code) if str(code).isdigit() else 0
+        self.server.runtime.console.http(self.command, status)
 
     def _read_json_body(self) -> Any | None:
         try:
@@ -137,6 +139,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Sec-WebSocket-Accept", accept)
         self.end_headers()
 
+        self.server.runtime.console.message("info", "connection.opened", transport="websocket")
         response_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
         request_queue: queue.Queue[Any | None] = queue.Queue()
         stopped = threading.Event()
@@ -184,12 +187,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             stopped.set()
             request_queue.put(None)
             response_queue.put(None)
+            self.server.runtime.console.message("info", "connection.closed", transport="websocket")
 
 
 def run_server(runtime: BridgeRuntime) -> None:
-    server = BridgeHTTPServer((runtime.config.host, runtime.config.port), runtime)
-    print(f"Bridge server listening on http://{runtime.config.host}:{runtime.config.port}")
-    server.serve_forever()
+    with BridgeHTTPServer((runtime.config.host, runtime.config.port), runtime) as server:
+        runtime.console.message("info", "server.listening", port=server.server_port)
+        server.serve_forever()
 
 
 WEBSOCKET_HEARTBEAT_SECONDS = 5

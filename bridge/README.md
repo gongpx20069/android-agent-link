@@ -202,6 +202,41 @@ android-acp-bridge start --transport local
 
 This prints a QR/link for `ws://127.0.0.1:4317`. It is useful for local testing but will not make a developer machine reachable from Android unless another transport forwards the port.
 
+## Console logs
+
+The default `info` output summarizes work rather than printing each streamed
+reply or tool-output update. Android still receives the original streaming events.
+
+```powershell
+python .\run.py start
+python .\run.py start --log-level debug
+python .\run.py start --log-level warning
+```
+
+Run these commands from `bridge`. Levels are `debug`, `info` (default),
+`warning`, and `error`.
+
+- Normal output includes task start/finish, the start of a reply, tool start/finish,
+  approvals, and WebSocket open/close. Failures are visible without dumping their
+  potentially sensitive payloads; inspect the Android error for details.
+- Active tasks report counters at most once every 15 seconds, including while
+  waiting for approval. Counts are **chunks and characters**, not model tokens.
+- Tool output changes do not each generate a line. Configuration updates and
+  successful HTTP requests appear only at `debug`.
+- Debug adds event types/IDs, lengths and status, not prompt text, reply/thought
+  bodies, command arguments, tool output, credentials, or request URLs.
+- Reconnection reports how many events were replayed, without logging historical
+  tool activity as new work. Multiple recipients do not duplicate business logs.
+- While the computer waits at a pairing prompt, routine bridge logs are counted
+  and replaced by one summary afterward; warnings/errors remain visible.
+
+The level controls bridge runtime logs, not the Dev Tunnels child process or
+startup onboarding. Pairing QR/link/code output remains visible at every level;
+it contains sensitive pairing credentials and should not be shared as a log.
+The optional FastAPI backend keeps its existing behavior; this change does not
+add ACP streaming to that backend. Its Uvicorn access log is disabled to avoid
+printing credential-bearing URLs.
+
 ## Requirements
 
 The bridge may use third-party Python packages, but every dependency must be declared in `pyproject.toml` and exposed through a requirements file so users can install it with pip, uv, or conda.

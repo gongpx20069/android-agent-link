@@ -153,6 +153,10 @@ Microsoft 续期逻辑已实现，但尚未完成真实续期验证。
 
 ## 常见问题
 
+电脑终端默认显示任务和工具状态摘要，不再逐段打印回复内容。
+排查问题时，可在 bridge 启动命令后添加 `--log-level debug` 查看事件元数据；
+手机上的流式回复不受影响。
+
 | 问题 | 处理方式 |
 | --- | --- |
 | 提示找不到 `android-acp-bridge` | 在仓库目录使用上面的 `.\.venv\Scripts\python.exe .\bridge\run.py start` 命令。 |

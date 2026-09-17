@@ -196,6 +196,15 @@ Failed loads preserve the previous replay baseline.
 
 ## Logging Rules
 
+- Bridge runtime logging is metadata-only at both `info` and `debug`: no prompt,
+  reply/thought body, tool title/content/arguments, raw error payload or request URL
+  is printed. Diagnostic identifiers are single-line sanitized and length-bounded.
+- Initial pairing QR/link/code output is a deliberate local onboarding exception,
+  not a shareable diagnostic log. External Dev Tunnels CLI output is not filtered
+  by the runtime logger.
+- Error events and HTTP failure status remain visible at their configured severity;
+  their detailed payloads remain in the authenticated Android protocol rather than
+  being copied to the terminal. High verbosity does not enable raw payload dumping.
 - Redact tokens, cookies, authorization headers, SSH keys, and API keys.
 - Avoid storing full file contents in logs.
 - Keep enough metadata for auditing approvals and failures.

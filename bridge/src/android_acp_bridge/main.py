@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .config import DEFAULT_PORT, default_config, default_device_token_store
+from .console_log import ConsoleLog
 from .device_tokens import DeviceTokenStoreError
 from .devtunnel import DevTunnelAuthError, DevTunnelConflictError, DevTunnelHost, default_tunnel_id, setup_devtunnel
 from .pairing import PairingStore, build_pairing_payload, encode_pairing_deep_link, render_terminal_qr
@@ -32,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--devtunnel-login", choices=("github", "microsoft"), help="Explicitly sign in with this provider to match the phone. Otherwise reuse the CLI account.")
     start_parser.add_argument("--auto-approve-pairing", action="store_true", help="Skip local pairing confirmation. Use only for tests or trusted local demos.")
     start_parser.add_argument("--server", choices=("stdlib", "fastapi"), default="stdlib", help="Server backend. Defaults to the standard-library backend.")
+    start_parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"), default="info", help="Console verbosity; debug includes event metadata, never message bodies.")
     start_parser.add_argument("--connection-header", action="append", default=[], metavar="NAME=VALUE", help="Header Android must send when connecting through a relay, e.g. X-Tunnel-Authorization='tunnel <token>'.")
 
     subparsers.add_parser("tailscale-status", help="Print the detected Tailscale status")
@@ -132,13 +134,17 @@ def _start(args: argparse.Namespace) -> int:
     print("Android pairing QR:", flush=True)
     print(render_terminal_qr(deep_link, ansi=sys.stdout.isatty()), flush=True)
 
+    console = ConsoleLog(args.log_level)
     try:
         runtime = BridgeRuntime(
             config=config,
             pairing_store=pairing_store,
             require_local_pairing_confirmation=not args.auto_approve_pairing,
             account_pairing_enabled=args.transport == "devtunnel",
+            console=console,
         )
+        console.start()
+        console.message("info", "server.starting", backend=args.server, port=config.port)
         if args.server == "fastapi":
             _run_fastapi(runtime)
         else:
@@ -148,6 +154,8 @@ def _start(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     finally:
+        console.close()
+        console.message("info", "server.stopped")
         if devtunnel_host is not None:
             devtunnel_host.stop()
 
@@ -183,7 +191,7 @@ def _run_fastapi(runtime: BridgeRuntime) -> None:
     except ImportError as exc:
         raise SystemExit("FastAPI server backend requires: python -m pip install -r requirements-fastapi.txt") from exc
 
-    uvicorn.run(create_app(runtime), host=runtime.config.host, port=runtime.config.port)
+    uvicorn.run(create_app(runtime), host=runtime.config.host, port=runtime.config.port, access_log=False, log_level="warning")
 
 
 def _parse_connection_headers(values: list[str]) -> dict[str, str]:

@@ -121,6 +121,12 @@ Permission modes for MVP:
 
 ### Diffs and Logs
 
+- Default computer-console output summarizes task/tool lifecycle and approvals,
+  not streamed message fragments. Keep Android streaming unchanged.
+- Provide metadata-only debug logging and rate-limited progress for long-running
+  tasks. Replays and multi-client delivery must not repeat business activity logs.
+- Retain visible pairing prompts, default-deny input, and warning/error visibility
+  while routine console output is deferred.
 - Show file changes caused by a chat.
 - Show command output and bridge/agent errors.
 - Avoid logging secrets or full sensitive file contents by default.

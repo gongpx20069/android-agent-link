@@ -304,14 +304,15 @@ class RuntimeTests(unittest.TestCase):
             )
 
         logs = output.getvalue()
-        self.assertIn("[bridge] <- client chat=chat_1 agent=copilot-cli", logs)
-        self.assertIn('prompt="hello ', logs)
-        self.assertIn("…", logs)
-        self.assertIn("[bridge] -> android chat=chat_1 tool_call", logs)
-        self.assertIn("[bridge] -> android chat=chat_1 tool_call_update", logs)
-        self.assertIn("[bridge] -> android chat=chat_1 agent_message_chunk", logs)
+        self.assertIn("operation.started chat=chat_1", logs)
+        self.assertIn("operation.finished chat=chat_1", logs)
+        self.assertNotIn("hello", logs)
+        self.assertNotIn("D:\\repo", logs)
+        self.assertIn("tool.started", logs)
+        self.assertIn("tool.finished", logs)
+        self.assertIn("response.started", logs)
 
-    def test_agent_message_chunks_are_logged_as_one_line(self) -> None:
+    def test_unscoped_agent_message_chunks_do_not_print_bodies(self) -> None:
         runtime = BridgeRuntime(
             config=BridgeConfig(machine_name="devbox"),
             pairing_store=PairingStore(),
@@ -341,10 +342,10 @@ class RuntimeTests(unittest.TestCase):
             runtime._log_responses(responses)
 
         lines = [line for line in output.getvalue().splitlines() if "agent_message_chunk" in line]
-        self.assertEqual(len(lines), 1)
-        self.assertIn("是**`gpt-5.5`", lines[0])
+        self.assertEqual(len(lines), 0)
+        self.assertNotIn("gpt-5.5", output.getvalue())
 
-    def test_agent_message_chunk_log_is_suppressed_after_fifty_chars(self) -> None:
+    def test_long_unscoped_agent_message_chunks_do_not_print_previews(self) -> None:
         runtime = BridgeRuntime(
             config=BridgeConfig(machine_name="devbox"),
             pairing_store=PairingStore(),
@@ -374,8 +375,8 @@ class RuntimeTests(unittest.TestCase):
             runtime._log_responses(responses)
 
         lines = [line for line in output.getvalue().splitlines() if "agent_message_chunk" in line]
-        self.assertEqual(len(lines), 1)
-        self.assertIn("…", lines[0])
+        self.assertEqual(len(lines), 0)
+        self.assertNotIn("x" * 20, output.getvalue())
 
     def test_approval_decision_websocket_response_is_tool_call_update(self) -> None:
         runtime = BridgeRuntime(

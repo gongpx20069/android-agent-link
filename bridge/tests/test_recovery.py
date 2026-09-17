@@ -53,11 +53,14 @@ class DeviceTokenRecoveryTests(unittest.TestCase):
     def test_http_logs_never_contain_device_token_query(self) -> None:
         handler = MagicMock()
         handler.address_string.return_value = "localhost"
+        from android_acp_bridge.console_log import ConsoleLog
+        handler.server.runtime.console = ConsoleLog("debug")
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             BridgeRequestHandler.log_message(handler, '"%s" %s', "GET /ws?token=dev_secret HTTP/1.1", "101")
         self.assertNotIn("dev_secret", output.getvalue())
-        self.assertIn("/ws?[redacted]", output.getvalue())
+        self.assertNotIn("/ws", output.getvalue())
+        self.assertIn("http.diagnostic", output.getvalue())
 
     def test_corrupt_store_and_failed_atomic_write_fail_explicitly(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:

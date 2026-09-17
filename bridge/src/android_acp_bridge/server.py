@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Awaitable, Callable
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -25,6 +25,16 @@ class PairingRedeemRequest(BaseModel):
 
 def create_app(runtime: BridgeRuntime) -> FastAPI:
     app = FastAPI(title="AgentLink Bridge", version=__version__)
+
+    @app.middleware("http")
+    async def log_http(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            runtime.console.http(request.method, status)
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -74,15 +84,19 @@ def create_app(runtime: BridgeRuntime) -> FastAPI:
     async def websocket_endpoint(websocket: WebSocket) -> None:
         token = websocket.query_params.get("token")
         if token is None or not runtime.is_device_token_valid(token):
+            runtime.console.message("warning", "connection.rejected", transport="websocket")
             await websocket.close(code=1008)
             return
 
         await websocket.accept()
+        runtime.console.message("info", "connection.opened", transport="websocket")
         try:
             while True:
                 message = await websocket.receive_json()
                 await websocket.send_json({"type": "bridge.echo", "payload": message})
         except WebSocketDisconnect:
             return
+        finally:
+            runtime.console.message("info", "connection.closed", transport="websocket")
 
     return app
