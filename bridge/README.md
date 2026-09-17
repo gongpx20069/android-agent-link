@@ -223,7 +223,7 @@ or press Enter to cancel. `/use 2` is a direct shortcut. Numbers in ordinary
 chat input remain messages, not commands. Exact IDs remain accepted by `/use`
 for compatibility, but are not needed in the normal workflow.
 
-The picker and input prompt show project/agent and the phone chat title, falling
+The picker and bottom status bar show project/agent and the phone chat title, falling
 back to a first observed prompt excerpt on older phones. The list also shows
 status and the full workspace path. Numbers remain stable for this bridge run.
 Discovery/reconnect never replaces an existing selection. Because Android also
@@ -234,6 +234,21 @@ text already being typed. A picker accepts only numbers from its displayed list.
 Both surfaces submit to the same existing queue, and terminal observation does
 not replace Android's subscription. Concurrent prompts queue behind active work.
 The terminal only shows new events, not a replay of old conversation history.
+
+The compact `You >` input sits above a persistent two-line status bar: current
+chat, Ready/Working/Approval status, elapsed busy time, queue count, and either
+running-tool details or contextual commands. Pairing/approval guidance takes
+priority over tool activity. The bar refreshes without new messages and clips
+long labels by terminal cell width, including wide CJK text. `NO_COLOR=1` selects
+monochrome output; statuses remain readable without color.
+
+Conversation roles are separated by blank lines. Prompt-toolkit removes the
+submitted input display, so the accepted user message appears once rather than
+twice. In-progress tool updates change the bar instead of printing lines;
+completion/failure summaries retain the tool title even for status-only updates.
+Selected-chat completion notices no longer repeat the full chat label.
+Replies and code remain plain text, without Markdown or ANSI interpretation.
+This is a scrollback-friendly prompt, not a full-screen alternate-screen app.
 
 - `/new <agent-id> <absolute workspace>` creates a local chat; it does not
   automatically add a card to Android. Use an existing Android chat to share work.

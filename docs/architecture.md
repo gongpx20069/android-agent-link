@@ -262,6 +262,16 @@ its asynchronous `PromptSession` and `patch_stdout` protect an editable draft
 from concurrent streaming output. It is not a PTY wrapper around an agent CLI.
 The ACP process retains its dedicated protocol stdin/stdout.
 
+The prompt is compact; a two-line `bottom_toolbar` renders safe styled fragments,
+with periodic refresh for busy elapsed time and status updates. It is clipped to
+the output's current cell width rather than string length. Remote text never
+becomes HTML/ANSI markup. `NO_COLOR` selects monochrome depth. `erase_when_done`
+removes the submitted prompt display; operation acceptance supplies the single
+conversation echo. In-progress tools remain in the toolbar and terminal states
+produce one line, preserving the latest known title on status-only updates.
+Conversation text retains whitespace and code indentation; no Markdown renderer,
+new dependency or alternate-screen transcript is introduced.
+
 The runtime's optional `LocalClient` observer receives request metadata and each
 new sequenced event before fan-out. It does not register as the Android chat
 emitter, so phone attach/reconnect cannot evict it and it cannot evict the phone.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import queue
 import re
 import secrets
@@ -11,10 +12,13 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .runtime import BridgeRuntime
 from .stdlib_server import BridgeHTTPServer
+
+if TYPE_CHECKING:
+    from prompt_toolkit import PromptSession
 
 
 def display_text(value: str) -> str:
@@ -35,6 +39,14 @@ class TerminalChat:
     session_id: str | None = None
     resumable: bool = False
     status: str = "idle"
+    queued_count: int = 0
+    busy_since: float | None = None
+
+
+@dataclass
+class TerminalTool:
+    title: str
+    status: str
 
 
 @dataclass
@@ -59,7 +71,7 @@ class TerminalClient:
         self._pairing: PairingQuestion | None = None
         self._shown_pairing: PairingQuestion | None = None
         self._reviewed: set[str] = set()
-        self._tools: dict[tuple[str, str], str] = {}
+        self._tools: dict[tuple[str, str], TerminalTool] = {}
         self._stream: tuple[str, str] | None = None
         self._announced_chats: set[str] = set()
         self._choosing_chat = False
@@ -120,15 +132,53 @@ class TerminalClient:
     def prompt_label(self) -> str:
         with self._lock:
             if self._choosing_chat:
-                return "Choose chat number (Enter to cancel) > "
-            return (self.chat_label(self.selected) if self.selected else "Waiting for phone chat") + " > "
+                return "Choice > "
+            return "You > " if self.selected else "> "
+
+    def toolbar(self, width: int) -> list[tuple[str, str]]:
+        with self._lock:
+            chat = self.chats.get(self.selected or "")
+            state = "No chat selected"
+            state_style = "class:status"
+            if chat is not None:
+                state = {"idle": "Ready", "busy": "Working", "waitingApproval": "Approval needed",
+                         "failed": "Failed"}.get(chat.status, chat.status)
+                if chat.status in {"busy", "waitingApproval"}:
+                    state_style = "class:attention"
+                    if chat.busy_since is not None:
+                        state += f" {int(max(0, time.monotonic() - chat.busy_since))}s"
+                elif chat.status == "failed":
+                    state_style = "class:failure"
+                if chat.queued_count:
+                    state += f" | queued {chat.queued_count}"
+            heading = self.chat_label(chat.chat_id) if chat else "Open a phone chat, or /chats to choose"
+            hint = "/chats switch   /approvals review   /help   /quit"
+            hint_style = "class:hint"
+            question = self._pairing
+            if question and not question.answered.is_set() and time.monotonic() < question.expires:
+                hint = "PAIRING: check phone/code, then /pair y or /pair n"
+                hint_style = "class:attention"
+            elif self._choosing_chat:
+                hint = "Enter a listed number; Enter cancels. No chat message will be sent."
+            elif chat and chat.status == "waitingApproval":
+                hint = "Approval needed: /approvals to review, or decide on your phone"
+                hint_style = "class:attention"
+            else:
+                active = next((tool for (chat_id, _), tool in reversed(self._tools.items())
+                               if chat_id == self.selected and tool.status not in {"completed", "failed", "cancelled"}), None)
+                if active:
+                    hint = f"Tool: {active.title} [{active.status}]"
+            return (
+                fit_toolbar_line([(state_style, f" {state} "), ("class:context", f"| {heading}")], width)
+                + [("", "\n")]
+                + fit_toolbar_line([(hint_style, " " + hint)], width)
+            )
 
     def _select_chat(self, chat_id: str) -> None:
         self.selected = chat_id
         self._choosing_chat = False
         self._chat_choices.clear()
-        self.say(f"Chat: {self.chat_label(chat_id)}")
-        self.say("Type a message to continue. /chats to switch. Showing new events only.")
+        self.say(f"\nChat: {self.chat_label(chat_id)}")
 
     def _show_chats(self, *, choose: bool) -> None:
         with self._lock:
@@ -180,6 +230,14 @@ class TerminalClient:
                 chat.resumable = True
             if kind == "chat.status":
                 chat.status = str(event.get("status", "idle"))
+                count = event.get("queuedCount")
+                if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                    chat.queued_count = count
+                if chat.status in {"busy", "waitingApproval"}:
+                    if chat.busy_since is None:
+                        chat.busy_since = time.monotonic()
+                else:
+                    chat.busy_since = None
             if kind == "approval.resolved":
                 self._reviewed.discard(str(event.get("approvalId", "")))
             # Project only display fields; do not queue credentials, tool output or entire events.
@@ -201,7 +259,7 @@ class TerminalClient:
                     return
                 item["tool"] = str(update.get("toolCallId", "tool"))[:128]
                 item["status"] = update.get("status")
-                item["title"] = str(update.get("title", item["tool"]))[:160]
+                item["title"] = str(update.get("title") or "")[:160]
                 content = update.get("content")
                 text = update.get("text") or (content.get("text", "") if isinstance(content, dict) else "")
                 if item["kind"] == "agent_message_chunk":
@@ -264,7 +322,7 @@ class TerminalClient:
             if not fragments or fragment_key is None:
                 return
             if self._stream != fragment_key:
-                self.say("Agent >")
+                self.say("\nAgent >")
                 self._stream = fragment_key
             self.write(display_text("".join(fragments)))
             fragments.clear()
@@ -290,24 +348,26 @@ class TerminalClient:
             if kind == "operation.accepted":
                 if selected:
                     source = "You" if str(item["operationId"]).startswith("terminal_") else "Phone"
-                    self.say(f"{source} > {item.get('content', '')}")
+                    self.say(f"\n{source} > {item.get('content', '')}")
                     if item.get("state") == "queued":
                         self.say("Queued behind the active task.")
                 else:
                     self.say(f"[{label}] New task. /chats to switch.")
             elif kind == "operation.done":
-                self.say(f"[{label}] Task {item.get('status', 'finished')}.")
+                prefix = "" if selected else f"[{label}] "
+                self.say(f"{prefix}Task {item.get('status', 'finished')}.")
                 self._tools = {key: value for key, value in self._tools.items() if key[0] != chat_id}
             elif kind == "session/update" and item.get("kind") in {"tool_call", "tool_call_update"}:
                 key = (chat_id, item["tool"])
                 previous = self._tools.get(key)
-                status = item.get("status") or previous or "pending"
-                if selected and (previous is None or status in {"completed", "failed", "cancelled"} and previous != status):
-                    self.say(f"Tool: {item['title']} [{status}]")
+                status = item.get("status") or (previous.status if previous else "pending")
+                title = item["title"] or (previous.title if previous else "Tool")
+                if selected and status in {"completed", "failed", "cancelled"} and (previous is None or previous.status != status):
+                    self.say(f"  Tool [{status}]: {title}")
                 if len(self._tools) >= 512 and key not in self._tools:
                     self._tools.pop(next(iter(self._tools)))
                     self.say("Terminal tool display limit reached; older status summaries may repeat.")
-                self._tools[key] = status
+                self._tools[key] = TerminalTool(title, status)
             elif kind == "approval.requested":
                 self.say(f"[{label}] Approval needed: {item['approvalId']}. Use /approvals to review.")
             elif kind == "approval.resolved":
@@ -453,7 +513,7 @@ class TerminalClient:
             immediate(response)
 
 
-async def terminal_loop(client: TerminalClient, server_alive: Callable[[], bool], session: Any) -> None:
+async def terminal_loop(client: TerminalClient, server_alive: Callable[[], bool], session: PromptSession[str]) -> None:
     async def read_line() -> tuple[str, str]:
         try:
             line = await session.prompt_async(client.prompt_label)
@@ -496,9 +556,54 @@ async def terminal_loop(client: TerminalClient, server_alive: Callable[[], bool]
         client.close()
 
 
-def run_interactive(runtime: BridgeRuntime, client: TerminalClient) -> None:
+def fit_toolbar_line(fragments: list[tuple[str, str]], width: int) -> list[tuple[str, str]]:
+    from prompt_toolkit.utils import get_cwidth
+
+    clean = [(style, " ".join(display_text(text).splitlines()).replace("\t", " ")) for style, text in fragments]
+    width = max(0, width)
+    if sum(get_cwidth(text) for _, text in clean) <= width:
+        return clean
+    suffix = "." * min(3, width)
+    remaining = width - len(suffix)
+    result: list[tuple[str, str]] = []
+    for style, text in clean:
+        part = ""
+        for character in text:
+            size = get_cwidth(character)
+            if size > remaining:
+                return result + [(style, part), ("class:hint", suffix)]
+            part += character
+            remaining -= size
+        result.append((style, part))
+    return result + [("class:hint", suffix)]
+
+
+def create_terminal_session(client: TerminalClient) -> PromptSession[str]:
     from prompt_toolkit import PromptSession
+    from prompt_toolkit.application import get_app
     from prompt_toolkit.history import DummyHistory
+    from prompt_toolkit.output import ColorDepth
+    from prompt_toolkit.styles import Style
+
+    # Styled fragments keep untrusted titles out of HTML/ANSI parsers.
+    return PromptSession(
+        history=DummyHistory(),
+        bottom_toolbar=lambda: client.toolbar(max(0, get_app().output.get_size().columns - 1)),
+        refresh_interval=0.5,
+        erase_when_done=True,
+        color_depth=ColorDepth.DEPTH_1_BIT if os.environ.get("NO_COLOR") else None,
+        style=Style.from_dict({
+            "bottom-toolbar": "bg:ansiblack ansiwhite",
+            "status": "bg:ansiblack ansigreen bold",
+            "attention": "bg:ansiblack ansiyellow bold",
+            "failure": "bg:ansiblack ansired bold",
+            "context": "bg:ansiblack ansiwhite",
+            "hint": "bg:ansiblack ansibrightblack",
+        }),
+    )
+
+
+def run_interactive(runtime: BridgeRuntime, client: TerminalClient) -> None:
     from prompt_toolkit.patch_stdout import patch_stdout
 
     client.runtime = runtime
@@ -507,11 +612,10 @@ def run_interactive(runtime: BridgeRuntime, client: TerminalClient) -> None:
         worker.start()
         try:
             with patch_stdout():
-                client.say("AgentLink terminal chat. /help for commands. Android can connect concurrently.\n"
-                           "Open a chat on your phone. A single chat is selected automatically; just type to continue.\n"
-                           "For multiple chats, use /chats and choose a number. No Chat ID needed.")
-                # Do not persist prompts or approval commands in terminal history.
-                asyncio.run(terminal_loop(client, worker.is_alive, PromptSession(history=DummyHistory())))
+                client.say("\nAgentLink | Terminal chat + Android\n"
+                           "Open a phone chat to begin; /chats to choose. New messages only.\n"
+                           "Enter sends | Ctrl+C clears input | /help for commands")
+                asyncio.run(terminal_loop(client, worker.is_alive, create_terminal_session(client)))
         finally:
             client.close()
             if worker.is_alive():

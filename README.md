@@ -149,7 +149,7 @@ For multiple chats, enter `/chats`, then choose a number from the list:
 ```text
 * 1. my-project | copilot-cli | Fix login
   2. my-project | copilot-cli | Update README
-Choose chat number (Enter to cancel) > 2
+Choice > 2
 ```
 
 The list shows project, agent, phone chat title, status, and full workspace path.
@@ -160,6 +160,14 @@ background reconnects never switch an already selected terminal chat.
 Messages use the same agent session and queue as your phone; replies stream
 without interrupting your draft. Other chats show task/approval notices, not
 their replies. Selection shows new events only; use Android for earlier history.
+
+The input stays short (`You >`); a two-line bottom bar keeps the current chat,
+Ready/Working/Approval status, elapsed busy time and queue size visible. It also
+shows the running tool or useful commands. Long labels fit the terminal width.
+Tool progress updates stay in that bar; only completion/failure summaries enter
+the conversation. Submitted input is not echoed a second time. Replies remain
+plain text, preserving code indentation rather than interpreting terminal markup.
+Set `NO_COLOR=1` before starting if you prefer monochrome status indicators.
 
 | Terminal command | Action |
 | --- | --- |

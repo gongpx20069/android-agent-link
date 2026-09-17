@@ -53,6 +53,11 @@ Chat
   connections must not retarget a draft; picker input must never execute as chat.
 - Display selected-chat conversation and tool status, not Android delivery logs.
   Other chats display only task/approval notices.
+- Keep input compact and show chat, runtime status, busy elapsed time, queue size,
+  and contextual hints in a persistent width-aware status bar. Preserve drafts
+  during refresh/resize, support monochrome, and retain plain-text code indentation.
+- Avoid duplicate input echoes and per-update tool lines. Show running tools in
+  the status bar and retain readable completion/failure summaries in scrollback.
 - Keep pairing and approval explicit through one input controller, with default
   denial and authoritative expiry. Never treat terminal text as raw shell input.
 - Preserve ordinary headless behavior. Clearly explain that terminal-local new

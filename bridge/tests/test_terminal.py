@@ -15,7 +15,7 @@ from android_acp_bridge.console_log import ConsoleLog
 from android_acp_bridge.main import main
 from android_acp_bridge.pairing import PairingStore
 from android_acp_bridge.runtime import BridgeRuntime, DeviceInfo
-from android_acp_bridge.terminal import TerminalClient, display_text, terminal_loop
+from android_acp_bridge.terminal import TerminalClient, create_terminal_session, display_text, fit_toolbar_line, terminal_loop
 from android_acp_bridge.terminal import run_interactive
 from android_acp_bridge.stdlib_server import BridgeHTTPServer
 from test_runtime import BlockingAgentManager, FakeAgentManager, wait_for_event
@@ -43,7 +43,7 @@ class TerminalTests(unittest.TestCase):
     def test_single_phone_chat_is_ready_without_id_or_selection_command(self) -> None:
         phone: list[dict] = []
         self.attach_phone(phone)
-        self.assertIn("1. repo | copilot-cli", self.client.prompt_label())
+        self.assertEqual(self.client.prompt_label(), "You > ")
         self.assertNotIn("chat-a", "".join(self.output))
         self.client.command("continue here")
         wait_for_event(phone, "operation.done")
@@ -104,6 +104,23 @@ class TerminalTests(unittest.TestCase):
         self.client.command("2")
         wait_for_event(phone, "operation.done")
         self.assertEqual(next(e for e in phone if e["type"] == "operation.accepted")["content"], "2")
+
+    def test_reply_layout_preserves_code_and_compact_completion(self) -> None:
+        self.attach_phone([])
+        self.output.clear()
+        chunks = ["```python\n", "def example():\n", "    return 1\n", "```"]
+        for text in chunks:
+            self.client.observe_event({"type": "session/update", "chatId": "chat-a", "operationId": "op", "update": {
+                "sessionUpdate": "agent_message_chunk", "text": text,
+            }})
+            self.client.drain()
+        self.client.observe_event({"type": "operation.done", "chatId": "chat-a", "status": "completed"})
+        self.client.drain()
+        output = "".join(self.output)
+        self.assertIn("".join(chunks), output)
+        self.assertEqual(output.count("Agent >"), 1)
+        self.assertTrue(output.endswith("\nTask completed.\n"))
+        self.assertNotIn("copilot-cli", output)
 
     def test_auto_selection_preserves_first_reply_queued_before_render(self) -> None:
         self.client.observe_request({
@@ -363,6 +380,116 @@ class TerminalTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec("prompt_toolkit"), "Install requirements-interactive.txt for terminal UI tests")
 class TerminalInputTests(unittest.IsolatedAsyncioTestCase):
+    def test_toolbar_width_status_and_safe_labels(self) -> None:
+        from prompt_toolkit.utils import get_cwidth
+
+        client = TerminalClient(lambda _: None)
+        client.observe_request({
+            "type": "chat.attach", "chatId": "one", "agentId": "copilot-cli",
+            "workspacePath": "D:\\repo", "chatTitle": "<b>修复登录</b>\x1b[2J\u202e",
+        })
+        client.drain()
+        client.observe_event({"type": "chat.status", "chatId": "one", "status": "busy", "queuedCount": 2})
+        client.chats["one"].busy_since = time.monotonic() - 12
+        for width in (0, 1, 2, 8, 20, 40, 80, 120):
+            text = "".join(text for _, text in client.toolbar(width))
+            self.assertEqual(len(text.split("\n")), 2)
+            self.assertTrue(all(get_cwidth(line) <= width for line in text.split("\n")), repr(text))
+            self.assertNotIn("\x1b", text)
+            self.assertNotIn("\u202e", text)
+        wide = "".join(text for _, text in client.toolbar(160))
+        self.assertIn("Working 12s | queued 2", wide)
+        self.assertIn("<b>修复登录</b>", wide)  # Literal text, not markup.
+        self.assertIn("/chats switch", wide)
+        client.observe_event({"type": "chat.status", "chatId": "one", "status": "waitingApproval", "queuedCount": 1})
+        self.assertIn("/approvals to review", "".join(t for _, t in client.toolbar(160)))
+        client.observe_event({"type": "chat.status", "chatId": "one", "status": "idle", "queuedCount": 0})
+        self.assertIsNone(client.chats["one"].busy_since)
+        self.assertIn("Ready", "".join(t for _, t in client.toolbar(160)))
+        self.assertNotIn("queued", "".join(t for _, t in client.toolbar(160)))
+        clipped = "".join(t for _, t in fit_toolbar_line([("", "中文 e\u0301\t\n\x1b[2J text")], 9))
+        self.assertLessEqual(get_cwidth(clipped), 9)
+        self.assertNotIn("\n", clipped)
+        self.assertNotIn("\t", clipped)
+
+    def test_tool_progress_stays_in_toolbar_and_completion_keeps_title(self) -> None:
+        output: list[str] = []
+        client = TerminalClient(output.append)
+        client.observe_request({
+            "type": "chat.attach", "chatId": "one", "agentId": "copilot-cli", "workspacePath": "D:\\repo",
+        })
+        client.drain()
+        output.clear()
+        for index in range(100):
+            update = {"sessionUpdate": "tool_call" if index == 0 else "tool_call_update",
+                      "toolCallId": "opaque-tool", "status": "in_progress"}
+            if index == 0:
+                update["title"] = "Read README"
+            client.observe_event({"type": "session/update", "chatId": "one", "update": update})
+            client.drain()
+        self.assertEqual(output, [])
+        self.assertIn("Tool: Read README [in_progress]", "".join(t for _, t in client.toolbar(160)))
+        for _ in range(2):
+            client.observe_event({"type": "session/update", "chatId": "one", "update": {
+                "sessionUpdate": "tool_call_update", "toolCallId": "opaque-tool", "status": "failed",
+            }})
+            client.drain()
+        self.assertEqual("".join(output), "  Tool [failed]: Read README\n")
+        self.assertNotIn("opaque-tool", "".join(output))
+        self.assertNotIn("Tool:", "".join(t for _, t in client.toolbar(160)))
+
+    async def test_production_toolbar_refresh_resize_and_monochrome_preserve_draft(self) -> None:
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.data_structures import Size
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import ColorDepth, DummyOutput
+
+        output: list[str] = []
+        client = TerminalClient(output.append)
+        client.runtime = BridgeRuntime(BridgeConfig(machine_name="test"), PairingStore(), local_client=client)
+        client.observe_request({
+            "type": "chat.attach", "chatId": "one", "agentId": "copilot-cli", "workspacePath": "D:\\repo",
+        })
+        terminal_output = DummyOutput()
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=terminal_output), \
+                patch.dict("os.environ", {"NO_COLOR": "1"}):
+            session = create_terminal_session(client)
+            self.assertEqual(session.color_depth, ColorDepth.DEPTH_1_BIT)
+            self.assertTrue(session.app.erase_when_done)
+            self.assertEqual(session.history.get_strings(), [])
+            with patch.object(terminal_output, "get_size", return_value=Size(rows=24, columns=40)) as size:
+                task = asyncio.create_task(terminal_loop(client, lambda: True, session))
+                try:
+                    await asyncio.sleep(0.15)
+                    pipe.send_text("unchanged draft")
+                    await asyncio.sleep(0.1)
+                    client.observe_event({"type": "chat.status", "chatId": "one", "status": "busy", "queuedCount": 2})
+                    await asyncio.sleep(0.6)
+                    self.assertEqual(session.default_buffer.text, "unchanged draft")
+                    self.assertIn("Working", "".join(t for _, t in client.toolbar(39)))
+                    screen = session.app.renderer._last_screen
+                    self.assertIsNotNone(screen)
+                    rendered = "\n".join(
+                        "".join(row[x].char for x in sorted(row))
+                        for _, row in sorted(screen.data_buffer.items())
+                    )
+                    self.assertIn("Working", rendered)
+                    self.assertIn("queued 2", rendered)
+                    self.assertIn("unchanged draft", rendered)
+                    size.return_value = Size(rows=24, columns=20)
+                    session.app.invalidate()
+                    await asyncio.sleep(0.15)
+                    self.assertFalse(task.done())
+                    self.assertEqual(session.default_buffer.text, "unchanged draft")
+                    pipe.send_bytes(b"\x03")
+                    await asyncio.sleep(0.1)
+                    pipe.send_text("/quit!\n")
+                    await asyncio.wait_for(task, 3)
+                    self.assertEqual(session.history.get_strings(), [])
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
     async def test_phone_discovery_does_not_retarget_an_existing_draft(self) -> None:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.input import create_pipe_input
