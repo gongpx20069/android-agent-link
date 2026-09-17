@@ -37,7 +37,128 @@ class TerminalTests(unittest.TestCase):
             "type": "chat.attach", "chatId": "chat-a", "agentId": "copilot-cli",
             "workspacePath": "D:\\repo",
         }, emit=phone.append)
-        self.client.command("/use chat-a")
+        self.client.drain()
+        self.assertEqual(self.client.selected, "chat-a")
+
+    def test_single_phone_chat_is_ready_without_id_or_selection_command(self) -> None:
+        phone: list[dict] = []
+        self.attach_phone(phone)
+        self.assertIn("1. repo | copilot-cli", self.client.prompt_label())
+        self.assertNotIn("chat-a", "".join(self.output))
+        self.client.command("continue here")
+        wait_for_event(phone, "operation.done")
+        self.assertEqual(next(e for e in phone if e["type"] == "operation.accepted")["content"], "continue here")
+
+    def test_multiple_chats_use_stable_numbers_and_recognizable_labels(self) -> None:
+        for chat_id, text in (("opaque-a", "Fix login"), ("opaque-b", "Update README")):
+            self.client.observe_request({
+                "type": "chat.attach", "chatId": chat_id, "agentId": "copilot-cli", "workspacePath": "D:\\repo",
+            })
+            self.client.observe_event({
+                "type": "operation.accepted", "chatId": chat_id, "content": text,
+            })
+        self.client.drain()
+        self.assertIsNone(self.client.selected)
+        self.assertIn("1. repo | copilot-cli | Fix login", "".join(self.output))
+        self.assertIn("2. repo | copilot-cli | Update README", "".join(self.output))
+        self.assertNotIn("opaque-", "".join(self.output))
+        self.client.command("/chats")
+        self.client.command("2")
+        self.assertEqual(self.client.selected, "opaque-b")
+        self.assertFalse(self.runtime._prompt_operations)
+        # Background reconnects do not renumber chats or steal the input target.
+        self.client.observe_request({
+            "type": "chat.attach", "chatId": "opaque-a", "agentId": "copilot-cli", "workspacePath": "D:\\repo",
+        })
+        self.client.drain()
+        self.assertEqual(self.client.selected, "opaque-b")
+        self.client.command("/use 1")
+        self.assertEqual(self.client.selected, "opaque-a")
+        self.client.command("/use 999")
+        self.assertEqual(self.client.selected, "opaque-a")
+        self.client.command("/use opaque-b")  # Existing scripts can still use exact IDs.
+        self.assertEqual(self.client.selected, "opaque-b")
+
+    def test_picker_snapshot_rejects_unseen_numbers_and_never_sends_choices(self) -> None:
+        self.attach_phone([])
+        self.client.command("/chats")
+        self.client.observe_request({
+            "type": "chat.attach", "chatId": "chat-b", "agentId": "copilot-cli", "workspacePath": "D:\\other",
+        })
+        self.client.drain()
+        self.client.command("2")
+        self.client.command("not a choice")
+        self.assertTrue(self.client._choosing_chat)
+        self.assertEqual(self.client.selected, "chat-a")
+        self.assertFalse(self.runtime._prompt_operations)
+        self.client.command("")
+        self.assertFalse(self.client._choosing_chat)
+        self.assertEqual(self.client.selected, "chat-a")
+        self.client.command("/chats")
+        self.client.command("2")
+        self.assertEqual(self.client.selected, "chat-b")
+
+    def test_numeric_chat_text_outside_picker_is_not_a_selection(self) -> None:
+        phone: list[dict] = []
+        self.attach_phone(phone)
+        self.client.command("2")
+        wait_for_event(phone, "operation.done")
+        self.assertEqual(next(e for e in phone if e["type"] == "operation.accepted")["content"], "2")
+
+    def test_auto_selection_preserves_first_reply_queued_before_render(self) -> None:
+        self.client.observe_request({
+            "type": "chat.attach", "chatId": "chat-a", "agentId": "copilot-cli", "workspacePath": "D:\\repo",
+        })
+        self.client.observe_event({"type": "session/update", "chatId": "chat-a", "update": {
+            "sessionUpdate": "agent_message_chunk", "text": "first reply",
+        }})
+        self.client.drain()
+        self.assertEqual(self.client.selected, "chat-a")
+        self.assertIn("first reply", "".join(self.output))
+
+    def test_chat_labels_strip_controls_and_bound_preview(self) -> None:
+        self.client.observe_request({
+            "type": "chat.attach", "chatId": "opaque", "agentId": "copilot-cli",
+            "workspacePath": "D:\\repo\x1b[2J",
+        })
+        self.client.observe_event({"type": "operation.accepted", "chatId": "opaque",
+                                   "content": "\x1b]52;c;clipboard\x07\n\u202e" + "x" * 1000})
+        self.client.drain()
+        label = self.client.chat_label("opaque")
+        self.assertNotIn("\x1b", label)
+        self.assertNotIn("\n", label)
+        self.assertNotIn("clipboard", label)
+        self.assertNotIn("\u202e", label)
+        self.assertLessEqual(len(label), 160)
+
+    def test_android_title_identifies_same_workspace_chats_before_any_prompt(self) -> None:
+        phones: dict[str, list[dict]] = {"chat-a": [], "chat-b": []}
+        for chat_id, title in (("chat-a", "Fix login"), ("chat-b", "Update docs")):
+            self.runtime.websocket_responses({
+                "type": "chat.attach", "chatId": chat_id, "chatTitle": title,
+                "agentId": "copilot-cli", "workspacePath": "D:\\repo",
+            }, emit=phones[chat_id].append)
+        self.client.drain()
+        self.assertIn("1. repo | copilot-cli | Fix login", "".join(self.output))
+        self.assertIn("2. repo | copilot-cli | Update docs", "".join(self.output))
+        self.client.command("/chats")
+        self.client.command("2")
+        self.assertEqual(self.client.selected, "chat-b")
+        self.client.command("continue selected chat")
+        wait_for_event(phones["chat-b"], "operation.done")
+        self.assertFalse(any(e["type"] == "operation.accepted" for e in phones["chat-a"]))
+        self.assertEqual(next(e for e in phones["chat-b"] if e["type"] == "operation.accepted")["content"],
+                         "continue selected chat")
+        self.client.observe_request({
+            "type": "chat.attach", "chatId": "chat-a",
+            "chatTitle": "\x1b[2JRenamed\n\u202e" + "x" * 1000,
+        })
+        self.assertEqual(self.client.chats["chat-a"].number, 1)
+        self.assertEqual(self.client.selected, "chat-b")
+        self.assertLessEqual(len(self.client.chats["chat-a"].title), 64)
+        self.assertNotIn("\x1b", self.client.chat_label("chat-a"))
+        self.assertNotIn("\n", self.client.chat_label("chat-a"))
+        self.assertNotIn("\u202e", self.client.chat_label("chat-a"))
 
     def test_terminal_prompt_preserves_android_subscription_and_session(self) -> None:
         phone: list[dict] = []
@@ -242,6 +363,46 @@ class TerminalTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec("prompt_toolkit"), "Install requirements-interactive.txt for terminal UI tests")
 class TerminalInputTests(unittest.IsolatedAsyncioTestCase):
+    async def test_phone_discovery_does_not_retarget_an_existing_draft(self) -> None:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        client = TerminalClient(lambda _: None)
+        client.runtime = BridgeRuntime(BridgeConfig(machine_name="test"), PairingStore(), local_client=client)
+        with create_pipe_input() as pipe:
+            session = PromptSession(input=pipe, output=DummyOutput())
+            task = asyncio.create_task(terminal_loop(client, lambda: True, session))
+            try:
+                await asyncio.sleep(0.1)
+                pipe.send_text("draft before connecting")
+                await asyncio.sleep(0.1)
+                client.observe_request({
+                    "type": "chat.attach", "chatId": "phone-a", "agentId": "copilot-cli", "workspacePath": "D:\\repo",
+                })
+                await asyncio.sleep(0.2)
+                self.assertIsNone(client.selected)
+                self.assertEqual(session.default_buffer.text, "draft before connecting")
+                pipe.send_bytes(b"\x03")
+                await asyncio.sleep(0.2)
+                self.assertEqual(client.selected, "phone-a")
+                pipe.send_text("draft for first chat")
+                await asyncio.sleep(0.1)
+                client.observe_request({
+                    "type": "chat.attach", "chatId": "phone-b", "agentId": "copilot-cli", "workspacePath": "D:\\other",
+                })
+                await asyncio.sleep(0.2)
+                self.assertEqual(client.selected, "phone-a")
+                self.assertEqual(session.default_buffer.text, "draft for first chat")
+                self.assertFalse(client.runtime._prompt_operations)
+                pipe.send_bytes(b"\x03")
+                await asyncio.sleep(0.1)
+                pipe.send_text("/quit\n")
+                await asyncio.wait_for(task, 3)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     async def test_streaming_preserves_draft_and_ctrl_c_does_not_stop_bridge(self) -> None:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import DummyHistory

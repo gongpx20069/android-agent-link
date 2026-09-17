@@ -46,6 +46,11 @@ Chat
   workspace, ACP session and serialized prompt queue.
 - Use AgentLink's own input UI, not the agent's native terminal UI. Concurrent
   replies must not corrupt the user's draft.
+- Do not require finding or copying Chat IDs. Automatically select the sole
+  discovered chat while input is empty. For multiple chats, offer stable numbers
+  labelled with project, phone title, agent, status and full workspace path.
+- Keep terminal selection fixed until explicitly changed. Background phone
+  connections must not retarget a draft; picker input must never execute as chat.
 - Display selected-chat conversation and tool status, not Android delivery logs.
   Other chats display only task/approval notices.
 - Keep pairing and approval explicit through one input controller, with default

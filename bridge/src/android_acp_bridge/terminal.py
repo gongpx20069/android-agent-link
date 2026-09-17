@@ -27,6 +27,9 @@ def display_text(value: str) -> str:
 @dataclass
 class TerminalChat:
     chat_id: str
+    number: int = 0
+    title: str = ""
+    preview: str = ""
     agent_id: str = ""
     workspace: str = ""
     session_id: str | None = None
@@ -58,6 +61,9 @@ class TerminalClient:
         self._reviewed: set[str] = set()
         self._tools: dict[tuple[str, str], str] = {}
         self._stream: tuple[str, str] | None = None
+        self._announced_chats: set[str] = set()
+        self._choosing_chat = False
+        self._chat_choices: dict[str, str] = {}
 
     @staticmethod
     def _write(text: str) -> None:
@@ -76,7 +82,7 @@ class TerminalClient:
             if len(self.chats) >= 256:
                 self._dropped += 1
                 return None
-            chat = TerminalChat(chat_id)
+            chat = TerminalChat(chat_id, number=len(self.chats) + 1)
             self.chats[chat_id] = chat
         return chat
 
@@ -94,9 +100,67 @@ class TerminalClient:
                 chat.agent_id = payload["agentId"]
             if isinstance(payload.get("workspacePath"), str):
                 chat.workspace = payload["workspacePath"]
+            if isinstance(payload.get("chatTitle"), str):
+                chat.title = " ".join(display_text(payload["chatTitle"][:1024]).split())[:64]
             if isinstance(payload.get("sessionId"), str):
                 chat.session_id = payload["sessionId"]
                 chat.resumable = payload.get("sessionResumable") is True
+
+    def chat_label(self, chat_id: str) -> str:
+        with self._lock:
+            chat = self.chats.get(chat_id)
+            if chat is None:
+                return "Chat"
+            workspace = chat.workspace.rstrip("\\/").replace("\\", "/").rsplit("/", 1)[-1]
+            label = f"{chat.number}. {workspace[:48] or 'Workspace'} | {chat.agent_id[:32] or 'Agent'}"
+            if chat.title or chat.preview:
+                label += f" | {chat.title or chat.preview}"
+            return " ".join(display_text(label).split())[:160]
+
+    def prompt_label(self) -> str:
+        with self._lock:
+            if self._choosing_chat:
+                return "Choose chat number (Enter to cancel) > "
+            return (self.chat_label(self.selected) if self.selected else "Waiting for phone chat") + " > "
+
+    def _select_chat(self, chat_id: str) -> None:
+        self.selected = chat_id
+        self._choosing_chat = False
+        self._chat_choices.clear()
+        self.say(f"Chat: {self.chat_label(chat_id)}")
+        self.say("Type a message to continue. /chats to switch. Showing new events only.")
+
+    def _show_chats(self, *, choose: bool) -> None:
+        with self._lock:
+            ready = [chat for chat in self.chats.values() if chat.agent_id and chat.workspace]
+            if not ready:
+                self.say("No chats yet. Open a chat on your phone; it will appear here automatically.")
+                return
+            self.say("Chats (* = current):")
+            for chat in ready:
+                self.say(f"{'*' if chat.chat_id == self.selected else ' '} {self.chat_label(chat.chat_id)} [{chat.status}]")
+                self.say(f"   Workspace: {chat.workspace}")
+            if choose:
+                self._choosing_chat = True
+                self._chat_choices = {str(chat.number): chat.chat_id for chat in ready}
+                self.say("Enter a chat number, or press Enter to keep the current chat.")
+            else:
+                self.say("Use /chats to choose, or /use <number> to switch directly.")
+
+    def _refresh_chats(self, allow_auto_select: bool) -> None:
+        with self._lock:
+            ready = [chat for chat in self.chats.values() if chat.agent_id and chat.workspace]
+            new = [chat for chat in ready if chat.chat_id not in self._announced_chats]
+            self._announced_chats.update(chat.chat_id for chat in ready)
+            if self.selected is None and len(ready) == 1 and allow_auto_select and not self._choosing_chat:
+                self._select_chat(ready[0].chat_id)
+            elif new:
+                if self.selected is None:
+                    self._show_chats(choose=False)
+                else:
+                    for chat in new:
+                        if chat.chat_id != self.selected:
+                            self.say(f"Chat available: {self.chat_label(chat.chat_id)}. /use {chat.number} to switch.")
 
     def observe_event(self, event: dict[str, Any]) -> None:
         chat_id = event.get("chatId")
@@ -126,12 +190,14 @@ class TerminalClient:
             if kind == "operation.accepted":
                 item["content"] = str(event.get("content", ""))[:8192]
                 item["state"] = event.get("state")
+                if not chat.preview:
+                    chat.preview = " ".join(display_text(item["content"]).split())[:64]
             elif kind == "session/update":
                 update = event.get("update") if isinstance(event.get("update"), dict) else {}
                 item["kind"] = update.get("sessionUpdate")
                 if item["kind"] not in {"agent_message_chunk", "tool_call", "tool_call_update"}:
                     return
-                if item["kind"] == "agent_message_chunk" and chat_id != self.selected:
+                if item["kind"] == "agent_message_chunk" and self.selected is not None and chat_id != self.selected:
                     return
                 item["tool"] = str(update.get("toolCallId", "tool"))[:128]
                 item["status"] = update.get("status")
@@ -168,11 +234,14 @@ class TerminalClient:
                 self._pairing.answered.set()
             self._reviewed.clear()
             self._tools.clear()
+            self._announced_chats.clear()
+            self._chat_choices.clear()
             self.chats.clear()
             while not self._events.empty():
                 self._events.get_nowait()
 
-    def drain(self) -> None:
+    def drain(self, *, allow_auto_select: bool = True) -> None:
+        self._refresh_chats(allow_auto_select)
         with self._lock:
             dropped, self._dropped = self._dropped, 0
             question = self._pairing
@@ -206,6 +275,7 @@ class TerminalClient:
             except queue.Empty:
                 break
             chat_id = item["chatId"]
+            label = self.chat_label(chat_id)
             selected = chat_id == self.selected
             kind = item["type"]
             if kind == "session/update" and item.get("kind") == "agent_message_chunk":
@@ -224,9 +294,9 @@ class TerminalClient:
                     if item.get("state") == "queued":
                         self.say("Queued behind the active task.")
                 else:
-                    self.say(f"[{chat_id}] New task. /use {chat_id} to view.")
+                    self.say(f"[{label}] New task. /chats to switch.")
             elif kind == "operation.done":
-                self.say(f"[{chat_id}] Task {item.get('status', 'finished')}.")
+                self.say(f"[{label}] Task {item.get('status', 'finished')}.")
                 self._tools = {key: value for key, value in self._tools.items() if key[0] != chat_id}
             elif kind == "session/update" and item.get("kind") in {"tool_call", "tool_call_update"}:
                 key = (chat_id, item["tool"])
@@ -239,11 +309,11 @@ class TerminalClient:
                     self.say("Terminal tool display limit reached; older status summaries may repeat.")
                 self._tools[key] = status
             elif kind == "approval.requested":
-                self.say(f"[{chat_id}] Approval needed: {item['approvalId']}. Use /approvals to review.")
+                self.say(f"[{label}] Approval needed: {item['approvalId']}. Use /approvals to review.")
             elif kind == "approval.resolved":
-                self.say(f"[{chat_id}] Approval {item['approvalId']}: {item['status']}")
+                self.say(f"[{label}] Approval {item['approvalId']}: {item['status']}")
             elif kind == "chat.session.error":
-                self.say(f"[{chat_id}] Session restore failed; check the Android error details before retrying.")
+                self.say(f"[{label}] Session restore failed; check the Android error details before retrying.")
         flush()
 
     def _review_approvals(self) -> None:
@@ -252,7 +322,7 @@ class TerminalClient:
         with self._lock:
             self._reviewed.clear()
             for item in approvals:
-                self.say(f"[{item['chatId']}] {item['approvalId']}: {item['summary']}")
+                self.say(f"[{self.chat_label(item['chatId'])}] {item['approvalId']}: {item['summary']}")
                 details = json.dumps(item.get("details", {}), ensure_ascii=False, indent=2)
                 self.say(details[:8192])
                 if len(details) <= 8192:
@@ -265,27 +335,38 @@ class TerminalClient:
     def command(self, line: str) -> bool:
         assert self.runtime is not None
         line = line.strip()
+        if self._choosing_chat and not line.startswith("/"):
+            with self._lock:
+                if not line:
+                    self._choosing_chat = False
+                    self._chat_choices.clear()
+                    self.say("Chat selection cancelled. Current chat unchanged.")
+                elif line in self._chat_choices:
+                    self._select_chat(self._chat_choices[line])
+                else:
+                    self.say("Enter a number from the list, or press Enter to cancel. No message was sent.")
+            return True
         if not line:
             return True
         command, _, argument = line.partition(" ")
         argument = argument.strip()
         if command == "/help":
-            self.say("/chats | /use <chat-id> | /new <agent-id> <absolute workspace>\n"
+            self.say("/chats (choose by number) | /use <number> | /new <agent-id> <absolute workspace>\n"
                      "/approvals | /approve <approval-id> | /deny <approval-id> | /pair y|n\n"
                      "/send <text> (including a leading /) | /quit (stops bridge; /quit! while busy)")
         elif command == "/chats":
-            with self._lock:
-                for chat in self.chats.values():
-                    self.say(f"{'*' if chat.chat_id == self.selected else ' '} {chat.chat_id} [{chat.status}] {chat.agent_id} {chat.workspace}")
-                if not self.chats:
-                    self.say("No chats yet. Open a chat on Android, or use /new <agent-id> <workspace>.")
+            self._show_chats(choose=True)
         elif command == "/use":
             with self._lock:
-                if argument not in self.chats:
-                    self.say("Unknown chat. Use /chats for exact IDs.")
+                chat = next((chat for chat in self.chats.values() if str(chat.number) == argument), None)
+                if chat is None:
+                    chat = self.chats.get(argument)
+                if not argument:
+                    self._show_chats(choose=True)
+                elif chat is None or not chat.agent_id or not chat.workspace:
+                    self.say("Unknown chat. Use /chats to choose by number.")
                 else:
-                    self.selected = argument
-                    self.say(f"Selected {argument}. Showing new events only; previous history is on Android.")
+                    self._select_chat(chat.chat_id)
         elif command == "/new":
             agent, _, workspace = argument.partition(" ")
             workspace = workspace.strip().strip('"')
@@ -301,8 +382,9 @@ class TerminalClient:
                 self.observe_request({"type": "chat.prompt", "chatId": chat_id, "agentId": agent, "workspacePath": workspace})
                 with self._lock:
                     if chat_id in self.chats:
-                        self.selected = chat_id
-                        self.say(f"Created {chat_id}. This local chat is not automatically added to Android's Chats list.")
+                        self._announced_chats.add(chat_id)
+                        self._select_chat(chat_id)
+                        self.say("This local chat is not automatically added to Android's Chats list.")
                     else:
                         self.say("Terminal chat limit reached; cannot create another chat.")
         elif command == "/approvals":
@@ -342,7 +424,7 @@ class TerminalClient:
             with self._lock:
                 chat = self.chats.get(self.selected or "")
                 if chat is None or not chat.agent_id or not chat.workspace:
-                    self.say("Select a chat with known agent/workspace using /chats and /use, or create one with /new.")
+                    self.say("No chat selected. Open a chat on your phone, then /chats to choose. No message was sent.")
                     return True
                 payload = {
                     "type": "chat.prompt", "chatId": chat.chat_id, "agentId": chat.agent_id,
@@ -374,7 +456,7 @@ class TerminalClient:
 async def terminal_loop(client: TerminalClient, server_alive: Callable[[], bool], session: Any) -> None:
     async def read_line() -> tuple[str, str]:
         try:
-            line = await session.prompt_async(lambda: display_text(client.selected or "AgentLink")[:80] + " > ")
+            line = await session.prompt_async(client.prompt_label)
             return "line", line
         except KeyboardInterrupt:
             return "cancel", ""
@@ -383,7 +465,7 @@ async def terminal_loop(client: TerminalClient, server_alive: Callable[[], bool]
 
     async def render() -> None:
         while True:
-            client.drain()
+            client.drain(allow_auto_select=not session.default_buffer.text)
             if not server_alive():
                 raise RuntimeError("Bridge listener stopped unexpectedly.")
             await asyncio.sleep(0.1)
@@ -403,7 +485,7 @@ async def terminal_loop(client: TerminalClient, server_alive: Callable[[], bool]
             if action == "eof":
                 client.say("Terminal closed; stopping the bridge.")
                 break
-            client.drain()
+            client.drain(allow_auto_select=False)
             if not client.command(line):
                 break
     finally:
@@ -426,7 +508,8 @@ def run_interactive(runtime: BridgeRuntime, client: TerminalClient) -> None:
         try:
             with patch_stdout():
                 client.say("AgentLink terminal chat. /help for commands. Android can connect concurrently.\n"
-                           "Open a chat on Android, then /chats and /use <chat-id> to share that conversation.")
+                           "Open a chat on your phone. A single chat is selected automatically; just type to continue.\n"
+                           "For multiple chats, use /chats and choose a number. No Chat ID needed.")
                 # Do not persist prompts or approval commands in terminal history.
                 asyncio.run(terminal_loop(client, worker.is_alive, PromptSession(history=DummyHistory())))
         finally:

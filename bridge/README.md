@@ -216,7 +216,21 @@ authenticated HTTP/WebSocket bridge available to Android. A single prompt-toolki
 input reader redraws your draft while selected-chat replies stream above it.
 Prompt history is disabled; nothing is written to a terminal history file.
 
-Open a Chat on Android first, then `/chats` and `/use <chat-id>` in the terminal.
+Open a Chat on Android first. When only one chat is known and the terminal input
+is empty, it is selected automatically; type normally to continue without a Chat ID.
+With multiple chats, `/chats` opens a numbered picker: enter a displayed number
+or press Enter to cancel. `/use 2` is a direct shortcut. Numbers in ordinary
+chat input remain messages, not commands. Exact IDs remain accepted by `/use`
+for compatibility, but are not needed in the normal workflow.
+
+The picker and input prompt show project/agent and the phone chat title, falling
+back to a first observed prompt excerpt on older phones. The list also shows
+status and the full workspace path. Numbers remain stable for this bridge run.
+Discovery/reconnect never replaces an existing selection. Because Android also
+attaches background chats, attachment order is not treated as foreground focus.
+Automatic initial selection waits while a draft is present; it never retargets
+text already being typed. A picker accepts only numbers from its displayed list.
+
 Both surfaces submit to the same existing queue, and terminal observation does
 not replace Android's subscription. Concurrent prompts queue behind active work.
 The terminal only shows new events, not a replay of old conversation history.

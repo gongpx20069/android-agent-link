@@ -129,14 +129,29 @@ AgentLink 提供自己的可选终端聊天模式，不是 Copilot 等 agent 的
 .\.venv\Scripts\python.exe .\bridge\run.py start --interactive
 ```
 
-先在 Android 打开一个 Chat，再在电脑终端输入 `/chats`，使用
-`/use <chat-id>` 选择对应的完整 ID。之后在电脑输入消息，就会与手机共用
-同一个 agent 会话和任务队列。回复流式显示，不打乱正在输入的文字。
-其他 Chat 只提示任务状态或审批，不展开回复。切换后显示新消息，旧历史仍在手机查看。
+先在 Android 打开聊天。如果 bridge 只发现一个聊天，且终端没有正在输入的文字，
+会自动选中它，**直接打字即可接着聊**，不需要查找、复制或分享 Chat ID。
+
+有多个聊天时，输入 `/chats`，再输入列表中的数字即可选择：
+
+```text
+* 1. my-project | copilot-cli | 修复登录
+  2. my-project | copilot-cli | 更新 README
+Choose chat number (Enter to cancel) > 2
+```
+
+列表显示项目、agent、手机上的聊天标题、状态和完整工作目录。
+旧版手机没有发送标题时，会使用已观察到的消息摘要。
+编号在本次 bridge 运行期间保持不变；手机打开其他聊天或后台重连，
+都不会抢走终端已选中的聊天，也不会把草稿自动切换到另一个会话。
+
+电脑和手机共用同一个 agent 会话和任务队列。回复流式显示，不打乱正在输入的文字。
+其他聊天只提示任务状态或审批，不展开回复。切换后显示新消息，旧历史仍在手机查看。
 
 | 终端命令 | 用途 |
 | --- | --- |
-| `/chats`、`/use <chat-id>` | 列出当前 bridge 见过的会话，选择要操作的会话。 |
+| `/chats` | 显示聊天列表，再输入数字选择；直接回车取消选择。 |
+| `/use 2` | 直接切换到编号 2 的聊天。 |
 | `/new copilot-cli C:\Repos\my-project` | 为已安装的 agent 创建终端本地会话。 |
 | `/approvals` | 查看待审批请求的详细内容。 |
 | `/approve <approval-id>`、`/deny <approval-id>` | 批准或拒绝；批准前必须先查看详情。 |

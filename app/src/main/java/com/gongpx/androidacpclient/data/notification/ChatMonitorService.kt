@@ -155,6 +155,7 @@ class ChatMonitorService : Service() {
             state.connection = bridgeClient.openChatConnection(
                 machine = state.machine,
                 chatId = chat.id,
+                chatTitle = chat.title,
                 agentId = chat.agentId,
                 workspacePath = chat.workspacePath,
                 lastEventId = chat.lastBridgeEventId,

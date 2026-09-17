@@ -140,15 +140,31 @@ From the repository folder, install the extra once and start:
 .\.venv\Scripts\python.exe .\bridge\run.py start --interactive
 ```
 
-Open a chat on Android, then enter `/chats` in the computer terminal. Select its
-exact ID with `/use <chat-id>`. Messages entered there use the same agent session
-and queue as your phone; replies stream in the terminal without interrupting
-the text you are typing. Other chats show task/approval notices, not their replies.
-Selection shows new events only; use Android for earlier history.
+Open a chat on Android. When the bridge sees just one chat and your terminal
+input is empty, it selects that chat automatically: **just type to continue**.
+No Chat ID to find, copy, or share.
+
+For multiple chats, enter `/chats`, then choose a number from the list:
+
+```text
+* 1. my-project | copilot-cli | Fix login
+  2. my-project | copilot-cli | Update README
+Choose chat number (Enter to cancel) > 2
+```
+
+The list shows project, agent, phone chat title, status, and full workspace path.
+Older phones without title support use an observed message excerpt instead.
+Numbers stay stable until the bridge restarts. New phone connections and
+background reconnects never switch an already selected terminal chat.
+
+Messages use the same agent session and queue as your phone; replies stream
+without interrupting your draft. Other chats show task/approval notices, not
+their replies. Selection shows new events only; use Android for earlier history.
 
 | Terminal command | Action |
 | --- | --- |
-| `/chats`, `/use <chat-id>` | List chats seen by this bridge and select one. |
+| `/chats` | Show recognizable chats, then enter a number to choose. Enter cancels. |
+| `/use 2` | Switch directly to chat number 2. |
 | `/new copilot-cli C:\Repos\my-project` | Create a terminal-local chat for an installed agent. |
 | `/approvals` | Review pending approval details. |
 | `/approve <approval-id>`, `/deny <approval-id>` | Decide a request; approval requires reviewing it first. |

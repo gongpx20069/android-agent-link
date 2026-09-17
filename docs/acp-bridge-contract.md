@@ -170,6 +170,7 @@ Android opens or reconnects a persistent chat WebSocket by sending:
 {
   "type": "chat.attach",
   "chatId": "chat_123",
+  "chatTitle": "Fix login",
   "agentId": "copilot-cli",
   "workspacePath": "D:\\repos\\android-agent-link",
   "sessionId": "sess_abc",
@@ -190,6 +191,13 @@ Bridge behavior:
 `chat.attached` includes the current `eventGeneration`. If it differs from `lastEventGeneration`, or if `lastEventId` is greater than the Bridge's current event counter, the Bridge returns `checkpointReset=true`, replays the available generation from event `1`, and Android resets its durable event checkpoint before applying that replay.
 
 `sessionId` and `sessionResumable` are optional for a new Chat and required once Android has received a `chat.session` binding. They allow a restarted Bridge to restore the same ACP conversation.
+
+`chatTitle` is optional display-only metadata supplied by Android on foreground
+and background connections. Interactive terminals sanitize and bound the title
+to label their numbered chat picker; it never selects a session or workspace,
+changes authentication, or implies that this is the phone's foreground chat.
+Older bridges ignore it. With older phones, the terminal uses workspace/agent
+labels and a first observed prompt excerpt instead. Titles refresh on attachment.
 
 For `chat.prompt`, the bridge must send `operation.accepted` before execution or queueing. When execution begins it sends `operation.started` for every member of the active batch before any streamed ACP `session/update`. Streamed events for the combined ACP turn must be sent exactly once, followed by one `operation.done` per batch member. The bridge sends `chat.status=idle` only after the per-chat prompt queue drains.
 

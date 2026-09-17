@@ -26,6 +26,10 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Chat list rows and the chat detail header show a small status dot: busy while a prompt is running, idle otherwise.
 - Completed Agent responses show a red unread dot on the chat list until that chat is opened.
 - On startup, Android attaches every persisted Chat long enough to synchronize its Bridge status. Idle Chats disconnect after synchronization; busy Chats remain monitored until completion, including while another tab or Chat is open.
+- Foreground and background `chat.attach` requests include the phone's chat title
+  as optional display metadata for the bridge terminal's numbered picker. It is
+  refreshed on attachment, is compatible with older bridges, and does not mark
+  a chat as focused or change session routing.
 - When a prompt completes while AgentLink is in the background, Android shows one system notification whose title is the Chat name and whose body is the latest Agent response. No completion notification is shown while the app is in the foreground, and tapping a notification opens the matching chat.
 - Opening a chat automatically scrolls to the newest message.
 - Fixed bottom prompt box for sending chat messages.

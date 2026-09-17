@@ -270,6 +270,16 @@ selected chat's agent, workspace and latest session binding. Existing queue,
 batching, approval and replay behavior is reused without a new wire protocol.
 Terminal-created chats are local metadata only, not new Android chat cards.
 
+Each observed chat has a stable per-run number. Optional `chat.attach.chatTitle`
+metadata labels the terminal with the phone's title; older clients fall back to
+workspace/agent plus a bounded first observed prompt excerpt. Labels are plain,
+single-line text and never routing keys. `/chats` takes a snapshot of numbered
+choices; input outside the snapshot is rejected rather than sent as a prompt.
+The sole known chat is selected automatically only while input is empty and no
+selection exists. Additional attaches and background reconnects never change it:
+Android startup/monitor attachments do not identify foreground focus. Discovery
+only queues metadata; selection and notices happen in the terminal render loop.
+
 The observer enqueues only bounded display projections and updates session/status
 metadata under a local lock; it does not perform input or terminal writes under
 the runtime event lock. Rendering coalesces reply fragments every 100ms. Queue

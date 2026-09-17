@@ -201,6 +201,12 @@ diagnostic log. It displays user/agent text and approval details to the local
 computer user. Do not share terminal recordings as sanitized logs. Input history
 is disabled and no new transcript file is written.
 
+Phone titles and prompt excerpts in the numbered chat picker are bounded display
+labels, not session identifiers or authorization. Background connections never
+change an existing terminal selection, and automatic initial selection waits for
+empty input. Picker numbers resolve against the displayed snapshot; an invalid
+choice cannot become a prompt or select a newly arrived, unseen chat.
+
 The local terminal is trusted by possession of the bridge's console; it does not
 add an unauthenticated network API. Phone authentication and pairing remain
 unchanged. Terminal prompts and decisions use the existing runtime queue and

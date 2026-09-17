@@ -410,6 +410,7 @@ class BridgeClient(
         onFailure: (Throwable) -> Unit = {},
         onApprovalSnapshot: (List<BridgeApprovalRequest>) -> Unit = {},
         onApprovalResolved: (String, String, Long) -> Unit = { _, _, _ -> },
+        chatTitle: String? = null,
     ): ChatConnection {
         val requestBuilder = Request.Builder().url(toWebSocketUrl(machine.endpoint, machine.deviceToken))
         machine.connectionHeaders.forEach { (name, value) ->
@@ -457,6 +458,7 @@ class BridgeClient(
                             JSONObject()
                                 .put("type", "chat.attach")
                                 .put("chatId", chatId)
+                                .put("chatTitle", chatTitle?.take(256))
                                 .put("agentId", agentId)
                                 .put("workspacePath", workspacePath)
                                 .put("lastEventId", lastEventId)

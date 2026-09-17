@@ -1384,6 +1384,7 @@ fun AgentLinkApp(
         connection = bridgeClient.openChatConnection(
             machine = machine,
             chatId = chat.id,
+            chatTitle = chat.title,
             agentId = chat.agentId,
             workspacePath = chat.workspacePath,
             lastEventId = chat.lastBridgeEventId,
