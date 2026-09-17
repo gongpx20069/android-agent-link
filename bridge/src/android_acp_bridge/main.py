@@ -149,11 +149,12 @@ def _start(args: argparse.Namespace) -> int:
 
     print(f"Bridge bind endpoint: ws://{config.host}:{config.port}", flush=True)
     print(f"Android pairing endpoint: {pairing_endpoint}", flush=True)
-    print(f"Pairing expires at: {payload.expires_at}", flush=True)
-    print("Android pairing link:", flush=True)
-    print(deep_link, flush=True)
-    print("Android pairing QR:", flush=True)
-    print(render_terminal_qr(deep_link, ansi=sys.stdout.isatty()), flush=True)
+    if terminal_client is None:
+        print(f"Pairing expires at: {payload.expires_at}", flush=True)
+        print("Android pairing link:", flush=True)
+        print(deep_link, flush=True)
+        print("Android pairing QR:", flush=True)
+        print(render_terminal_qr(deep_link, ansi=sys.stdout.isatty()), flush=True)
 
     console = ConsoleLog("error" if terminal_client is not None else args.log_level)
     try:

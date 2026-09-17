@@ -76,7 +76,8 @@ Chat
   tool groups and show failed tool titles even while collapsed.
 - Keep pairing and approval explicit through one input controller, with default
   denial and authoritative expiry. Never treat terminal text as raw shell input.
-- Keep the startup QR/link accessible from `/pairing` after entering the alternate screen.
+- In interactive mode, show the QR/link only on `/qrcode` (alias `/pairing`) in a
+  persistent dedicated view. Other server modes still show it at startup.
 - Preserve ordinary headless behavior. Clearly explain that terminal-local new
   chats do not automatically appear on Android and history selection is live-only.
 

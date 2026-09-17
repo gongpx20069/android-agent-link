@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import io
 import unittest
 from datetime import timedelta
 from unittest.mock import patch
@@ -11,6 +12,39 @@ from android_acp_bridge.pairing import PairingStore, build_pairing_payload, enco
 
 
 class PairingTests(unittest.TestCase):
+    def test_startup_qr_is_command_only_in_interactive_mode(self) -> None:
+        for mode in ("interactive", "stdlib", "fastapi"):
+            with (
+                self.subTest(mode=mode),
+                patch("android_acp_bridge.main.importlib.util.find_spec", return_value=object()),
+                patch("sys.stdin.isatty", return_value=True),
+                patch("sys.stdout", new_callable=io.StringIO) as output,
+                patch("android_acp_bridge.main.BridgeRuntime"),
+                patch("android_acp_bridge.main.render_terminal_qr", return_value="QR-MARKER"),
+                patch("android_acp_bridge.main.run_server") as server,
+                patch("android_acp_bridge.main._run_fastapi") as fastapi,
+                patch("android_acp_bridge.terminal.run_interactive") as terminal,
+            ):
+                args = ["start", "--transport", "local"]
+                args += ["--interactive"] if mode == "interactive" else ["--server", mode]
+                with patch.object(output, "isatty", return_value=True):
+                    self.assertEqual(main(args), 0)
+                if mode == "interactive":
+                    self.assertNotIn("QR-MARKER", output.getvalue())
+                    self.assertNotIn("acpclient://", output.getvalue())
+                    self.assertNotIn("Android pairing QR:", output.getvalue())
+                    client = terminal.call_args.args[1]
+                    self.assertIn("QR-MARKER", client.pairing_display)
+                    self.assertIn("acpclient://", client.pairing_display)
+                    server.assert_not_called()
+                    fastapi.assert_not_called()
+                    client.close()
+                else:
+                    self.assertIn("QR-MARKER", output.getvalue())
+                    self.assertIn("Android pairing QR:", output.getvalue())
+                    self.assertIn("acpclient://", output.getvalue())
+                    terminal.assert_not_called()
+
     def test_start_defaults_to_devtunnel_transport(self) -> None:
         with patch("android_acp_bridge.main._start", return_value=0) as start:
             self.assertEqual(main(["start"]), 0)

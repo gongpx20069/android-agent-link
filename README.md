@@ -205,13 +205,16 @@ or older evicted entries have explicit notices. Full Android delivery is unchang
 | `/approvals` | Review pending approval details. |
 | `/approve <approval-id>`, `/deny <approval-id>` | Decide a request; approval requires reviewing it first. |
 | `/pair y`, `/pair n` | Confirm or deny phone pairing after checking the displayed code. |
-| `/pairing` | Show the startup pairing QR/link; Esc returns to chat. |
+| `/qrcode`, `/pairing` | Show the pairing QR/link on demand; Esc returns to chat. |
 | `/send <text>` | Send text that starts with `/`, rather than treating it as a terminal command. |
 | `/help`, `/quit` | Show help, or stop the bridge and disconnect Android. |
 
 For a shared conversation, **create/open it on Android first**. A terminal-local
 `/new` chat is not automatically added to the phone's Chats list. Chat selection
 and terminal history are not persisted across bridge restarts.
+Interactive mode does not print the QR/link at startup: use `/qrcode` to open
+a dedicated view that incoming chat output cannot replace. Ordinary server modes
+still print it at startup. The original token expiry is unchanged.
 Agent-advertised slash commands also appear in the menu. Unknown commands are
 rejected; terminal input never executes a local shell. `/resume` remains an Android
 picker action. `/allow-all` (also `/allow_all`) refreshes the agent's permission

@@ -292,7 +292,9 @@ Links/images do not fetch resources or execute code. `NO_COLOR=1` enables monoch
   Check the phone/code first. The ordinary server's `[y/N]` prompt is replaced
   only in interactive mode so no second stdin reader can steal chat input.
   The two-minute timeout, explicit approval, and device-token rules are unchanged.
-- `/pairing` shows the original startup QR/link in a separate view. Arrow keys
+- `/qrcode` (also `/pairing`) shows the original startup QR/link in a separate view.
+  Interactive startup does not print the QR/link; ordinary stdlib/FastAPI startup
+  still does. Incoming conversation events do not replace the QR view. Arrow keys
   scroll it; enlarge the window to fit the entire QR, or paste the link into
   Android. Esc returns to chat. An expired startup token requires restarting the
   bridge, as before; viewing it does not extend its validity.

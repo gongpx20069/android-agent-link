@@ -388,6 +388,7 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
             {"name": "explain", "description": "Explain this workspace"}]))
         completions = list(self.ui.buffer.completer.get_completions(Document("/"), CompleteEvent()))
         self.assertIn("/model", [c.text for c in completions])
+        self.assertIn("/qrcode", [c.text for c in completions])
         self.assertIn("/explain", [c.text for c in completions])
         self.ui.submit("/explain current changes")
         await asyncio.sleep(0.3)
@@ -475,6 +476,23 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.6)
         self.assertFalse(self.ui.show_pairing)
         self.assertEqual(self.ui.buffer.text, "draft")
+
+    async def test_qrcode_command_stays_visible_during_streaming(self):
+        self.client.pairing_display = "QR-ON-DEMAND\nacpclient://pair?private-link"
+        self.assertFalse(self.ui.show_pairing)
+        self.pipe.send_text("/qrcode\r")
+        await asyncio.sleep(0.2)
+        self.assertTrue(self.ui.show_pairing)
+        for index in range(30):
+            self.client.observe_event(update("agent_message_chunk", text=f"incoming {index}"))
+        await asyncio.sleep(0.3)
+        self.assertIn("QR-ON-DEMAND", self.screen())
+        self.assertNotIn("incoming 29", self.screen())
+        self.assertFalse(any("private-link" in row.text for row in self.ui.transcript.entries))
+        self.pipe.send_bytes(b"\x1b")
+        await asyncio.sleep(0.6)
+        self.assertFalse(self.ui.show_pairing)
+        self.assertIn("incoming 29", self.screen())
 
     async def test_wrapped_unbroken_tool_output_is_scrollable_and_cjk_safe(self):
         from android_acp_bridge.terminal_ui import wrap_display_line

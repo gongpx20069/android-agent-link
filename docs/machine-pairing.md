@@ -41,6 +41,12 @@ The same confirmation broker handles QR pairing without a second stdin reader.
 The confirmation expires after two minutes; closing the terminal denies any
 pending request and stops the bridge. Ordinary server mode retains `[y/N]`.
 
+Interactive startup does not print the QR/link before entering the full-screen
+UI. Use `/qrcode` (alias `/pairing`) to display it in a dedicated view; incoming
+messages cannot replace it and Esc returns to chat. Non-interactive server modes
+continue printing the QR/link at startup. Viewing the original startup token
+does not renew it; restart the bridge if it has expired.
+
 ```text
 Start bridge on developer machine
   select transport (default: authenticated Dev Tunnel)

@@ -323,8 +323,10 @@ color. Table columns use folding rather than ellipsis overflow. Layouts whose
 nesting or column count cannot fit the terminal display original text with an
 explicit notice, rather than silently losing content. Raw HTML is not supported.
 Python-side runtime/tunnel output is captured into bounded literal notices while
-the alternate screen is active. `/pairing` exposes the original startup QR/link
+the alternate screen is active. `/qrcode` (alias `/pairing`) exposes the original startup QR/link
 in a separate scrollable view, not in the retained transcript.
+Interactive startup stores this display without printing it; other server modes
+retain the startup QR/link output.
 
 The runtime's optional `LocalClient` observer receives request metadata and each
 new sequenced event before fan-out. It does not register as the Android chat

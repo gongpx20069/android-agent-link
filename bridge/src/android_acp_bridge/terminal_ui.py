@@ -84,6 +84,7 @@ class SlashCompleter(Completer):
         "/deny": "Deny a request",
         "/pair": "Confirm phone pairing: y / n",
         "/pairing": "Show startup phone pairing QR/link",
+        "/qrcode": "Show phone pairing QR/link (Esc returns)",
         "/send": "Send literal text, including a leading /",
         "/help": "Commands and shortcuts",
         "/quit": "Stop bridge (use /quit! while busy)",
@@ -253,7 +254,7 @@ class FullScreenTerminal:
             input=input, output=output,
             before_render=self.sync_input_focus,
         )
-        self.write("AgentLink | shared Android chat. /pairing for phone QR/link; /chats to choose; /help for commands.\n"
+        self.write("AgentLink | shared Android chat. /qrcode for phone QR/link; /chats to choose; /help for commands.\n"
                    "Tab: focus conversation/input | Enter: expand tool | Esc: input | /model: choose model\n"
                    "Terminal history is a bounded live view; earlier session history stays on Android.\n")
 
@@ -439,7 +440,7 @@ class FullScreenTerminal:
 
     def submit(self, line: str) -> bool:
         command = line.strip().split(" ", 1)[0]
-        if command == "/pairing":
+        if command in {"/pairing", "/qrcode"}:
             self.show_pairing = True
             self.pairing_line = self.pairing_column = 0
             self.app.layout.focus(self.pairing_control)
