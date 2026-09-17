@@ -163,50 +163,62 @@ Older phones without title support use an observed message excerpt instead.
 Numbers stay stable until the bridge restarts. New phone connections and
 background reconnects never switch an already selected terminal chat.
 
-Messages use the same agent session and queue as your phone; replies stream
-without interrupting your draft. Other chats show task/approval notices, not
-their replies. Selection shows new events only; use Android for earlier history.
+Messages use the same agent session and queue as your phone. The **full-screen
+AgentLink interface** keeps your draft in a separate input area; receiving messages
+does not take input focus. Other chats raise task/approval notices, and switching
+shows their retained live events. This is not a download of earlier session history.
 
-The input stays short (`You >`); a two-line bottom bar keeps the current chat,
-Ready/Working/Approval status, elapsed busy time and queue size visible. It also
-shows the running tool or useful commands. Long labels fit the terminal width.
-Tool progress updates stay in that bar; only completion/failure summaries enter
-the conversation. Submitted input is not echoed a second time.
+**Tools are collapsed by default**, grouped by task. `/tools` focuses the latest
+group. Use `Tab` to switch between input and conversation, Up/Down to navigate,
+and Enter to expand/collapse a group or individual tool. Expanded tools show their
+input/output and diff data. Failed tool titles remain visible even when collapsed.
+Use PgUp/PgDn to scroll, End to follow new messages, and Esc to return to input.
+Mouse clicking is also supported. Browsing older content pauses automatic following.
 
-Agent replies render **Markdown**: headings, bold/italic text, lists, quotes,
-inline code, syntax-highlighted code blocks and tables. Completed blocks appear
-once as the reply arrives; an unfinished paragraph/list/code block waits for its
-boundary or reply completion, with a receiving indicator in the bar. Table cells
-wrap rather than silently losing text. Links are shown as text and images as
-placeholders, without opening or downloading them. Approval details stay literal.
-Set `NO_COLOR=1` before starting for monochrome rendering.
+Type `/` for a command menu; Up/Down selects a completion and Enter inserts it.
+`/model` opens the agent's actual model choices: Up/Down selects, Enter applies,
+Esc cancels. Changes are confirmed by the agent and synchronized to Android.
+Model operations are unavailable while the chat has an active task or approval.
+Agents that do not advertise model selection show an explicit unsupported message.
 
-If upgrading an existing terminal installation, rerun the interactive-extra
-install command above to add the Markdown dependencies. Extremely narrow/deep
-layouts explicitly fall back to original text; blocks exceeding 64 Ki characters
-switch the rest of that reply to plain text with a notice.
+Agent replies render **Markdown**, including headings, emphasis, code and tables.
+The view updates in place, including incomplete blocks; it does not duplicate the
+reply at completion. Replies longer than 8 Ki characters use source-text pages,
+and tool details are paged too: focus them and use Left/Right. Narrow layouts also
+fall back to source with a notice. Links/images never open or download resources;
+prompts, tool details and approvals remain literal. `NO_COLOR=1` enables monochrome.
+The terminal is a bounded live display, not an archive: oversized replies/details
+or older evicted entries have explicit notices. Full Android delivery is unchanged.
 
 | Terminal command | Action |
 | --- | --- |
 | `/chats` | Show recognizable chats, then enter a number to choose. Enter cancels. |
 | `/use 2` | Switch directly to chat number 2. |
+| `/tools` | Focus the latest collapsible tool group. |
+| `/model` | Select an advertised model for the current shared chat. |
 | `/new copilot-cli C:\Repos\my-project` | Create a terminal-local chat for an installed agent. |
 | `/approvals` | Review pending approval details. |
 | `/approve <approval-id>`, `/deny <approval-id>` | Decide a request; approval requires reviewing it first. |
 | `/pair y`, `/pair n` | Confirm or deny phone pairing after checking the displayed code. |
+| `/pairing` | Show the startup pairing QR/link; Esc returns to chat. |
 | `/send <text>` | Send text that starts with `/`, rather than treating it as a terminal command. |
 | `/help`, `/quit` | Show help, or stop the bridge and disconnect Android. |
 
 For a shared conversation, **create/open it on Android first**. A terminal-local
 `/new` chat is not automatically added to the phone's Chats list. Chat selection
 and terminal history are not persisted across bridge restarts.
+Agent-advertised slash commands also appear in the menu. Unknown commands are
+rejected; terminal input never executes a local shell. `/resume` and `/allow-all`
+remain Android picker actions, not automatically forwarded terminal commands.
 
 This mode displays conversation content rather than bridge event logs, even if
 `--log-level debug` is supplied. Runtime errors remain visible. Pairing uses
 `/pair y|n` so it does not compete with the chat input reader; ordinary server
 mode still uses `[y/N]`. `Ctrl+C` cancels the current input, not the agent task.
 `/quit` refuses while tasks are busy; `/quit!` explicitly stops the bridge anyway.
-Closing the terminal/EOF also stops the bridge, not a guaranteed agent cancellation.
+Ctrl+D requests normal `/quit`; closing the terminal/EOF stops the bridge, not a
+guaranteed agent cancellation. Already-started configuration calls finish under
+their agent timeout during shutdown.
 Use a real terminal, not a redirected pipe; the standard-library server is required.
 
 ## Coding agents

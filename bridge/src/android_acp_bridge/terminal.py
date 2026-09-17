@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from .runtime import BridgeRuntime
 from .stdlib_server import BridgeHTTPServer
 from .terminal_render import MarkdownStream, display_text
+from .terminal_state import project_tool
 
 if TYPE_CHECKING:
     from prompt_toolkit import PromptSession
@@ -33,6 +34,8 @@ class TerminalChat:
     status: str = "idle"
     queued_count: int = 0
     busy_since: float | None = None
+    config_options: list[dict[str, Any]] = field(default_factory=list)
+    commands: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -70,6 +73,8 @@ class TerminalClient:
         self._chat_choices: dict[str, str] = {}
         self.markdown: MarkdownStream | None = None
         self._markdown_key: tuple[str, str] | None = None
+        self.event_sink: Callable[[dict[str, Any]], None] | None = None
+        self.pairing_display: str | None = None
 
     @staticmethod
     def _write(text: str) -> None:
@@ -264,9 +269,29 @@ class TerminalClient:
             elif kind == "session/update":
                 update = event.get("update") if isinstance(event.get("update"), dict) else {}
                 item["kind"] = update.get("sessionUpdate")
+                if item["kind"] == "config_option_update":
+                    options = update.get("configOptions")
+                    if isinstance(options, list):
+                        projected, truncated = project_tool({"content": options}, limit=64 * 1024)
+                        if not truncated:
+                            chat.config_options = [o for o in projected["content"] if isinstance(o, dict)]
+                        else:
+                            chat.config_options = []
+                            self._dropped += 1
+                    return
+                if item["kind"] == "available_commands_update":
+                    commands = update.get("availableCommands")
+                    if isinstance(commands, list):
+                        chat.commands = [
+                            {"name": c["name"], "description": display_text(str(c.get("description", "")))[:160]}
+                            for c in commands[:200] if isinstance(c, dict)
+                            and isinstance(c.get("name"), str) and len(c["name"]) <= 80
+                            and c["name"] == display_text(c["name"]) and not any(ch.isspace() for ch in c["name"])
+                        ]
+                    return
                 if item["kind"] not in {"agent_message_chunk", "tool_call", "tool_call_update"}:
                     return
-                if item["kind"] == "agent_message_chunk" and self.selected is not None and chat_id != self.selected:
+                if self.event_sink is None and item["kind"] == "agent_message_chunk" and self.selected is not None and chat_id != self.selected:
                     return
                 item["tool"] = str(update.get("toolCallId", "tool"))[:128]
                 item["status"] = update.get("status")
@@ -277,6 +302,8 @@ class TerminalClient:
                     item["text"] = str(text)[:8192]
                     if len(str(text)) > 8192:
                         self._dropped += 1
+                elif self.event_sink is not None:
+                    item["fields"], item["truncated"] = project_tool(update)
             elif kind not in {"operation.done", "approval.requested", "approval.resolved", "chat.session.error"}:
                 return
             try:
@@ -354,8 +381,10 @@ class TerminalClient:
             label = self.chat_label(chat_id)
             selected = chat_id == self.selected
             kind = item["type"]
+            if self.event_sink is not None:
+                self.event_sink(item)
             if kind == "session/update" and item.get("kind") == "agent_message_chunk":
-                if selected:
+                if selected and self.event_sink is None:
                     key = (chat_id, str(item["operationId"]))
                     if key != fragment_key:
                         flush()
@@ -364,25 +393,26 @@ class TerminalClient:
                 continue
             flush()
             if kind == "operation.accepted":
-                if selected:
+                if selected and self.event_sink is None:
                     source = "You" if str(item["operationId"]).startswith("terminal_") else "Phone"
                     self.say(f"\n{source} > {item.get('content', '')}")
                     if item.get("state") == "queued":
                         self.say("Queued behind the active task.")
-                else:
+                elif not selected:
                     self.say(f"[{label}] New task. /chats to switch.")
             elif kind == "operation.done":
                 if self._markdown_key == (chat_id, str(item["operationId"])):
                     self._finish_markdown()
                 prefix = "" if selected else f"[{label}] "
-                self.say(f"{prefix}Task {item.get('status', 'finished')}.")
+                if self.event_sink is None or not selected:
+                    self.say(f"{prefix}Task {item.get('status', 'finished')}.")
                 self._tools = {key: value for key, value in self._tools.items() if key[0] != chat_id}
             elif kind == "session/update" and item.get("kind") in {"tool_call", "tool_call_update"}:
                 key = (chat_id, item["tool"])
                 previous = self._tools.get(key)
                 status = item.get("status") or (previous.status if previous else "pending")
                 title = item["title"] or (previous.title if previous else "Tool")
-                if selected and status in {"completed", "failed", "cancelled"} and (previous is None or previous.status != status):
+                if selected and self.event_sink is None and status in {"completed", "failed", "cancelled"} and (previous is None or previous.status != status):
                     self.say(f"  Tool [{status}]: {title}")
                 if len(self._tools) >= 512 and key not in self._tools:
                     self._tools.pop(next(iter(self._tools)))
@@ -432,6 +462,8 @@ class TerminalClient:
         argument = argument.strip()
         if command == "/help":
             self.say("/chats (choose by number) | /use <number> | /new <agent-id> <absolute workspace>\n"
+                     "/model (model picker) | /tools (focus tool group) | /pairing (phone QR/link)\n"
+                     "Tab focus | Enter expand | arrows/PgUp/PgDn browse | Left/Right page | Esc input\n"
                      "/approvals | /approve <approval-id> | /deny <approval-id> | /pair y|n\n"
                      "/send <text> (including a leading /) | /quit (stops bridge; /quit! while busy)")
         elif command == "/chats":
@@ -498,7 +530,9 @@ class TerminalClient:
                 self.say("Tasks are active. Wait for completion, or /quit! to stop the bridge and disconnect Android.")
             else:
                 return False
-        elif command.startswith("/") and command != "/send":
+        elif command.startswith("/") and command != "/send" and command not in {
+            "/" + c["name"].lstrip("/") for c in self.chats.get(self.selected or "", TerminalChat("")).commands
+        }:
             self.say("Unknown command. Use /help. Terminal input is never executed as a shell command.")
         else:
             with self._lock:
@@ -628,18 +662,15 @@ def create_terminal_session(client: TerminalClient) -> PromptSession[str]:
 
 
 def run_interactive(runtime: BridgeRuntime, client: TerminalClient) -> None:
-    from prompt_toolkit.patch_stdout import patch_stdout
+    from .terminal_ui import FullScreenTerminal
 
     client.runtime = runtime
     with BridgeHTTPServer((runtime.config.host, runtime.config.port), runtime) as server:
         worker = threading.Thread(target=server.serve_forever, name="bridge-interactive-server", daemon=True)
         worker.start()
         try:
-            with patch_stdout(raw=True):
-                client.say("\nAgentLink | Terminal chat + Android\n"
-                           "Open a phone chat to begin; /chats to choose. New messages only.\n"
-                           "Enter sends | Ctrl+C clears input | /help for commands")
-                asyncio.run(terminal_loop(client, worker.is_alive, create_terminal_session(client)))
+            ui = FullScreenTerminal(client, worker.is_alive)
+            asyncio.run(ui.run())
         finally:
             client.close()
             if worker.is_alive():

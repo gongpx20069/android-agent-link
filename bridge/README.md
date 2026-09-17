@@ -212,8 +212,8 @@ python .\run.py start --interactive
 ```
 
 This is AgentLink's own terminal client, not the native Copilot UI. It leaves the
-authenticated HTTP/WebSocket bridge available to Android. A single prompt-toolkit
-input reader redraws your draft while selected-chat replies stream above it.
+authenticated HTTP/WebSocket bridge available to Android. A full-screen
+prompt-toolkit Application separates your draft from the scrollable conversation.
 Prompt history is disabled; nothing is written to a terminal history file.
 
 Open a Chat on Android first. When only one chat is known and the terminal input
@@ -233,41 +233,37 @@ text already being typed. A picker accepts only numbers from its displayed list.
 
 Both surfaces submit to the same existing queue, and terminal observation does
 not replace Android's subscription. Concurrent prompts queue behind active work.
-The terminal only shows new events, not a replay of old conversation history.
+The terminal retains bounded live events, including other chats for later switching;
+it does not fetch earlier agent-session history.
 
-The compact `You >` input sits above a persistent two-line status bar: current
-chat, Ready/Working/Approval status, elapsed busy time, queue count, and either
-running-tool details or contextual commands. Pairing/approval guidance takes
-priority over tool activity. The bar refreshes without new messages and clips
-long labels by terminal cell width, including wide CJK text. `NO_COLOR=1` selects
-monochrome output; statuses remain readable without color.
+Tools are grouped per task and collapsed by default. `/tools` focuses the latest
+group; Tab switches input/conversation focus, Up/Down selects a line, and Enter
+expands/collapses a group or tool. Mouse clicks also work. Tool updates preserve
+expansion, title and previous fields; supplied output arrays replace older arrays.
+Failed titles are visible even in collapsed groups. Details show literal input,
+output, diff and location data. PgUp/PgDn scroll, Left/Right page long content,
+End resumes following new events, and Esc returns to input. Browsing does not
+automatically jump to incoming replies. Input is echoed once, on acceptance.
 
-Conversation roles are separated by blank lines. Prompt-toolkit removes the
-submitted input display, so the accepted user message appears once rather than
-twice. In-progress tool updates change the bar instead of printing lines;
-completion/failure summaries retain the tool title even for status-only updates.
-Selected-chat completion notices no longer repeat the full chat label.
-Agent replies render Markdown headings, emphasis, lists, quotes, inline code,
-highlighted fenced code and tables. The `interactive` extra includes Rich for
-rendering and markdown-it-py for streaming block boundaries; existing installs
-must rerun the requirements command above.
+The header/status area shows the selected chat, task state, model, queue and
+pairing/approval guidance. Input is isolated from refresh/resize. Type `/` to open
+the completion menu; Up/Down selects and Enter inserts a completion.
+`/model` opens the actual agent's selectable model configuration, including grouped
+choices. Up/Down chooses, Enter applies, Esc cancels. Model work runs off the input
+loop; if you start a new draft or leave input while loading, completion does not
+steal focus (use `/model` again when ready). Unsupported models, failures, busy chats and stale sessions are explicit
+errors, not silently forwarded `/model` prompts. Confirmed changes are sequenced
+and broadcast to Android through its existing subscriber. No Android update is
+required for the existing config-update event shape.
 
-Rendering is block-streamed, not token-by-token: complete paragraphs/blocks enter
-scrollback once, while incomplete trailing blocks wait for a boundary or operation
-completion. The bar shows when a Markdown block is being received. Interleaved
-tool or approval notices do not prematurely close code fences. Switching chats or
-exiting flushes pending text. Table cells fold rather than ellipsize. Layouts too
-narrow for their nesting/table structure show original text with an explicit notice.
-At most 64 Ki characters are pending; overflow warns and displays the remainder
-of that reply as plain text. Later reference definitions cannot restyle already
-printed blocks, and raw HTML is not supported.
-
-Only agent replies are formatted. User messages, tool/approval details and labels
-remain literal. Remote control sequences are stripped before and after Markdown
-parsing; local styling is emitted through the prompt-safe stdout proxy. Links
-remain text, images are placeholders, and no resources are fetched or executed.
-`NO_COLOR=1` applies to both Markdown and the status bar.
-This is a scrollback-friendly prompt, not a full-screen alternate-screen app.
+Agent Markdown (headings, emphasis, code, tables) is rendered in place and cached,
+including incomplete streaming text, without repeating the final reply. Replies
+over 8 Ki characters use source-text pages to keep layout bounded; tool details
+are also paged. Narrow/deep layouts explicitly use source text. Table cells fold
+rather than ellipsize. Raw HTML is unsupported. Only agent replies are formatted;
+user messages, tool/approval details and labels are literal. Control sequences
+are stripped before/after parsing and only generated styling reaches the UI.
+Links/images do not fetch resources or execute code. `NO_COLOR=1` enables monochrome.
 
 - `/new <agent-id> <absolute workspace>` creates a local chat; it does not
   automatically add a card to Android. Use an existing Android chat to share work.
@@ -278,24 +274,35 @@ This is a scrollback-friendly prompt, not a full-screen alternate-screen app.
   Check the phone/code first. The ordinary server's `[y/N]` prompt is replaced
   only in interactive mode so no second stdin reader can steal chat input.
   The two-minute timeout, explicit approval, and device-token rules are unchanged.
+- `/pairing` shows the original startup QR/link in a separate view. Arrow keys
+  scroll it; enlarge the window to fit the entire QR, or paste the link into
+  Android. Esc returns to chat. An expired startup token requires restarting the
+  bridge, as before; viewing it does not extend its validity.
 - `/send <text>` can send messages beginning with `/`. Unknown commands are
-  rejected, never run as shell commands.
+  rejected, never run as shell commands. Advertised agent commands are available
+  directly and in completion; reserved names keep AgentLink meaning. `/resume`
+  and `/allow-all` remain explicit Android picker actions.
 - `/quit` stops the bridge when idle; `/quit!` permits stopping during active work.
-  Ctrl+C clears input only. EOF/closing the terminal stops the bridge. Shutdown
+  Ctrl+C clears input only; Ctrl+D requests ordinary quit. EOF/closing the terminal stops the bridge. Shutdown
   disconnects Android and denies outstanding pairing; it is not a promise that
-  an external agent's already-running command is cancelled.
+  an external agent's already-running command is cancelled. An in-flight model
+  request completes under the agent's bounded timeout before worker shutdown.
 
 `--interactive` requires a TTY and `--server stdlib`. Missing dependencies and
 unsupported backends fail before tunnel setup. It suppresses routine runtime and
 Android-delivery logs regardless of `--log-level`; errors and interactive
-conversation/approval content remain visible. Dev Tunnels child-process output
-and initial QR/link onboarding are independent.
+conversation/approval content remain visible. Python-side runtime/tunnel output
+becomes literal notices rather than overwriting the alternate screen.
 
 Terminal display queues are bounded. If the terminal cannot keep up, it explicitly
 reports omitted display items without dropping Android events. `/approvals` reads
 authoritative pending requests even after display overflow. Terminal chat metadata
 is limited to 256 chats per bridge run; restart to reset this local view. The
-selection and draft do not persist across restarts.
+selection and draft do not persist across restarts. The live transcript retains
+at most 160 entries and roughly 2 Mi characters, with 128 Ki characters per text
+entry, 64 tools per group and a 32 Ki-character tool projection budget. Excess
+content/evicted entries are labelled; this is not a complete archive. Overflow or
+eviction clears terminal approval-review markers: re-review or decide on Android.
 
 ## Console logs
 

@@ -49,6 +49,11 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
   and adopts that session's workspace instead of mixing two conversations.
 - Settings includes a Feedback card welcoming feature requests, bug reports, and development collaboration. It opens a new GitHub Issue for this repository and provides the developer email `gongpx20069@vip.qq.com`.
 - Built-in `model` chip that opens a model picker from ACP session config options.
+- The bridge's full-screen terminal `/model` picker uses the same configuration
+  operations. Confirmed config updates are sequenced/broadcast through the existing
+  chat channel, so phone chips and dialogs refresh through their normal config
+  event handling. Busy configuration changes are rejected by the bridge. No
+  additional Android event type or subscription is needed.
 - Common command chips are prioritized before other ACP-advertised commands: `model`, `resume`, and `allow-all`.
 - Built-in `allow-all` opens an on/off picker when the ACP agent exposes the `allow_all` session config option.
 - Agent/system message bubbles render basic Markdown: headings, bullets, quotes, fenced code blocks, pipe tables, bold, italic, inline code, and link-style text. Tables honor Markdown column alignment and scroll horizontally when wider than the message bubble.

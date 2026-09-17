@@ -160,6 +160,7 @@ class BridgeRuntime:
         self._approval_lock = self._event_lock
         self._history = HistoryStore()
         self._history_loading_chats: set[str] = set()
+        self._configuring_chats: set[str] = set()
 
     def health_response(self) -> dict[str, Any]:
         return {
@@ -283,11 +284,11 @@ class BridgeRuntime:
             self._log_responses(responses)
             return responses
         if message_type == "session.refreshConfigOptions":
-            responses = self._session_refresh_config_options_response(payload)
+            responses = self._shared_config_response(payload)
             self._log_responses(responses)
             return responses
         if message_type == "session.setConfigOption":
-            responses = self._session_set_config_option_response(payload)
+            responses = self._shared_config_response(payload)
             self._log_responses(responses)
             return responses
         if message_type == "approval.decide":
@@ -339,12 +340,12 @@ class BridgeRuntime:
             waiters=[],
         )
         with self._prompt_lock:
-            if chat_id in self._history_loading_chats:
+            if chat_id in self._history_loading_chats or chat_id in self._configuring_chats:
                 return [
                     {
                         "type": "operation.done", "chatId": chat_id, "operationId": operation_id,
                         "operationType": "chat.prompt", "status": "failed", "queueRemaining": 0,
-                        "error": "Session history is being loaded; retry the prompt after loading completes.",
+                        "error": "Session history is loading or configuration is changing; retry the prompt after it completes.",
                     },
                     {"type": "bridge.done", "chatId": chat_id},
                 ]
@@ -736,7 +737,18 @@ class BridgeRuntime:
         agent_id = _string_or_default(payload.get("agentId"), "copilot-cli")
         workspace_path = _string_or_default(payload.get("workspacePath"), "")
         session_id = _string_or_default(payload.get("sessionId"), "")
+        claimed = False
         try:
+            with self._prompt_lock, self._event_lock:
+                if (
+                    chat_id in self._active_prompts
+                    or chat_id in self._history_loading_chats
+                    or chat_id in self._configuring_chats
+                    or any(p.requested["chatId"] == chat_id for p in self._pending_approvals.values())
+                ):
+                    raise AcpAgentError("Chat is busy. Finish its task, approval or session change before loading history.")
+                self._history_loading_chats.add(chat_id)
+                claimed = True
             updates = self.agent_manager.load_session(chat_id, agent_id, workspace_path, session_id)
             updates.insert(0, self._session_binding_event(chat_id, AcpSessionBinding(session_id, resumable=True)))
         except AcpAgentError as exc:
@@ -754,6 +766,10 @@ class BridgeRuntime:
                     },
                 }
             ]
+        finally:
+            if claimed:
+                with self._prompt_lock:
+                    self._history_loading_chats.discard(chat_id)
         for update in updates:
             update.setdefault("chatId", chat_id)
         return updates + [{"type": "bridge.done", "chatId": chat_id}]
@@ -771,6 +787,7 @@ class BridgeRuntime:
                     if (
                         chat_id in self._active_prompts
                         or chat_id in self._history_loading_chats
+                        or chat_id in self._configuring_chats
                         or any(pending.requested["chatId"] == chat_id for pending in self._pending_approvals.values())
                     ):
                         raise HistoryError("session_busy", "Finish the active prompt or approval before loading session history.")
@@ -1038,6 +1055,11 @@ class BridgeRuntime:
                 if pending.requested["expiresAt"] > now
             ]
 
+    def local_approval_count(self) -> int:
+        with self._approval_lock:
+            now = int(time.time() * 1000)
+            return sum(pending.requested["expiresAt"] > now for pending in self._pending_approvals.values())
+
     def _chat_status_event(
         self,
         chat_id: str,
@@ -1066,6 +1088,46 @@ class BridgeRuntime:
         if binding.replaced_session_id is not None:
             event["replacedSessionId"] = binding.replaced_session_id
         return event
+
+    def _shared_config_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
+        with self._prompt_lock, self._event_lock:
+            busy = (
+                chat_id in self._active_prompts or chat_id in self._history_loading_chats
+                or chat_id in self._configuring_chats
+                or any(p.requested["chatId"] == chat_id for p in self._pending_approvals.values())
+            )
+            if busy:
+                return [
+                    {"type": "session/update", "chatId": chat_id, "update": {
+                        "sessionUpdate": "tool_call_update", "toolCallId": "config_busy",
+                        "title": "Configuration unavailable", "status": "failed",
+                        "content": {"error": "Chat is busy. Finish its task, approval or session change first."},
+                    }},
+                    {"type": "bridge.done", "chatId": chat_id},
+                ]
+            self._configuring_chats.add(chat_id)
+        try:
+            responses = (
+                self._session_set_config_option_response(payload)
+                if payload["type"] == "session.setConfigOption"
+                else self._session_refresh_config_options_response(payload)
+            )
+            published = []
+            with self._event_lock:
+                for response in responses:
+                    if response["type"] == "bridge.done":
+                        published.append(response)
+                        continue
+                    event = self._append_event(chat_id, response)
+                    published.append(event)
+                    subscriber = self._chat_emitters.get(chat_id)
+                    if subscriber is not None:
+                        subscriber(event)
+            return published
+        finally:
+            with self._prompt_lock:
+                self._configuring_chats.discard(chat_id)
 
     def _session_set_config_option_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")

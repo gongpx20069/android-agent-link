@@ -241,13 +241,26 @@ Agent replies may be rendered as Markdown in interactive mode. Prompts, labels,
 tool summaries and approval details remain literal. ANSI/OSC escapes, clipboard
 sequences and control/bidi formatting characters are stripped before parsing and
 again from rendered text segments, including controls decoded from entities.
-Only locally generated style sequences reach the prompt-safe stdout proxy.
+Only locally generated style sequences are decoded into formatted UI fragments.
 Markdown code is never executed, links never open automatically, and image
 placeholders never fetch remote or local resources. HTML is unsupported.
-Pending Markdown is bounded; overflow and layouts too narrow for content warn
-explicitly and display plain text rather than silently dropping content. The bounded
-display queue excludes tokens and protocol credential payloads. Its overflow
-does not authorize requests or drop Android events.
+Long Markdown and tool content use bounded source/detail pages. Oversized retained
+entries, tool projections and evicted history are explicitly labelled incomplete.
+The bounded display queue excludes protocol credentials but may contain sensitive
+tool arguments/output, as a deliberately selected local conversation UI. Its
+overflow does not authorize requests or drop Android events. Display overflow or
+history eviction clears terminal approval-review markers; re-review or use Android.
+The startup pairing QR/link remains available in a separate `/pairing` view, never
+added to the transcript/cache as an ordinary message.
+
+`/model` only offers agent-advertised values and waits for confirmed state before
+reporting success. Configuration is refused during prompts, approvals or another
+session operation. Requests are pinned to their chat/session; stale session
+selections are rejected under the agent lock. Configuration broadcasts reuse the
+authenticated Android subscriber, not a new endpoint or anonymous attach.
+Unknown slash commands are not prompts or shell commands; advertised agent
+commands use the existing prompt/approval path. `/resume` and `/allow-all` are
+reserved for Android's explicit session/permission UX.
 
 - Bridge runtime logging is metadata-only at both `info` and `debug`: no prompt,
   reply/thought body, tool title/content/arguments, raw error payload or request URL

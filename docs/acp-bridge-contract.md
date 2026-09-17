@@ -4,6 +4,21 @@ This document describes the Android-to-bridge contract. It is intentionally sepa
 
 ## Transport
 
+### Shared configuration updates
+
+`session.refreshConfigOptions` and `session.setConfigOption` remain existing
+request types. Both reserve an idle chat while the operation runs: active prompts,
+pending approvals, history loads and another configuration operation reject the
+request explicitly. A prompt arriving during configuration is rejected as retryable
+busy, not silently queued for execution with an unexpected model.
+
+Successful session/config responses are sequenced in the chat event log and
+broadcast to the attached Android subscriber and local terminal observer. The
+requesting one-shot connection also receives the same events and `bridge.done`.
+No extra attach or subscriber replacement is required. Failures retain the existing
+failed tool-update shape. Configuration values are authoritative only after an
+agent response, never optimistically on selection.
+
 Preferred MVP transport:
 
 - WebSocket for interactive chat, streaming updates, and approvals.

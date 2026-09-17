@@ -140,6 +140,12 @@ def _start(args: argparse.Namespace) -> int:
         headers=connection_headers,
     )
     deep_link = encode_pairing_deep_link(payload)
+    if terminal_client is not None:
+        terminal_client.pairing_display = (
+            f"Pairing expires at: {payload.expires_at}\n"
+            "Resize the terminal to fit the complete QR, or paste the link into Android.\n"
+            + render_terminal_qr(deep_link, ansi=False) + "\nAndroid pairing link:\n" + deep_link
+        )
 
     print(f"Bridge bind endpoint: ws://{config.host}:{config.port}", flush=True)
     print(f"Android pairing endpoint: {pairing_endpoint}", flush=True)

@@ -282,38 +282,43 @@ The WebSocket reader and writer run independently so the bridge can accept queue
 
 `start --interactive` adds a `TerminalClient` alongside the standard-library
 server. `prompt-toolkit` is an explicit optional dependency (`interactive` extra):
-its asynchronous `PromptSession` and `patch_stdout` protect an editable draft
-from concurrent streaming output. It is not a PTY wrapper around an agent CLI.
+its full-screen `Application` owns one input buffer and a separately focusable
+conversation control. It is not a PTY wrapper around an agent CLI.
 The ACP process retains its dedicated protocol stdin/stdout.
 
-The prompt is compact; a two-line `bottom_toolbar` renders safe styled fragments,
-with periodic refresh for busy elapsed time and status updates. It is clipped to
-the output's current cell width rather than string length. Remote text never
-becomes HTML/ANSI markup. `NO_COLOR` selects monochrome depth. `erase_when_done`
-removes the submitted prompt display; operation acceptance supplies the single
-conversation echo. In-progress tools remain in the toolbar and terminal states
-produce one line, preserving the latest known title on status-only updates.
-Agent replies use Rich Markdown in the optional `interactive` extra.
-`markdown-it-py` supplies top-level block boundaries instead of a handwritten
-Markdown parser. Completed blocks enter scrollback once; the unfinished trailing
-block waits for a safe boundary or operation completion. Lists and fenced code
-remain together. This deliberately trades token-by-token text display for stable
-block rendering without duplicating the whole answer or using an alternate screen.
-Tool/pairing notices do not terminate an unfinished Markdown block. Switching
-chats, ending the operation or exiting flushes pending selected-chat text.
+`FullScreenTerminal` renders a header, scrollable conversation, status area and
+compact input. A 100 ms event drain and diff-based redraw preserve drafts/focus.
+Tab switches focus; Enter toggles a tool/group; arrows and page keys navigate.
+Mouse clicks also toggle. Browsing freezes following and End resumes it. Lines
+are wrapped by cell width so long unbroken output remains keyboard-accessible.
+Operation acceptance supplies the single user-message echo.
+
+`Transcript` retains at most 160 entries and roughly 2 Mi characters across chats,
+128 Ki characters per text entry, and 64 tools per task group. Tool projections
+have a 32 Ki-character traversal budget and bounded nesting. Partial fields
+preserve prior values; supplied content arrays replace rather than append.
+Tool identity includes chat and operation. Expansion/page state survives updates;
+completed tool groups remain in the bounded view and failed titles stay visible
+even while collapsed. Overflow/eviction is explicit and affects no Android events.
+
+Agent replies use the existing safe Rich/markdown-it renderer. Each changed small
+message is rendered in place, including unfinished syntax, not appended a second
+time on completion. Cached rendered rows are bounded by retained entry count and
+invalidated by revision/width. Replies over 8 Ki characters use explicit source
+pages; tools use literal JSON detail pages. This avoids arbitrarily expensive
+Markdown/layout work while keeping bounded retained content accessible.
 
 Only agent replies are formatted: prompts, labels, tool summaries and approval
 details remain literal. Remote control sequences are removed before parsing;
-only locally generated SGR styling reaches prompt-toolkit's raw stdout proxy.
+only locally generated styling is decoded into prompt-toolkit formatted fragments.
 Hyperlinks are displayed as text, images as placeholders; no remote resource is
 fetched and no code executes. Width follows the terminal and `NO_COLOR` disables
 color. Table columns use folding rather than ellipsis overflow. Layouts whose
 nesting or column count cannot fit the terminal display original text with an
-explicit notice, rather than silently losing content. Pending Markdown is capped
-at 64 Ki characters; overflow explicitly warns
-and streams the remainder of that response as plain text instead of growing
-memory or dropping Android events. References defined in later rendered blocks
-are not retroactively resolved. Raw HTML is not supported.
+explicit notice, rather than silently losing content. Raw HTML is not supported.
+Python-side runtime/tunnel output is captured into bounded literal notices while
+the alternate screen is active. `/pairing` exposes the original startup QR/link
+in a separate scrollable view, not in the retained transcript.
 
 The runtime's optional `LocalClient` observer receives request metadata and each
 new sequenced event before fan-out. It does not register as the Android chat
@@ -335,17 +340,27 @@ only queues metadata; selection and notices happen in the terminal render loop.
 
 The observer enqueues only bounded display projections and updates session/status
 metadata under a local lock; it does not perform input or terminal writes under
-the runtime event lock. Rendering coalesces reply fragments every 100ms. Queue
+the runtime event lock. Rendering consumes reply fragments every 100ms. Queue
 overflow is explicitly reported and affects only terminal display. The terminal
 owns no full history; selected-chat output is live-only. `/approvals` queries the
 runtime's authoritative, unexpired pending requests rather than relying on the
 display queue. Local input releases its lock before calling the runtime.
 
+Slash completion combines reserved AgentLink commands with advertised agent
+commands. `/model` runs configuration requests in worker threads, shows actual
+agent-provided choices, and verifies the confirmed value. Chat/session selection
+is pinned to the request. The runtime reserves idle chats across config changes,
+rejecting prompts/history/config races. Session mismatches are checked under the
+agent's chat lock. Configuration responses are sequenced/broadcast to the phone
+and observer without another attach. `/resume` and permission-changing picker
+commands remain explicit Android actions.
+
 Interactive pairing uses a bounded confirmation broker with the same runtime
 console lock. `/pair y|n` answers a displayed request; there is no competing
 `input()`. Exit or timeout denies approval. A single asyncio input/render loop
 runs on the main thread; the stdlib listener runs in a joined background thread.
-Shutdown closes terminal state, denies pairing and stops the HTTP server.
+Shutdown closes terminal state, denies pairing and stops the HTTP server; already
+started config workers finish within the agent's request timeout.
 
 ### Runtime log summaries
 

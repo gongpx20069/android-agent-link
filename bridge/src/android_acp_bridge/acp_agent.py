@@ -187,6 +187,9 @@ class AcpAgentManager:
         session_callback: SessionCallback | None = None,
     ) -> list[dict[str, Any]]:
         with self._chat_lock(chat_id):
+            current = self._get_session(chat_id)
+            if current is not None and session_id is not None and current.binding().session_id != session_id:
+                raise AcpAgentError("Session changed. Refresh configuration before applying a selection.")
             session, startup_updates, replaced_session_id = self._get_or_create_session(
                 chat_id,
                 agent_id,

@@ -53,19 +53,24 @@ Chat
   connections must not retarget a draft; picker input must never execute as chat.
 - Display selected-chat conversation and tool status, not Android delivery logs.
   Other chats display only task/approval notices.
-- Keep input compact and show chat, runtime status, busy elapsed time, queue size,
+- Keep input compact and show chat, runtime status, model, queue size,
   and contextual hints in a persistent width-aware status bar. Preserve drafts
   during refresh/resize and support monochrome.
-- Render agent Markdown headings, emphasis, lists, quotes, code blocks and tables.
-  Stream stable blocks once, retaining incomplete blocks until a boundary or
-  completion. Bound pending content and explicitly show original text for
-  oversized blocks or layouts that cannot fit, without dropping Android events.
+- Use a full-screen redrawable conversation with tool groups/details collapsed by
+  default, keyboard/mouse expansion, stable focus and paused following while browsing.
+- Render agent Markdown headings, emphasis, lists, quotes, code blocks and tables
+  in place without duplicate completion output. Bound retained content and explicitly
+  page source text for long replies/layouts that cannot fit, without dropping Android events.
+- Provide slash completion and an agent-backed `/model` picker. Confirm changes
+  before displaying success and synchronize configuration to the phone. Reject
+  busy/stale-session changes without freezing input or bypassing approval.
 - Keep prompts and approval details literal. Markdown must not execute code,
   fetch images, open links or pass remote terminal control sequences through.
-- Avoid duplicate input echoes and per-update tool lines. Show running tools in
-  the status bar and retain readable completion/failure summaries in scrollback.
+- Avoid duplicate input echoes and per-update tool lines. Retain bounded completed
+  tool groups and show failed tool titles even while collapsed.
 - Keep pairing and approval explicit through one input controller, with default
   denial and authoritative expiry. Never treat terminal text as raw shell input.
+- Keep the startup QR/link accessible from `/pairing` after entering the alternate screen.
 - Preserve ordinary headless behavior. Clearly explain that terminal-local new
   chats do not automatically appear on Android and history selection is live-only.
 

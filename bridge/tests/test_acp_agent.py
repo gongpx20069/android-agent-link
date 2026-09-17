@@ -223,6 +223,18 @@ class AcpAgentSessionConfigTests(unittest.TestCase):
 
 
 class AcpAgentManagerBindingTests(unittest.TestCase):
+    def test_model_change_rejects_a_stale_session_under_chat_lock(self) -> None:
+        manager = AcpAgentManager()
+        live = self._session("new-session", resumable=True)
+        manager._set_session("chat-1", live)
+        with patch.object(live, "set_config_option") as change:
+            with self.assertRaisesRegex(AcpAgentError, "Session changed"):
+                manager.set_config_option(
+                    "chat-1", "copilot-cli", str(Path.cwd()), "model", "auto",
+                    session_id="old-session", session_resumable=True,
+                )
+            change.assert_not_called()
+
     def test_prompt_restores_the_client_session_after_manager_restart(self) -> None:
         manager = AcpAgentManager()
         loaded = self._session("session-1", resumable=True)
