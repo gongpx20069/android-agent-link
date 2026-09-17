@@ -254,7 +254,37 @@ Each batch member keeps its own operation ID and receives individual `operation.
 
 The WebSocket reader and writer run independently so the bridge can accept queue and approval messages while an ACP prompt request is still running. Chat events are serialized through the connection writer and remain replayable by `eventId`.
 
-### Console observability
+### Optional local terminal client
+
+`start --interactive` adds a `TerminalClient` alongside the standard-library
+server. `prompt-toolkit` is an explicit optional dependency (`interactive` extra):
+its asynchronous `PromptSession` and `patch_stdout` protect an editable draft
+from concurrent streaming output. It is not a PTY wrapper around an agent CLI.
+The ACP process retains its dedicated protocol stdin/stdout.
+
+The runtime's optional `LocalClient` observer receives request metadata and each
+new sequenced event before fan-out. It does not register as the Android chat
+emitter, so phone attach/reconnect cannot evict it and it cannot evict the phone.
+Terminal prompts use `websocket_responses` with a unique operation ID and the
+selected chat's agent, workspace and latest session binding. Existing queue,
+batching, approval and replay behavior is reused without a new wire protocol.
+Terminal-created chats are local metadata only, not new Android chat cards.
+
+The observer enqueues only bounded display projections and updates session/status
+metadata under a local lock; it does not perform input or terminal writes under
+the runtime event lock. Rendering coalesces reply fragments every 100ms. Queue
+overflow is explicitly reported and affects only terminal display. The terminal
+owns no full history; selected-chat output is live-only. `/approvals` queries the
+runtime's authoritative, unexpired pending requests rather than relying on the
+display queue. Local input releases its lock before calling the runtime.
+
+Interactive pairing uses a bounded confirmation broker with the same runtime
+console lock. `/pair y|n` answers a displayed request; there is no competing
+`input()`. Exit or timeout denies approval. A single asyncio input/render loop
+runs on the main thread; the stdlib listener runs in a joined background thread.
+Shutdown closes terminal state, denies pairing and stops the HTTP server.
+
+### Runtime log summaries
 
 `ConsoleLog` consumes new business events at `_append_event`, before transport
 fan-out. It never changes the wire event or its replay record. Transport callbacks

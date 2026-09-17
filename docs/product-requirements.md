@@ -40,6 +40,19 @@ Chat
 
 ## MVP Features
 
+### Optional computer terminal
+
+- Allow explicit `--interactive` mode alongside Android, with the same Chat,
+  workspace, ACP session and serialized prompt queue.
+- Use AgentLink's own input UI, not the agent's native terminal UI. Concurrent
+  replies must not corrupt the user's draft.
+- Display selected-chat conversation and tool status, not Android delivery logs.
+  Other chats display only task/approval notices.
+- Keep pairing and approval explicit through one input controller, with default
+  denial and authoritative expiry. Never treat terminal text as raw shell input.
+- Preserve ordinary headless behavior. Clearly explain that terminal-local new
+  chats do not automatically appear on Android and history selection is live-only.
+
 ### Chats
 
 - Show all chats across all machines.

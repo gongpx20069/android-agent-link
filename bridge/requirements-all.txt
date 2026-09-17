@@ -1,2 +1,2 @@
 # Bridge runtime with every optional bridge extra enabled.
--e .[fastapi]
+-e .[fastapi,interactive]

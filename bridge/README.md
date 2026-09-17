@@ -202,6 +202,53 @@ android-acp-bridge start --transport local
 
 This prints a QR/link for `ws://127.0.0.1:4317`. It is useful for local testing but will not make a developer machine reachable from Android unless another transport forwards the port.
 
+## Interactive terminal chat
+
+Run from `bridge`:
+
+```powershell
+python -m pip install -r requirements-interactive.txt
+python .\run.py start --interactive
+```
+
+This is AgentLink's own terminal client, not the native Copilot UI. It leaves the
+authenticated HTTP/WebSocket bridge available to Android. A single prompt-toolkit
+input reader redraws your draft while selected-chat replies stream above it.
+Prompt history is disabled; nothing is written to a terminal history file.
+
+Open a Chat on Android first, then `/chats` and `/use <chat-id>` in the terminal.
+Both surfaces submit to the same existing queue, and terminal observation does
+not replace Android's subscription. Concurrent prompts queue behind active work.
+The terminal only shows new events, not a replay of old conversation history.
+
+- `/new <agent-id> <absolute workspace>` creates a local chat; it does not
+  automatically add a card to Android. Use an existing Android chat to share work.
+- `/approvals` displays pending details. `/approve <approval-id>` requires prior
+  review; `/deny <approval-id>` can reject immediately. Oversized details are
+  explicitly truncated and must be approved on Android instead.
+- `/pair y` approves a displayed pairing request; `/pair n` or `/pair` denies.
+  Check the phone/code first. The ordinary server's `[y/N]` prompt is replaced
+  only in interactive mode so no second stdin reader can steal chat input.
+  The two-minute timeout, explicit approval, and device-token rules are unchanged.
+- `/send <text>` can send messages beginning with `/`. Unknown commands are
+  rejected, never run as shell commands.
+- `/quit` stops the bridge when idle; `/quit!` permits stopping during active work.
+  Ctrl+C clears input only. EOF/closing the terminal stops the bridge. Shutdown
+  disconnects Android and denies outstanding pairing; it is not a promise that
+  an external agent's already-running command is cancelled.
+
+`--interactive` requires a TTY and `--server stdlib`. Missing dependencies and
+unsupported backends fail before tunnel setup. It suppresses routine runtime and
+Android-delivery logs regardless of `--log-level`; errors and interactive
+conversation/approval content remain visible. Dev Tunnels child-process output
+and initial QR/link onboarding are independent.
+
+Terminal display queues are bounded. If the terminal cannot keep up, it explicitly
+reports omitted display items without dropping Android events. `/approvals` reads
+authoritative pending requests even after display overflow. Terminal chat metadata
+is limited to 256 chats per bridge run; restart to reset this local view. The
+selection and draft do not persist across restarts.
+
 ## Console logs
 
 The default `info` output summarizes work rather than printing each streamed
@@ -247,6 +294,7 @@ Run these commands from the `bridge` directory.
 | --- | --- |
 | `requirements.txt` | Base bridge runtime. |
 | `requirements-fastapi.txt` | Base runtime plus the optional FastAPI server backend. |
+| `requirements-interactive.txt` | Base runtime plus the optional prompt-toolkit terminal client. |
 | `requirements-all.txt` | Base runtime plus all optional extras. |
 
 ## Commands

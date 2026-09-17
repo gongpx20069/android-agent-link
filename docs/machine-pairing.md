@@ -34,6 +34,13 @@ request; the numeric code is for visual comparison only. Account pairing always 
 even if legacy QR auto-approval was explicitly enabled. Merely reaching the
 authenticated tunnel does not authorize operating the machine.
 
+With `start --interactive`, pairing shares AgentLink's terminal chat input.
+After the request is displayed, use `/pair y` to approve or `/pair n` (or
+`/pair` alone) to deny. Bare `y` remains chat text, not a pairing decision.
+The same confirmation broker handles QR pairing without a second stdin reader.
+The confirmation expires after two minutes; closing the terminal denies any
+pending request and stops the bridge. Ordinary server mode retains `[y/N]`.
+
 ```text
 Start bridge on developer machine
   select transport (default: authenticated Dev Tunnel)

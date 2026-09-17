@@ -117,6 +117,44 @@ Microsoft 的令牌刷新及连接令牌签发仍需实测；收到 refresh toke
 agent 发起审批请求时，在 **Approvals** 中处理。
 可恢复的会话、可用模型和权限行为取决于电脑上安装的 agent CLI。
 
+## 也可以在电脑终端聊天
+
+AgentLink 提供自己的可选终端聊天模式，不是 Copilot 等 agent 的原生终端界面。
+这个模式与 Android 同时连接同一个 bridge。
+
+在仓库目录安装一次可选依赖，然后启动：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".\bridge[interactive]"
+.\.venv\Scripts\python.exe .\bridge\run.py start --interactive
+```
+
+先在 Android 打开一个 Chat，再在电脑终端输入 `/chats`，使用
+`/use <chat-id>` 选择对应的完整 ID。之后在电脑输入消息，就会与手机共用
+同一个 agent 会话和任务队列。回复流式显示，不打乱正在输入的文字。
+其他 Chat 只提示任务状态或审批，不展开回复。切换后显示新消息，旧历史仍在手机查看。
+
+| 终端命令 | 用途 |
+| --- | --- |
+| `/chats`、`/use <chat-id>` | 列出当前 bridge 见过的会话，选择要操作的会话。 |
+| `/new copilot-cli C:\Repos\my-project` | 为已安装的 agent 创建终端本地会话。 |
+| `/approvals` | 查看待审批请求的详细内容。 |
+| `/approve <approval-id>`、`/deny <approval-id>` | 批准或拒绝；批准前必须先查看详情。 |
+| `/pair y`、`/pair n` | 核对配对码后，批准或拒绝手机配对。 |
+| `/send <text>` | 发送以 `/` 开头的文字，不将其视为终端命令。 |
+| `/help`、`/quit` | 查看帮助，或停止 bridge 并断开手机连接。 |
+
+想让手机和电脑共同操作同一会话，请**先在手机创建或打开会话**。
+终端 `/new` 创建的会话不会自动加入 Android 的 Chats 列表。
+终端会话选择和输入历史不会跨 bridge 重启保存。
+
+此模式显示对话内容，不打印 bridge 事件日志，即使传入 `--log-level debug` 也一样；
+运行错误仍会显示。配对统一使用 `/pair y|n`，避免与聊天输入抢键盘，
+普通服务模式仍使用 `[y/N]`。`Ctrl+C` 只取消正在输入的文字，不取消 agent 任务。
+有任务运行时 `/quit` 会提醒并拒绝退出，`/quit!` 可以明确强制停止 bridge。
+关闭终端或 EOF 也会停止 bridge，但不保证取消 agent 已执行的任务。
+请使用真实终端，不要重定向输入输出；该模式要求使用默认的标准库服务器。
+
 ## 支持的编程助手
 
 | Agent | AgentLink 接入情况 |

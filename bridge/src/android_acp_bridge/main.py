@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -34,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--auto-approve-pairing", action="store_true", help="Skip local pairing confirmation. Use only for tests or trusted local demos.")
     start_parser.add_argument("--server", choices=("stdlib", "fastapi"), default="stdlib", help="Server backend. Defaults to the standard-library backend.")
     start_parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"), default="info", help="Console verbosity; debug includes event metadata, never message bodies.")
+    start_parser.add_argument("--interactive", action="store_true", help="Enable AgentLink terminal chat alongside Android (stdlib backend; requires interactive extra and a terminal).")
     start_parser.add_argument("--connection-header", action="append", default=[], metavar="NAME=VALUE", help="Header Android must send when connecting through a relay, e.g. X-Tunnel-Authorization='tunnel <token>'.")
 
     subparsers.add_parser("tailscale-status", help="Print the detected Tailscale status")
@@ -72,6 +74,19 @@ def _print_tailscale_status() -> int:
 
 
 def _start(args: argparse.Namespace) -> int:
+    terminal_client = None
+    if args.interactive:
+        if args.server != "stdlib":
+            print("--interactive requires --server stdlib; the optional FastAPI backend does not run ACP chat.", file=sys.stderr)
+            return 1
+        if importlib.util.find_spec("prompt_toolkit") is None:
+            print("Terminal chat requires: python -m pip install -r requirements-interactive.txt (run from bridge).", file=sys.stderr)
+            return 1
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            print("--interactive requires an interactive terminal for input and output; do not pipe or redirect it.", file=sys.stderr)
+            return 1
+        from .terminal import TerminalClient, run_interactive
+        terminal_client = TerminalClient()
     devtunnel_host: DevTunnelHost | None = None
     connection_headers = _parse_connection_headers(args.connection_header)
 
@@ -134,7 +149,7 @@ def _start(args: argparse.Namespace) -> int:
     print("Android pairing QR:", flush=True)
     print(render_terminal_qr(deep_link, ansi=sys.stdout.isatty()), flush=True)
 
-    console = ConsoleLog(args.log_level)
+    console = ConsoleLog("error" if terminal_client is not None else args.log_level)
     try:
         runtime = BridgeRuntime(
             config=config,
@@ -142,10 +157,14 @@ def _start(args: argparse.Namespace) -> int:
             require_local_pairing_confirmation=not args.auto_approve_pairing,
             account_pairing_enabled=args.transport == "devtunnel",
             console=console,
+            local_client=terminal_client,
         )
-        console.start()
+        if terminal_client is None:
+            console.start()
         console.message("info", "server.starting", backend=args.server, port=config.port)
-        if args.server == "fastapi":
+        if terminal_client is not None:
+            run_interactive(runtime, terminal_client)
+        elif args.server == "fastapi":
             _run_fastapi(runtime)
         else:
             run_server(runtime)

@@ -196,6 +196,25 @@ Failed loads preserve the previous replay baseline.
 
 ## Logging Rules
 
+Interactive terminal mode is an explicitly selected conversation surface, not a
+diagnostic log. It displays user/agent text and approval details to the local
+computer user. Do not share terminal recordings as sanitized logs. Input history
+is disabled and no new transcript file is written.
+
+The local terminal is trusted by possession of the bridge's console; it does not
+add an unauthenticated network API. Phone authentication and pairing remain
+unchanged. Terminal prompts and decisions use the existing runtime queue and
+approval resolver, not direct access to agent stdin or a shell. The local pairing
+broker accepts approval only after the request is displayed and before expiry;
+exit denies pending pairing. Terminal approval requires reviewed details, and
+truncated requests must be approved on Android instead.
+
+All displayed remote text is treated as plain text. ANSI/OSC escapes, clipboard
+escape sequences and other control/bidi formatting characters are stripped;
+remote content is never interpreted as terminal markup or a command. The bounded
+display queue excludes tokens and protocol credential payloads. Its overflow
+does not authorize requests or drop Android events.
+
 - Bridge runtime logging is metadata-only at both `info` and `debug`: no prompt,
   reply/thought body, tool title/content/arguments, raw error payload or request URL
   is printed. Diagnostic identifiers are single-line sanitized and length-bounded.

@@ -115,6 +115,12 @@ class AgentManager(Protocol):
         ...
 
 
+class LocalClient(Protocol):
+    def observe_request(self, payload: dict[str, Any]) -> None: ...
+    def observe_event(self, event: dict[str, Any]) -> None: ...
+    def confirm_pairing(self, device_name: str, code: str | None) -> bool: ...
+
+
 class BridgeRuntime:
     def __init__(
         self,
@@ -124,9 +130,11 @@ class BridgeRuntime:
         agent_manager: AgentManager | None = None,
         account_pairing_enabled: bool = False,
         console: ConsoleLog | None = None,
+        local_client: LocalClient | None = None,
     ) -> None:
         self.config = config
         self.console = console or ConsoleLog()
+        self.local_client = local_client
         self.pairing_store = pairing_store
         self.require_local_pairing_confirmation = require_local_pairing_confirmation
         self._device_tokens = DeviceTokenStore(config.device_token_store)
@@ -183,6 +191,8 @@ class BridgeRuntime:
         if not self._console_pairing_lock.acquire(blocking=False):
             return False
         try:
+            if self.local_client is not None:
+                return self.local_client.confirm_pairing(device_name, code)
             with self.console.pairing_prompt():
                 print(f"\nNew phone pairing request (unverified device label: {device_name}).", flush=True)
                 print(f"Compare code {code} with the code displayed in AgentLink on YOUR phone.", flush=True)
@@ -238,6 +248,8 @@ class BridgeRuntime:
             return responses
 
         message_type = payload.get("type")
+        if self.local_client is not None:
+            self.local_client.observe_request(payload)
         if message_type == "chat.attach":
             responses = self._chat_attach_response(payload, emit)
             return responses
@@ -294,6 +306,8 @@ class BridgeRuntime:
             return False
         prompt = f"Allow {device.name} ({device.platform}) to pair with this machine? [y/N] "
         try:
+            if self.local_client is not None:
+                return self.local_client.confirm_pairing(device.name, None)
             with self.console.pairing_prompt():
                 answer = input(prompt)
         except EOFError:
@@ -1012,7 +1026,17 @@ class BridgeRuntime:
             if len(log) > CHAT_EVENT_LOG_LIMIT:
                 del log[: len(log) - CHAT_EVENT_LOG_LIMIT]
             self.console.observe(enriched, log_operation_id)
+            if self.local_client is not None:
+                self.local_client.observe_event(enriched)
             return enriched
+
+    def local_approvals(self) -> list[dict[str, Any]]:
+        with self._approval_lock:
+            now = int(time.time() * 1000)
+            return [
+                deepcopy(pending.requested) for pending in self._pending_approvals.values()
+                if pending.requested["expiresAt"] > now
+            ]
 
     def _chat_status_event(
         self,
@@ -1122,6 +1146,8 @@ class BridgeRuntime:
             # Sequenced events were logged at creation, not once per transport/replay.
             if "eventId" not in response and response.get("type") != "approval.resolved":
                 self.console.observe(response)
+                if self.local_client is not None and response.get("type") in {"chat.session", "chat.session.error"}:
+                    self.local_client.observe_event(response)
         if any(response.get("type") == "bridge.done" for response in responses):
             self.console.finish_responses({str(response.get("chatId", "-")) for response in responses})
 

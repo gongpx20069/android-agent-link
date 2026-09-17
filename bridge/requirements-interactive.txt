@@ -1,0 +1,2 @@
+# Base bridge plus its optional terminal chat interface.
+-e .[interactive]

@@ -128,6 +128,46 @@ session offered by that agent. When an agent requests approval, respond from
 **Approvals**. Available sessions, models, and permission behavior depend on the
 installed agent CLI.
 
+## Chat from your computer too
+
+AgentLink has an optional terminal chat mode of its own, separate from the agent
+CLI's native interface. It runs alongside Android through the same bridge.
+
+From the repository folder, install the extra once and start:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".\bridge[interactive]"
+.\.venv\Scripts\python.exe .\bridge\run.py start --interactive
+```
+
+Open a chat on Android, then enter `/chats` in the computer terminal. Select its
+exact ID with `/use <chat-id>`. Messages entered there use the same agent session
+and queue as your phone; replies stream in the terminal without interrupting
+the text you are typing. Other chats show task/approval notices, not their replies.
+Selection shows new events only; use Android for earlier history.
+
+| Terminal command | Action |
+| --- | --- |
+| `/chats`, `/use <chat-id>` | List chats seen by this bridge and select one. |
+| `/new copilot-cli C:\Repos\my-project` | Create a terminal-local chat for an installed agent. |
+| `/approvals` | Review pending approval details. |
+| `/approve <approval-id>`, `/deny <approval-id>` | Decide a request; approval requires reviewing it first. |
+| `/pair y`, `/pair n` | Confirm or deny phone pairing after checking the displayed code. |
+| `/send <text>` | Send text that starts with `/`, rather than treating it as a terminal command. |
+| `/help`, `/quit` | Show help, or stop the bridge and disconnect Android. |
+
+For a shared conversation, **create/open it on Android first**. A terminal-local
+`/new` chat is not automatically added to the phone's Chats list. Chat selection
+and terminal history are not persisted across bridge restarts.
+
+This mode displays conversation content rather than bridge event logs, even if
+`--log-level debug` is supplied. Runtime errors remain visible. Pairing uses
+`/pair y|n` so it does not compete with the chat input reader; ordinary server
+mode still uses `[y/N]`. `Ctrl+C` cancels the current input, not the agent task.
+`/quit` refuses while tasks are busy; `/quit!` explicitly stops the bridge anyway.
+Closing the terminal/EOF also stops the bridge, not a guaranteed agent cancellation.
+Use a real terminal, not a redirected pipe; the standard-library server is required.
+
 ## Coding agents
 
 | Agent | AgentLink integration |
