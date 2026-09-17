@@ -231,6 +231,108 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(screen)
         return "\n".join("".join(row[x].char for x in sorted(row)) for _, row in sorted(screen.data_buffer.items()))
 
+    async def test_click_input_after_browsing_restores_visible_typing_and_follow(self):
+        for index in range(70):
+            self.ui.transcript.add("one", str(index), "Agent", f"History {index}")
+        await asyncio.sleep(0.2)
+        self.pipe.send_bytes(b"\t\x1b[H")
+        await asyncio.sleep(0.2)
+        screen = self.ui.app.renderer._last_screen
+        _, position = next(
+            (window, position) for window, position in screen.visible_windows_to_write_positions.items()
+            if window.content is self.ui.input_control
+        )
+        x, y = position.xpos + 9, position.ypos + 1
+        self.pipe.send_text(f"\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m")
+        self.pipe.send_text("visible after click")
+        await asyncio.sleep(0.25)
+        self.assertTrue(self.ui.app.layout.has_focus(self.ui.input_control))
+        self.assertEqual(self.ui.buffer.text, "visible after click")
+        self.assertIn("visible after click", self.screen())
+        self.client.observe_event(update("agent_message_chunk", text="LATEST-AFTER-CLICK"))
+        await asyncio.sleep(0.25)
+        self.assertIn("LATEST-AFTER-CLICK", self.screen())
+
+    async def test_click_already_focused_input_resumes_after_mouse_scroll(self):
+        for index in range(70):
+            self.ui.transcript.add("one", str(index), "Agent", f"History {index}")
+        await asyncio.sleep(0.2)
+        self.pipe.send_text("\x1b[<64;10;4M")
+        await asyncio.sleep(0.2)
+        self.assertTrue(self.ui.app.layout.has_focus(self.ui.input_control))
+        self.assertFalse(self.ui.conversation.follow)
+        screen = self.ui.app.renderer._last_screen
+        position = next(position for window, position in screen.visible_windows_to_write_positions.items()
+                        if window.content is self.ui.input_control)
+        self.pipe.send_text(f"\x1b[<0;9;{position.ypos + 1}M\x1b[<0;9;{position.ypos + 1}m")
+        await asyncio.sleep(0.2)
+        self.assertTrue(self.ui.conversation.follow)
+        self.client.observe_event(update("agent_message_chunk", text="LATEST-AFTER-WHEEL"))
+        await asyncio.sleep(0.2)
+        self.assertIn("LATEST-AFTER-WHEEL", self.screen())
+
+    async def test_paste_from_conversation_is_visible_and_does_not_submit(self):
+        self.pipe.send_bytes(b"\t\x1b[H")
+        await asyncio.sleep(0.15)
+        self.pipe.send_text("\x1b[200~pasted draft\x1b[201~")
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.ui.buffer.text, "pasted draft")
+        self.assertIn("pasted draft", self.screen())
+        self.assertTrue(self.ui.conversation.follow)
+        self.assertFalse(self.runtime._prompt_operations)
+
+    async def test_input_and_latest_reply_are_visible_on_short_resized_screen(self):
+        from prompt_toolkit.data_structures import Size
+        for index in range(70):
+            self.ui.transcript.add("one", str(index), "Agent", f"History {index}")
+        for height, width in ((24, 80), (15, 30)):
+            with patch.object(self.ui.app.output, "get_size", return_value=Size(rows=height, columns=width)):
+                self.ui.app.invalidate()
+                self.ui.buffer.reset()
+                self.pipe.send_text("visible draft")
+                self.client.observe_event(update("agent_message_chunk", operation=str(width), text=f"LATEST-{width}"))
+                await asyncio.sleep(0.3)
+                self.assertIn("visible draft", self.screen())
+                self.assertIn(f"LATEST-{width}", self.screen())
+                self.assertTrue(self.ui.app.layout.has_focus(self.ui.input_control))
+
+    async def test_typing_from_conversation_and_sending_resumes_latest_view(self):
+        for index in range(70):
+            self.ui.transcript.add("one", str(index), "Agent", f"History {index}")
+        await asyncio.sleep(0.2)
+        self.pipe.send_bytes(b"\t\x1b[H")
+        await asyncio.sleep(0.2)
+        self.pipe.send_text("new question")
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.ui.buffer.text, "new question")
+        self.assertIn("new question", self.screen())
+        self.pipe.send_bytes(b"\r")
+        await asyncio.sleep(0.25)
+        self.client.observe_event(update("agent_message_chunk", operation="last", text="LATEST-AFTER-SEND"))
+        await asyncio.sleep(0.25)
+        self.assertIn("LATEST-AFTER-SEND", self.screen())
+        self.assertTrue(self.ui.conversation.follow)
+
+    async def test_tab_focus_alone_does_not_pause_follow_and_escape_returns_latest(self):
+        for index in range(70):
+            self.ui.transcript.add("one", str(index), "Agent", f"History {index}")
+        await asyncio.sleep(0.2)
+        self.pipe.send_bytes(b"\t")
+        await asyncio.sleep(0.2)
+        self.client.observe_event(update("agent_message_chunk", text="LATEST-WHILE-FOCUSED"))
+        await asyncio.sleep(0.25)
+        self.assertIn("LATEST-WHILE-FOCUSED", self.screen())
+        self.assertTrue(self.ui.conversation.follow)
+        self.pipe.send_bytes(b"\x1b[H")
+        await asyncio.sleep(0.2)
+        self.client.observe_event(update("agent_message_chunk", text="PAUSED-HISTORY-ARRIVAL"))
+        await asyncio.sleep(0.2)
+        self.assertNotIn("PAUSED-HISTORY-ARRIVAL", self.screen())
+        self.pipe.send_bytes(b"\x1b")
+        await asyncio.sleep(0.6)
+        self.assertIn("PAUSED-HISTORY-ARRIVAL", self.screen())
+        self.assertTrue(self.ui.conversation.follow)
+
     async def test_real_screen_draft_tool_fold_details_and_failure_summary(self):
         self.pipe.send_text("unfinished draft")
         await asyncio.sleep(0.1)

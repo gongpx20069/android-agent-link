@@ -58,6 +58,9 @@ Chat
   during refresh/resize and support monochrome.
 - Use a full-screen redrawable conversation with tool groups/details collapsed by
   default, keyboard/mouse expansion, stable focus and paused following while browsing.
+- Input clicks must restore visible typing. Typing/pasting from conversation focus
+  must transfer to the draft, not disappear or submit. Returning to input or sending
+  resumes following; focus changes into conversation alone must not pause it.
 - Render agent Markdown headings, emphasis, lists, quotes, code blocks and tables
   in place without duplicate completion output. Bound retained content and explicitly
   page source text for long replies/layouts that cannot fit, without dropping Android events.

@@ -174,6 +174,10 @@ and Enter to expand/collapse a group or individual tool. Expanded tools show the
 input/output and diff data. Failed tool titles remain visible even when collapsed.
 Use PgUp/PgDn to scroll, End to follow new messages, and Esc to return to input.
 Mouse clicking is also supported. Browsing older content pauses automatic following.
+Clicking the input box restores typing and following; typing or pasting while
+focused on the conversation also returns to input without losing the text.
+Esc or Tab back to input, and submitting a message, resume the latest view.
+Tab into the conversation alone does not pause following.
 
 Type `/` for a command menu; Up/Down selects a completion and Enter inserts it.
 `/model` opens the agent's actual model choices: Up/Down selects, Enter applies,

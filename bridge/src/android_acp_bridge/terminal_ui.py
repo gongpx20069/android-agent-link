@@ -17,6 +17,7 @@ from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.history import DummyHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import DynamicContainer, Float, FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent, UIControl
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -108,6 +109,18 @@ class SlashCompleter(Completer):
                 yield Completion(name, start_position=-len(word), display_meta=description)
 
 
+class DraftControl(BufferControl):
+    def __init__(self, ui: FullScreenTerminal) -> None:
+        super().__init__(buffer=ui.buffer, focus_on_click=True)
+        self.ui = ui
+
+    def mouse_handler(self, mouse_event):
+        result = super().mouse_handler(mouse_event)
+        if mouse_event.event_type == MouseEventType.MOUSE_UP:
+            self.ui.conversation.resume_follow()
+        return result
+
+
 class ConversationControl(UIControl):
     def __init__(self, ui: FullScreenTerminal) -> None:
         self.ui = ui
@@ -153,6 +166,11 @@ class ConversationControl(UIControl):
         self.cursor = min(max(0, self.cursor + delta), max(0, len(self.lines) - 1))
         self.ui.app.invalidate()
 
+    def resume_follow(self) -> None:
+        self.follow = True
+        self.new_messages = False
+        self.cursor = max(0, len(self.lines) - 1)
+
     def mouse_handler(self, mouse_event):
         if mouse_event.event_type == MouseEventType.SCROLL_UP:
             self.move(-3)
@@ -196,7 +214,8 @@ class FullScreenTerminal:
         self.line_cache: dict[int, tuple[tuple[Any, ...], list[list[tuple[str, str]]], dict[int, tuple[int, str | None]]]] = {}
         self.buffer = Buffer(history=DummyHistory(), completer=SlashCompleter(client), complete_while_typing=True,
                              multiline=False)
-        self.input_control = BufferControl(buffer=self.buffer)
+        self.input_control = DraftControl(self)
+        self.input_was_focused = True
         self.conversation = ConversationControl(self)
         self.picker_control = FormattedTextControl(self.picker_text, focusable=True)
         self.pairing_control = FormattedTextControl(
@@ -232,10 +251,17 @@ class FullScreenTerminal:
                 "notice": "ansiyellow",
             }),
             input=input, output=output,
+            before_render=self.sync_input_focus,
         )
         self.write("AgentLink | shared Android chat. /pairing for phone QR/link; /chats to choose; /help for commands.\n"
                    "Tab: focus conversation/input | Enter: expand tool | Esc: input | /model: choose model\n"
                    "Terminal history is a bounded live view; earlier session history stays on Android.\n")
+
+    def sync_input_focus(self, app: Application) -> None:
+        focused = app.layout.has_focus(self.input_control)
+        if focused and not self.input_was_focused:
+            self.conversation.resume_follow()
+        self.input_was_focused = focused
 
     def write(self, text: str) -> None:
         try:
@@ -260,7 +286,7 @@ class FullScreenTerminal:
             queued = chat.queued_count if chat else 0
             attention = self.client.toolbar(500)
             hint = "".join(text for _, text in attention).split("\n")[-1].strip()
-        extra = " | New messages: End to follow" if self.conversation.new_messages else ""
+        extra = " | New messages: Esc/End to follow" if self.conversation.new_messages else ""
         if self.client.runtime:
             pending = self.client.runtime.local_approval_count()
             if pending:
@@ -272,7 +298,7 @@ class FullScreenTerminal:
         return [
             ("", f" {state} | Model: {model[:40]} | Allow all: {allow_all[:20]} | Queue: {queued}{extra}\n"),
             ("", f" {hint}\n"),
-            ("", " Tab focus | Enter expand | PgUp/PgDn scroll | Left/Right details page | Esc input | /help"),
+            ("", " Tab focus | Enter expand | PgUp/PgDn scroll | Esc input/latest | /help"),
         ]
 
     def _bindings(self) -> KeyBindings:
@@ -286,10 +312,10 @@ class FullScreenTerminal:
         def focus(event):
             if self.app.layout.has_focus(self.input_control):
                 self.buffer.cancel_completion()
-                self.conversation.follow = False
                 self.app.layout.focus(self.conversation)
             else:
                 self.app.layout.focus(self.input_control)
+                self.conversation.resume_follow()
 
         @kb.add("escape")
         def escape(event):
@@ -298,6 +324,7 @@ class FullScreenTerminal:
             self.show_pairing = False
             self.buffer.cancel_completion()
             self.app.layout.focus(self.input_control)
+            self.conversation.resume_follow()
 
         @kb.add("c-c")
         def cancel(event):
@@ -320,6 +347,21 @@ class FullScreenTerminal:
             line = self.buffer.text
             if self.submit(line):
                 self.buffer.reset()
+                if self.app.layout.has_focus(self.input_control):
+                    self.conversation.resume_follow()
+
+        @kb.add(Keys.Any, filter=browsing)
+        def type_from_conversation(event):
+            if event.data and all(character.isprintable() for character in event.data):
+                self.app.layout.focus(self.input_control)
+                self.conversation.resume_follow()
+                self.buffer.insert_text(event.data)
+
+        @kb.add(Keys.BracketedPaste, filter=browsing)
+        def paste_from_conversation(event):
+            self.app.layout.focus(self.input_control)
+            self.conversation.resume_follow()
+            self.buffer.insert_text(event.data.replace("\r\n", "\n").replace("\r", "\n"))
 
         for key, delta in (("up", -1), ("down", 1), ("pageup", -15), ("pagedown", 15)):
             @kb.add(key, filter=browsing)
@@ -332,9 +374,7 @@ class FullScreenTerminal:
 
         @kb.add("end", filter=browsing)
         def end(event):
-            self.conversation.follow = True
-            self.conversation.new_messages = False
-            self.conversation.cursor = max(0, len(self.conversation.lines) - 1)
+            self.conversation.resume_follow()
 
         @kb.add("enter", filter=browsing)
         def toggle(event):
@@ -570,6 +610,7 @@ class FullScreenTerminal:
         row, tool_id = self.selected_entry()
         if row is None or row.kind != "Tools":
             return
+        self.conversation.follow = False
         if tool_id is None:
             row.expanded = not row.expanded
         else:

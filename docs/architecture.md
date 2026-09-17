@@ -289,7 +289,13 @@ The ACP process retains its dedicated protocol stdin/stdout.
 `FullScreenTerminal` renders a header, scrollable conversation, status area and
 compact input. A 100 ms event drain and diff-based redraw preserve drafts/focus.
 Tab switches focus; Enter toggles a tool/group; arrows and page keys navigate.
-Mouse clicks also toggle. Browsing freezes following and End resumes it. Lines
+Mouse clicks also toggle. Browsing freezes following and End resumes it.
+`DraftControl` explicitly focuses on click and resumes following even if input was
+already focused during a mouse scroll. Printable keys/bracketed paste in conversation
+focus transfer to the input buffer without submission. Returning to input or
+submitting resumes following; switching focus into conversation alone does not pause
+it. A pre-render focus transition check also covers returning from config/pairing.
+Lines
 are wrapped by cell width so long unbroken output remains keyboard-accessible.
 Operation acceptance supplies the single user-message echo.
 

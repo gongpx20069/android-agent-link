@@ -244,6 +244,11 @@ Failed titles are visible even in collapsed groups. Details show literal input,
 output, diff and location data. PgUp/PgDn scroll, Left/Right page long content,
 End resumes following new events, and Esc returns to input. Browsing does not
 automatically jump to incoming replies. Input is echoed once, on acceptance.
+Clicking input focuses the draft and resumes following, including after scrolling
+with the mouse while input stayed focused. Printable typing or bracketed paste
+from conversation focus moves to the draft without sending it. Esc/Tab back to
+input and submitting a message resume the latest view. Merely tabbing into the
+conversation does not pause following; navigation and tool inspection do.
 
 The header/status area shows the selected chat, task state, model, queue and
 pairing/approval guidance. Input is isolated from refresh/resize. Type `/` to open
