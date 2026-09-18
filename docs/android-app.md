@@ -187,7 +187,13 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
   completion or platform/time limits. It cannot guarantee delivery after force-stop.
 - Automatic update checks on app startup and manual update checks from Settings.
 
-GitHub Copilot CLI ACP execution is wired through the bridge when `copilot --acp` is available on the developer machine. The chat shell sends prompts through the bridge WebSocket and displays ACP `session/update` responses as agent messages and expandable activity cards. Claude Code requires the `claude` CLI to be installed and expose an ACP server command.
+GitHub Copilot CLI uses the bridge's native SDK adapter by default. The adapter
+keeps a prompt busy through background execution until root session idle, while
+continuously projecting messages, child-agent activity, tools and approvals onto
+the existing WebSocket contract. No Android protocol change is required.
+`--copilot-transport acp` is an explicit compatibility option without the native
+background-completion guarantee. Claude Code still requires a `claude` CLI that
+exposes an ACP server command.
 
 ## Pairing UX
 

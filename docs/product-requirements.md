@@ -145,6 +145,11 @@ Permission modes for MVP:
 - Maintain a persistent chat connection while the chat is active.
 - Recover from mobile network drops by reconnecting and replaying missed bridge events.
 - Show busy, idle, waiting-for-approval, and disconnected states from bridge-reported chat status.
+- For native Copilot, remain busy while background agents or attached shell
+  commands are running, even if the main agent has returned a waiting reply.
+  Continue delivering tool output and approvals until session-level completion;
+  do not run queued prompts or replace the session for history/configuration
+  while that work is active.
 - Synchronize every persisted Chat's Bridge status when the app starts, so the Chat list is correct before a Chat is opened.
 - Allow prompts submitted while a chat is busy or waiting for approval to queue in FIFO order. After the active response completes, concatenate every prompt already waiting and send them together as the next ACP turn; prompts added during that turn form the following batch.
 - Show queued prompts separately from the conversation timeline and allow removing a prompt before it starts, with immediate local feedback.

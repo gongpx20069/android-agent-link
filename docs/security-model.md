@@ -58,6 +58,15 @@ The Android MVP permits cleartext HTTP/WebSocket traffic only for private Tailsc
 
 ## Authentication Requirements
 
+The native Copilot adapter uses the installed, authenticated local CLI; it does
+not copy credentials into configuration, download another runtime, or silently
+fall back to a different transport. It does not pass `--allow-all` or install an
+automatic permission-approval handler. Native permission requests, including
+background requests, use the existing human approval path asynchronously.
+Without an approval callback they are rejected. The existing confirmed
+`allow-all` UI can change the native permission mode; provider-managed policy
+still applies. Resuming history does not automatically continue pending work.
+
 - Every bridge must require authentication.
 - Use short, revocable tokens for MVP.
 - Use one-time, short-lived pairing tokens in QR codes.

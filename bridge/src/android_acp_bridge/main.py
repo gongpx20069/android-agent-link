@@ -37,6 +37,8 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--auto-approve-pairing", action="store_true", help="Skip local pairing confirmation. Use only for tests or trusted local demos.")
     start_parser.add_argument("--server", choices=("stdlib", "fastapi"), default="stdlib", help="Server backend. Defaults to the standard-library backend.")
     start_parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"), default="info", help="Console verbosity; debug includes event metadata, never message bodies.")
+    start_parser.add_argument("--copilot-transport", choices=("sdk", "acp"), default="sdk",
+                              help="Copilot backend. SDK waits for session idle including background work; ACP is compatibility-only.")
     start_parser.add_argument("--interactive", action="store_true", help="Enable AgentLink terminal chat alongside Android (stdlib backend; requires interactive extra and a terminal).")
     start_parser.add_argument("--workspace-root", action="append", default=[], help="Allow controlled workspace creation/registration beneath this existing directory (repeatable).")
     start_parser.add_argument("--connection-header", action="append", default=[], metavar="NAME=VALUE", help="Header Android must send when connecting through a relay, e.g. X-Tunnel-Authorization='tunnel <token>'.")
@@ -135,7 +137,7 @@ def _start(args: argparse.Namespace) -> int:
     roots = tuple(str(Path(root).expanduser().resolve(strict=True)) for root in args.workspace_root)
     if any(not Path(root).is_dir() for root in roots):
         raise ValueError("Workspace roots must be existing directories.")
-    config = replace(config, workspace_roots=roots)
+    config = replace(config, workspace_roots=roots, copilot_transport=args.copilot_transport)
 
     pairing_store = PairingStore()
     token = pairing_store.create()

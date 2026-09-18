@@ -280,7 +280,7 @@ Use a real terminal, not a redirected pipe; the standard-library server is requi
 
 | Agent | AgentLink integration |
 | --- | --- |
-| GitHub Copilot CLI | Primary tested integration; requires a working `copilot --acp` command on the computer. |
+| GitHub Copilot CLI | Native SDK transport by default, with session-level background completion. Requires an installed, signed-in CLI; see the [bridge guide](bridge/README.md#copilot-background-task-lifecycle) for compatibility. |
 | Claude Code | Available when `claude` is installed; requires a version or setup that actually supports `claude --acp`. |
 
 Other agents are not currently integrated. An installed CLI appearing in the

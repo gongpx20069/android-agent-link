@@ -250,7 +250,7 @@ Agent 声明支持的斜杠命令也会出现在菜单里。未知命令明确�
 
 | Agent | AgentLink 接入情况 |
 | --- | --- |
-| GitHub Copilot CLI | 主要测试路径；电脑上需要能够运行 `copilot --acp`。 |
+| GitHub Copilot CLI | 默认通过原生 SDK 连接已安装并登录的 CLI，等待后台任务结束后才显示空闲；兼容选项见 [bridge 指南](bridge/README.md#copilot-background-task-lifecycle)。 |
 | Claude Code | 安装 `claude` 后可发现；需要实际支持 `claude --acp` 的版本或配置。 |
 
 其他 agent 尚未接入。CLI 出现在电脑的 agent 列表中，只代表发现了安装，

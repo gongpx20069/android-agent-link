@@ -4,6 +4,30 @@ Connect your computer's coding agents to the AgentLink Android app.
 For the shortest setup path, start with the [AgentLink quick start](../README.md).
 This guide covers additional installation and connection options.
 
+## Copilot background-task lifecycle
+
+Copilot uses the native SDK transport by default. Upgrade the bridge dependencies
+with its normal `requirements.txt` / interactive installation command before
+starting the updated bridge. The adapter uses the installed `copilot` executable
+and preserves existing session IDs/model selection. Native protocol compatibility
+was verified with Copilot CLI 1.0.86 and Python SDK 1.0.13.
+
+An assistant reply such as "waiting for background agents" is not completion.
+The bridge keeps streaming updates/approvals and holds queued prompts until the
+root session reports idle, including background agents and attached shells.
+Errors/disconnection are reported as failures rather than successful idle.
+New native sessions do not receive an implicit `--allow-all`; use the existing
+confirmed permission UI if you want that mode.
+
+For older CLI compatibility, explicitly use `--copilot-transport acp`. That mode
+retains ACP's limitations for post-prompt background work; there is no automatic
+fallback. Claude Code continues using ACP.
+
+Do not restart an active bridge to apply this change: wait for work to finish or
+explicitly cancel it first. Updating files does not hot-patch an existing process
+or revive previously cancelled background agents. See the
+[design and regression requirements](../docs/session-lifecycle.md).
+
 ## Shared Mochi / Android / terminal control
 
 The default stdlib WebSocket runtime owns a durable shared workspace/chat catalog,

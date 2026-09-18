@@ -6,6 +6,7 @@ This folder defines the project memory layer for AgentLink.
 
 - `product-requirements.md` describes the target user experience, MVP, and feature boundaries.
 - `architecture.md` describes the app architecture, remote bridge architecture, data model, and key state flows.
+- `session-lifecycle.md` describes native Copilot event delivery and background-work completion.
 - `android-app.md` describes the Android app pairing MVP, storage, network calls, and validation.
 - `acp-bridge-contract.md` describes the non-ACP bridge APIs needed by the Android app.
 - `machine-pairing.md` describes Tailscale detection, bridge startup, QR pairing, and machine onboarding.

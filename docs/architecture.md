@@ -262,6 +262,24 @@ If Android's `lastEventId` is older than the bridge cache window, the bridge ret
 
 ### Operation Lifecycle
 
+Copilot uses the pinned Python `github-copilot-sdk` dependency and the installed
+CLI's native stdio transport by default. It does not download another CLI or
+change the selected model. `copilot_session.py` projects native events onto the
+existing wire updates; Android, terminal, and Mochi keep the same API.
+The adapter continuously consumes session events on a dedicated thread, while
+permission decisions run outside the SDK event reader. Completion waits for root
+`session.idle` (excluding autopilot pauses), not `send()` acknowledgement,
+`assistant.message`, a child idle event, or `assistant.turn_end`. Native idle
+includes background agents and attached shell commands. Errors and connection
+loss fail visibly; a heartbeat detects a dead transport without limiting task
+duration. A completed streaming message does not repeat its earlier deltas.
+Live-session history reads reuse the native session rather than stopping it.
+See [session lifecycle design](session-lifecycle.md).
+
+`--copilot-transport acp` explicitly selects the old compatibility path. It lacks
+the native backend's whole-session/background completion guarantees. Claude Code
+continues using ACP. A failed native startup never silently switches transport.
+
 Prompt, session load, model changes, and approval decisions are operations inside the chat channel. Each operation has an `operationId`.
 
 ```text

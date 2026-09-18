@@ -7,6 +7,8 @@ import subprocess
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -43,12 +45,40 @@ SessionCallback = Callable[[AcpSessionBinding], None]
 
 
 class AcpAgentManager:
-    def __init__(self) -> None:
+    def __init__(self, copilot_transport: str = "acp") -> None:
+        if copilot_transport not in {"sdk", "acp"}:
+            raise ValueError("Unsupported Copilot transport.")
+        self._copilot_transport = copilot_transport
         self._sessions: dict[str, AcpAgentSession] = {}
         self._sessions_guard = threading.Lock()
         self._sessions_replacing: set[str] = set()
         self._session_locks: dict[str, threading.RLock] = {}
         self._session_locks_guard = threading.Lock()
+        self._session_claims: dict[str, str] = {}
+
+    def _session_type(self, agent_id: str) -> type[AcpAgentSession]:
+        if agent_id == "copilot-cli" and self._copilot_transport == "sdk":
+            from .copilot_session import CopilotAgentSession
+            return CopilotAgentSession
+        return AcpAgentSession
+
+    @contextmanager
+    def _claim_session(self, chat_id: str, agent_id: str, session_id: str) -> Iterator[None]:
+        if agent_id != "copilot-cli" or self._copilot_transport != "sdk":
+            yield
+            return
+        with self._sessions_guard:
+            if session_id in self._session_claims or any(
+                owner != chat_id and session.session_id == session_id
+                for owner, session in self._sessions.items()
+            ):
+                raise AcpAgentError("This Copilot session already belongs to another chat. Open that chat instead.")
+            self._session_claims[session_id] = chat_id
+        try:
+            yield
+        finally:
+            with self._sessions_guard:
+                self._session_claims.pop(session_id, None)
 
     def prompt(
         self,
@@ -78,7 +108,7 @@ class AcpAgentManager:
             return startup_updates + updates
 
     def list_sessions(self, agent_id: str, workspace_path: str) -> list[dict[str, Any]]:
-        session = AcpAgentSession.start_without_session(agent_id, workspace_path)
+        session = self._session_type(agent_id).start_without_session(agent_id, workspace_path)
         try:
             return session.list_sessions(workspace_path)
         finally:
@@ -88,12 +118,17 @@ class AcpAgentManager:
         self._set_session_replacing(chat_id, True)
         try:
             with self._chat_lock(chat_id):
-                old_session = self._pop_session(chat_id)
-                if old_session is not None:
-                    old_session.stop()
-                session, updates = AcpAgentSession.load(agent_id, workspace_path, session_id)
-                self._set_session(chat_id, session)
-                return updates
+                live = self._get_session(chat_id)
+                if self._copilot_transport == "sdk" and agent_id == "copilot-cli" and live is not None and live.session_id == session_id:
+                    updates, _ = live.history()
+                    return updates
+                with self._claim_session(chat_id, agent_id, session_id):
+                    old_session = self._pop_session(chat_id)
+                    if old_session is not None:
+                        old_session.stop()
+                    session, updates = self._session_type(agent_id).load(agent_id, workspace_path, session_id)
+                    self._set_session(chat_id, session)
+                    return updates
         finally:
             self._set_session_replacing(chat_id, False)
 
@@ -141,16 +176,21 @@ class AcpAgentManager:
         self._set_session_replacing(chat_id, True)
         try:
             with self._chat_lock(chat_id):
-                session, updates, scanned_events, truncated = AcpAgentSession.load_recent(agent_id, workspace_path, session_id, limit)
-                old_session = self._pop_session(chat_id)
-                if old_session is not None:
-                    old_session.stop()
-                self._set_session(chat_id, session)
-                return {
-                    "updates": updates,
-                    "scannedEvents": scanned_events,
-                    "truncated": truncated,
-                }
+                live = self._get_session(chat_id)
+                if self._copilot_transport == "sdk" and agent_id == "copilot-cli" and live is not None and live.session_id == session_id:
+                    updates, scanned_events = live.history()
+                    return {"updates": updates, "scannedEvents": scanned_events, "truncated": False}
+                with self._claim_session(chat_id, agent_id, session_id):
+                    session, updates, scanned_events, truncated = self._session_type(agent_id).load_recent(agent_id, workspace_path, session_id, limit)
+                    old_session = self._pop_session(chat_id)
+                    if old_session is not None:
+                        old_session.stop()
+                    self._set_session(chat_id, session)
+                    return {
+                        "updates": updates,
+                        "scannedEvents": scanned_events,
+                        "truncated": truncated,
+                    }
         finally:
             self._set_session_replacing(chat_id, False)
 
@@ -173,7 +213,7 @@ class AcpAgentManager:
             )
             if session_callback is not None:
                 session_callback(session.binding(replaced_session_id))
-            return startup_updates + session.config_option_updates()
+            return startup_updates + session.refresh_config_options()
 
     def set_config_option(
         self,
@@ -252,20 +292,21 @@ class AcpAgentManager:
         replaced_session_id: str | None = None
         if session_id:
             try:
-                loaded = AcpAgentSession.load_for_continue(
-                    agent_id,
-                    workspace_path,
-                    session_id,
-                    resumable=session_resumable,
-                )
-                self._set_session(chat_id, loaded)
-                return loaded, loaded.take_pending_updates(), None
+                with self._claim_session(chat_id, agent_id, session_id):
+                    loaded = self._session_type(agent_id).load_for_continue(
+                        agent_id,
+                        workspace_path,
+                        session_id,
+                        resumable=session_resumable,
+                    )
+                    self._set_session(chat_id, loaded)
+                    return loaded, loaded.take_pending_updates(), None
             except AcpSessionNotFoundError:
                 if session_resumable:
                     raise
                 replaced_session_id = session_id
 
-        created = AcpAgentSession.start(agent_id, workspace_path)
+        created = self._session_type(agent_id).start(agent_id, workspace_path)
         self._set_session(chat_id, created)
         return created, created.take_pending_updates(), replaced_session_id
 
@@ -521,6 +562,12 @@ class AcpAgentSession:
                 },
             }
         ]
+
+    def refresh_config_options(self) -> list[dict[str, Any]]:
+        return self.config_option_updates()
+
+    def history(self) -> tuple[list[dict[str, Any]], int]:
+        raise AcpAgentError("This ACP provider does not support reading a live session's history.")
 
     def _capture_config_options(self, result: dict[str, Any]) -> None:
         config_options = result.get("configOptions")

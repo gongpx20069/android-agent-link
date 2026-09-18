@@ -27,6 +27,7 @@ class BridgeConfig:
     device_token_store: Path | None = None
     shared_state_store: Path | None = None
     workspace_roots: tuple[str, ...] = field(default_factory=tuple)
+    copilot_transport: str = "sdk"
 
     @property
     def bridge_fingerprint(self) -> str:

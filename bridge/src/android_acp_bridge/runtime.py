@@ -145,7 +145,7 @@ class BridgeRuntime:
         self._console_pairing_lock = threading.Lock()
         self.account_pairing_enabled = account_pairing_enabled
         self._account_pairing = AccountPairing(self._pairing_result, self._confirm_account_pairing)
-        self.agent_manager = agent_manager or AcpAgentManager()
+        self.agent_manager = agent_manager or AcpAgentManager(copilot_transport=config.copilot_transport)
         self._pending_approvals: dict[str, PendingApproval] = {}
         self._approval_results: dict[str, dict[str, Any]] = {}
         self._prompt_queues: dict[str, deque[PromptOperation]] = {}
@@ -510,10 +510,13 @@ class BridgeRuntime:
                     last_binding = binding
                     self._publish_prompt_event(operation, self._session_binding_event(chat_id, binding))
 
-                def emit_update(update: dict[str, Any]) -> None:
-                    update.setdefault("chatId", chat_id)
-                    update.setdefault("operationId", operation.operation_id)
-                    self._publish_prompt_event(operation, update)
+                def emit_update(update: dict[str, Any], operation: PromptOperation = operation) -> None:
+                    update = {**update, "chatId": chat_id, "operationId": operation.operation_id}
+                    with self._event_lock:
+                        if operation.state in {"completed", "failed", "cancelled"}:
+                            self._record_broadcast(chat_id, update)
+                        else:
+                            self._publish_prompt_event(operation, update)
 
                 updates = self.agent_manager.prompt(
                     AcpPromptRequest(
@@ -524,12 +527,12 @@ class BridgeRuntime:
                         session_id=operation.session_id,
                         session_resumable=operation.session_resumable,
                     ),
-                    permission_callback=lambda message: self._request_permission(
+                    permission_callback=lambda message, operation=operation: self._request_permission(
                         chat_id,
                         message,
                         lambda event: self._publish_prompt_event(operation, event),
                     ),
-                    update_callback=emit_update if operation.emit is not None or self._subscribers(chat_id) else None,
+                    update_callback=emit_update,
                     session_callback=emit_session,
                 )
                 operation_status = "completed"
@@ -586,7 +589,8 @@ class BridgeRuntime:
                         },
                     )
                 if next_operation is None:
-                    self._publish_prompt_event(operation, self._chat_status_event(chat_id, "idle"))
+                    self._publish_prompt_event(operation, self._chat_status_event(
+                        chat_id, "failed" if operation_status == "failed" else "idle"))
                 else:
                     self._publish_prompt_event(
                         next_operation,
@@ -967,7 +971,10 @@ class BridgeRuntime:
             with self._prompt_lock:
                 active = self._active_prompts.get(chat_id)
                 queued_count = len(self._prompt_queues.get(chat_id, ()))
-            emit(self._chat_status_event(chat_id, "busy", active.operation_id if active is not None else None, queued_count))
+                # Native permission callbacks can resolve after an abort/idle.
+                # Do not revive an operation that has already ended.
+                status = "busy" if active is not None else self._chat_status.get(chat_id, "idle")
+                emit(self._chat_status_event(chat_id, status, active.operation_id if active is not None else None, queued_count))
         return _select_permission_option(options, decision)
 
     def _chat_attach_response(

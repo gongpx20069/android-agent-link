@@ -413,7 +413,19 @@ Android sends a chat prompt over the attached chat WebSocket:
 }
 ```
 
-The bridge starts or reuses the ACP agent session for `chatId`, creates the session with `workspacePath` as ACP `cwd`, and serializes prompt turns through a per-chat FIFO. Different chats may execute concurrently, but one chat never has overlapping ACP `session/prompt` requests. At a turn boundary, the bridge atomically drains all operations already waiting, joins their content in FIFO order with two newline characters, and sends one ACP `session/prompt`. Operations accepted while that combined turn runs remain queued for the next batch. Immediately after accepting an operation, the bridge appends and sends:
+The bridge starts or reuses the agent session for `chatId`, uses `workspacePath`
+as its working directory, and serializes work through a per-chat FIFO. Copilot's
+default native SDK backend waits for session-level idle, including background
+agents and attached shells, before ending an operation or draining the next
+batch. Assistant messages and individual tool/child completions do not end the
+operation. Notifications and permissions continue after the initial reply.
+The explicit ACP compatibility backend instead uses the `session/prompt`
+response boundary and cannot provide this background lifecycle guarantee.
+Different chats may execute concurrently. At a completion boundary, the bridge
+atomically drains all operations already waiting and joins their content in
+FIFO order with two newline characters. Operations accepted while that combined
+operation runs remain queued for the next batch. Immediately after accepting an
+operation, the bridge appends and sends:
 
 ```json
 {
@@ -490,6 +502,11 @@ ACP tool call events are forwarded in the same shape produced by the ACP agent, 
 ```
 
 When the operation ends:
+
+For native Copilot, this means ordered output has been delivered through the
+root session's idle event. Failure/transport loss produces `status=failed`, not
+successful completion; cancellation produces `status=cancelled`. A child agent's
+reply is rendered as activity, not as the main agent's final-answer preview.
 
 ```json
 {
