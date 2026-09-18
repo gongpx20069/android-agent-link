@@ -163,6 +163,10 @@ import com.gongpx.androidacpclient.data.notification.ChatMonitorService
 import com.gongpx.androidacpclient.data.notification.shouldNotifyMonitoredCompletion
 import com.gongpx.androidacpclient.data.tunnel.TunnelAccounts
 import com.gongpx.androidacpclient.data.bridge.restoreQueuedPrompts
+import com.gongpx.androidacpclient.data.bridge.mergeSharedChat
+import com.gongpx.androidacpclient.data.bridge.listSharedChats
+import com.gongpx.androidacpclient.data.model.Workspace
+import com.gongpx.androidacpclient.integration.IntegrationGrantsActivity
 import com.gongpx.androidacpclient.data.notification.ChatNotificationManager
 import com.gongpx.androidacpclient.data.notification.chatCompletionAttention
 import com.gongpx.androidacpclient.data.notification.chatCompletionPreview
@@ -1721,6 +1725,74 @@ fun AgentLinkApp(
         }
     }
     val machineConnectionKeys = machines.map { "${it.id}|${it.endpoint}|${it.deviceToken}|${it.connectionHeaders.hashCode()}" }
+    LaunchedEffect(machineConnectionKeys, appInForeground.value, uiOwnsConnections, storesLoaded) {
+        if (!appInForeground.value || !uiOwnsConnections || !storesLoaded || storageError != null) return@LaunchedEffect
+        val revisions = mutableMapOf<String, Long>()
+        val catalogFailures = mutableSetOf<String>()
+        while (true) {
+            for (machine in machines.toList()) {
+                try {
+                    val requestedBindings = chats.filter { it.machineId == machine.id }.associate {
+                        it.id to Triple(it.acpSessionId, it.workspacePath, it.agentId)
+                    }
+                    val catalog = bridgeClient.listSharedChats(machine)
+                    for (remote in catalog) {
+                        val id = remote.getString("chatId")
+                        val local = chats.firstOrNull { it.id == id }
+                        if (local != null && requestedBindings[id] != Triple(local.acpSessionId, local.workspacePath, local.agentId)) {
+                            // An attach/session operation completed while this snapshot was in flight.
+                            continue
+                        }
+                        val merged = mergeSharedChat(machine, remote, local)
+                        if (local != merged) upsertChat(merged)
+                        val revision = remote.optLong("revision")
+                        if (revisions.put(id, revision) != revision && id !in chatConnections) {
+                            statusSynchronizedChatIds.remove(id)
+                        }
+                    }
+                    val remoteIds = catalog.map { it.getString("chatId") }.toSet()
+                    for (local in chats.filter { it.machineId == machine.id && it.id !in remoteIds }.toList()) {
+                        val registration = bridgeClient.controlRequest(machine, "chat.register", JSONObject()
+                            .put("chatId", local.id).put("chatTitle", local.title)
+                            .put("workspacePath", local.workspacePath).put("agentId", local.agentId)
+                            .put("sessionId", local.acpSessionId).put("sessionResumable", local.acpSessionResumable))
+                        check(registration.optString("status") == "ok") { "Shared chat registration failed." }
+                    }
+                    val workspaceResult = bridgeClient.controlRequest(machine, "workspace.list")
+                    check(workspaceResult.optString("status") == "ok") { "Shared workspaces are unavailable." }
+                    run {
+                        val remoteWorkspaces = workspaceResult.getJSONObject("data").getJSONArray("workspaces")
+                        val workspaces = List(remoteWorkspaces.length()) { index ->
+                            val item = remoteWorkspaces.getJSONObject(index)
+                            Workspace(item.getString("id"), item.getString("displayName"), item.getString("absolutePath"))
+                        }
+                        val remoteAgents = workspaceResult.getJSONObject("data").optJSONArray("agents")
+                        val agents = remoteAgents?.let { rows ->
+                            List(rows.length()) { index ->
+                                val item = rows.getJSONObject(index)
+                                Agent(item.getString("id"), item.getString("displayName"), item.optString("status", "unknown"))
+                            }
+                        } ?: machine.agents
+                        if (machine.workspaces != workspaces || machine.agents != agents) {
+                            upsertMachine(machine.copy(workspaces = workspaces, agents = agents))
+                        }
+                    }
+                    if (catalogFailures.remove(machine.id)) {
+                        statusMessage = strings.reliability("Shared catalog synchronized.", "共享目录已同步。")
+                    }
+                } catch (error: Exception) {
+                    if (error is kotlinx.coroutines.CancellationException && error !is kotlinx.coroutines.TimeoutCancellationException) throw error
+                    if (catalogFailures.add(machine.id)) {
+                        statusMessage = strings.reliability(
+                            "Shared catalog unavailable for ${machine.displayName}. Check the bridge connection and version; saved chats remain available.",
+                            "${machine.displayName} 的共享目录不可用。请检查桥接连接与版本；已保存的聊天仍然可用。",
+                        )
+                    }
+                }
+            }
+            delay(5_000)
+        }
+    }
     LaunchedEffect(chatConnectionKeys, machineConnectionKeys, statusSynchronizedChatIds.toList(), sessionLoadingChatIds.toList(), appInForeground.value, uiOwnsConnections, storesLoaded) {
         if (!appInForeground.value || !uiOwnsConnections || !storesLoaded) return@LaunchedEffect
         var retryDelayMillis = 1_000L
@@ -2116,6 +2188,7 @@ private fun SettingsScreen(
     onNotificationSettings: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
+    val settingsContext = LocalContext.current
     var sessionLoadLimitText by remember(sessionLoadMessageLimit) { mutableStateOf(sessionLoadMessageLimit.toString()) }
     LazyColumn(
         modifier = Modifier
@@ -2130,6 +2203,13 @@ private fun SettingsScreen(
                 subtitle = strings.manageSettings,
                 metric = "v${BuildConfig.VERSION_NAME}",
             )
+        }
+        item {
+            OutlinedButton(onClick = {
+                settingsContext.startActivity(Intent(settingsContext, IntegrationGrantsActivity::class.java))
+            }) {
+                Text(strings.reliability("Connected apps · Mochi access and revocation", "已连接应用 · Mochi 授权与撤销"))
+            }
         }
         item {
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {

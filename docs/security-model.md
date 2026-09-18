@@ -6,6 +6,33 @@ The Android app must let users control powerful remote coding agents without acc
 
 ## Trust Boundaries
 
+### Same-device Mochi controller
+
+AgentLink retains device/tunnel/account credentials. The exported authorization
+Activity and Messenger service require explicit user grants and validate the real
+calling UID/package and installed signing identity; a claimed package, request ID
+or successful Activity result is not itself authorization. Grants are scoped and
+revocable in AgentLink. The model cannot grant itself access, approve an execution
+request, or authorize a permission escalation with an argument such as `confirmed`.
+
+The bridge authenticates AgentLink's existing device connection. Android applies
+the finer controller scope and forces the controller source; bridge authentication
+alone does not identify the originating model. Shared catalog reads use authenticated
+WebSocket control requests; the unauthenticated legacy HTTP workspace endpoint
+continues to expose only explicitly configured startup workspaces.
+
+New workspace operations require bridge-owner `--workspace-root` opt-in in addition
+to the Android grant. Destinations are canonicalized and existing directories are
+not overwritten; clone accepts credential-free HTTPS only. This is not a sandbox
+against a malicious local user modifying directory links concurrently. ACP agent
+permissions and human execution approvals still govern subsequent agent work.
+
+The durable SQLite conversation journal is owner-private **but not encrypted**.
+It contains sensitive prompt/output content, unlike the separate hash-only device
+token store. Protect the disk and backups. Bounded history/truncation and interrupted
+restart states must remain visible; they are not evidence that an external action
+never ran. No automatic write retries are permitted after uncertain acceptance.
+
 ```text
 Android UI
   trusted for user decisions

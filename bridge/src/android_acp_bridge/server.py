@@ -46,7 +46,7 @@ def create_app(runtime: BridgeRuntime) -> FastAPI:
 
     @app.get("/workspaces")
     def workspaces() -> dict[str, Any]:
-        return runtime.workspaces_response()
+        return runtime.public_workspaces_response()
 
     @app.post("/pairing/redeem")
     def redeem_pairing(request: PairingRedeemRequest) -> dict[str, str]:

@@ -291,7 +291,10 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
                 self.ui.buffer.reset()
                 self.pipe.send_text("visible draft")
                 self.client.observe_event(update("agent_message_chunk", operation=str(width), text=f"LATEST-{width}"))
-                await asyncio.sleep(0.3)
+                for _ in range(40):
+                    if "visible draft" in self.screen() and f"LATEST-{width}" in self.screen():
+                        break
+                    await asyncio.sleep(0.05)
                 self.assertIn("visible draft", self.screen())
                 self.assertIn(f"LATEST-{width}", self.screen())
                 self.assertTrue(self.ui.app.layout.has_focus(self.ui.input_control))

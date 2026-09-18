@@ -4,6 +4,49 @@ This document describes the Android-to-bridge contract. It is intentionally sepa
 
 ## Transport
 
+### Authenticated shared control (version 1)
+
+On the default stdlib `/ws` connection, send
+`{"type":"control.request","requestId":"nonce","action":"chat.read","chatId":"..."}`.
+Receive `{"type":"control.result","requestId":"nonce","status":"ok","data":{...}}`
+or `status:"error", code, message`, followed by `bridge.done`.
+Errors include `INVALID_ARGS`, `NOT_FOUND`, `PERMISSION_DENIED`, `CONFLICT`,
+`UNSUPPORTED`, and `PROVIDER_ERROR`. No credential is included in data.
+
+| Action | Arguments | Data |
+| --- | --- | --- |
+| `workspace.list` | none | workspaces, agents, workspaceCreationEnabled |
+| `workspace.create` | mode, absolute path; repositoryUrl for clone; sourceWorkspaceId and new branch for worktree | workspace |
+| `chat.list` | workspaceId optional; offset/limit (50 default, 100 max) | chats, hasMore, nextOffset, eventGeneration |
+| `chat.create` | workspaceId, agentId, title, optional caller-generated chatId | chat |
+| `chat.register` | existing chatId, workspacePath, agentId, optional sessionId/sessionResumable/chatTitle | chat |
+| `chat.read` | chatId, afterEventId (default 0), limit (30 default, 100 max) | chat, events, tasks, approvals, latestEventId, nextEventId, hasMore, truncated, eventGeneration, online, observedAt |
+| `chat.send` | chatId, content, operationId, source, expectedHumanRevision | taskId, chatId, state; duplicate on retry |
+| `task.cancel` | chatId, operationId | taskId, state; cancellation_requested is not completed cancellation |
+| `chat.configure` | chatId; configId/value to set, omitted to refresh | chat |
+
+Workspace modes are `directory`, `register_existing`, `clone`, `worktree`.
+Mutations require a descendant of a configured `--workspace-root`; existing
+destinations conflict except explicit registration. Git failures leave partial
+paths intact for inspection. Workspace roots are not arbitrary shell access.
+
+Chat metadata includes workspace/session/agent IDs, title/path, status, revision,
+humanRevision, confirmed configOptions and updatedAt. Chat lists omit configOptions.
+The journal retains 10,000 events per chat and records over 128 KiB become explicit
+truncation notices; page data is byte bounded. Cursor consumers must handle generation
+changes and gaps. Android's previously saved history is not uploaded automatically.
+
+Mochi source requires a previously read integer humanRevision. A human accepted
+message increments it and cancels queued Mochi follow-ups; active work is not
+silently cancelled. Same task ID/content returns existing state even after restart;
+different content conflicts. Interrupted tasks are never automatically rerun.
+Different chats cannot start Mochi work in a workspace with another active chat.
+
+Legacy attach/prompt registers original IDs and preserves authoritative bindings.
+Explicit session history loading changes the binding and invalidates old follow-ups.
+Multiple attached connections receive live events; disconnect detaches only its
+subscriber. CLI observes the same event creation path without subscribing twice.
+
 ### Shared configuration updates
 
 `session.refreshConfigOptions` and `session.setConfigOption` remain existing

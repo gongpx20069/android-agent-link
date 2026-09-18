@@ -35,7 +35,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, self.server.runtime.agents_response())
             return
         if parsed.path == "/workspaces":
-            self._send_json(HTTPStatus.OK, self.server.runtime.workspaces_response())
+            self._send_json(HTTPStatus.OK, self.server.runtime.public_workspaces_response())
             return
         if parsed.path == "/ws":
             self._handle_websocket(parsed.query)
@@ -185,6 +185,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 request_queue.put(payload)
         finally:
             stopped.set()
+            self.server.runtime.detach(emit)
             request_queue.put(None)
             response_queue.put(None)
             self.server.runtime.console.message("info", "connection.closed", transport="websocket")

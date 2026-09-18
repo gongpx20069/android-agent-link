@@ -240,6 +240,23 @@ Android stores the device token in secure platform storage.
 
 ## Android UX
 
+### Connecting Mochi on the same phone
+
+First pair machines in AgentLink using the normal authenticated flow below. Then
+use Mochi's Connect to AgentLink action. It jumps to AgentLink's explicit
+authorization activity; verify the installed caller package and SHA-256 signer,
+choose machines and read/control/create permissions, and authorize to return
+directly to Mochi. No bridge credential is copied, pasted or returned to Mochi.
+The grant covers all workspaces/chats on selected machines, including future ones.
+The Android app remains the only credential-owning network proxy.
+
+Return to **AgentLink → Settings → Connected apps** to revoke access. Replacing
+an app with a different signing certificate requires fresh consent. Existing tasks
+are not cancelled by revoking access or disconnecting Mochi. Human approvals and
+configuration changes stay in AgentLink; a trusted chat/approval handoff opens the
+matching shared chat and Android Back returns to Mochi. See `android-app.md` for
+the versioned Messenger/authorization contract and current background limitations.
+
 Dev Tunnel access tokens are intentionally short-lived. Account-paired machines
 retrieve fresh connect tokens from the management service as needed, including
 after the old relay token expires. This requires a valid identity login and does

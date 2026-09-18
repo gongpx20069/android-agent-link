@@ -129,6 +129,10 @@ class TerminalClient:
             if isinstance(payload.get("sessionId"), str):
                 chat.session_id = payload["sessionId"]
                 chat.resumable = payload.get("sessionResumable") is True
+            if isinstance(payload.get("status"), str):
+                chat.status = payload["status"]
+            if isinstance(payload.get("configOptions"), list):
+                chat.config_options = payload["configOptions"]
 
     def chat_label(self, chat_id: str) -> str:
         with self._lock:
@@ -470,6 +474,8 @@ class TerminalClient:
                      "/approvals | /approve <approval-id> | /deny <approval-id> | /pair y|n\n"
                      "/send <text> (including a leading /) | /quit (stops bridge; /quit! while busy)")
         elif command == "/chats":
+            for shared in self.runtime.shared.chats():
+                self.observe_request({"type": "chat.attach", **shared})
             self._show_chats(choose=True)
         elif command == "/use":
             with self._lock:
@@ -494,12 +500,16 @@ class TerminalClient:
                 self.say("Use /new <available agent-id> <existing absolute workspace>. Agents: " + ", ".join(sorted(available)))
             else:
                 chat_id = "chat_" + secrets.token_hex(16)
-                self.observe_request({"type": "chat.prompt", "chatId": chat_id, "agentId": agent, "workspacePath": workspace})
+                result = self.runtime.websocket_responses({"type": "control.request", "action": "chat.register",
+                                                          "chatId": chat_id, "agentId": agent, "workspacePath": workspace})
+                if result[0].get("status") != "ok":
+                    self.say("Cannot register shared chat: " + str(result[0].get("message", "unknown error")))
+                    return True
                 with self._lock:
                     if chat_id in self.chats:
                         self._announced_chats.add(chat_id)
                         self._select_chat(chat_id)
-                        self.say("This local chat is not automatically added to Android's Chats list.")
+                        self.say("Shared chat created. Refresh chats on Android to open the same conversation.")
                     else:
                         self.say("Terminal chat limit reached; cannot create another chat.")
         elif command == "/approvals":

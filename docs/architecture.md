@@ -13,6 +13,28 @@ ACP Agent CLI
 
 The Android app is the control surface. Remote machines run the bridge, agent process, shell commands, Git operations, and repository workspaces.
 
+### Shared controller model
+
+Mochi is an optional primary controller, AgentLink Android is the credential owner
+and trusted authorization/approval/detail surface, and the terminal is another
+human controller. They address the same bridge-owned workspace/chat/session/task
+IDs, not shadow conversations. An explicit same-device Android Activity grants
+scoped access to a Messenger service; credentials never enter Mochi tool results.
+
+`shared_state.py` uses standard-library SQLite for the private catalog, bounded
+event journal and durable task deduplication. `control.py` provides authenticated
+grouped control operations. Existing attach/prompt paths register the original IDs;
+all prompt execution continues through the existing runtime queue and ACP manager.
+Event fan-out is connection-specific multicast and disconnect removes only that
+connection. Human revisions protect Mochi continuations, independent of event
+generation resets. Restart ambiguity is represented as interrupted, not success.
+
+The state is authoritative for accepted messages, confirmed configuration, task
+status and event cursors. Pending approval decisions remain in the existing runtime
+approval state machine. Drafts, scroll and folding stay client-local. Read responses
+declare observation time, online state, journal truncation and page continuation;
+an offline client cannot claim current remote status.
+
 ## Why a Bridge Exists
 
 Many coding agents communicate over stdio and assume a desktop/server environment. Android should not directly manage those agent processes. The bridge provides:

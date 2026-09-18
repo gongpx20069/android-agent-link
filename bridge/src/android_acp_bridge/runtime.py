@@ -3,6 +3,8 @@ from __future__ import annotations
 import secrets
 import threading
 import time
+import hashlib
+import sqlite3
 from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass
@@ -17,6 +19,7 @@ from .history import HistoryError, HistoryStore
 from .pairing import PairingStore
 from .account_pairing import AccountPairing, AccountPairingError
 from .console_log import ConsoleLog
+from .shared_state import ControlError, SharedState
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,7 @@ class PromptOperation:
     state: str = "queued"
     waiters: list[Callable[[dict[str, Any]], None]] | None = None
     batch_members: list["PromptOperation"] | None = None
+    source: str = "human"
 
 
 class AgentManager(Protocol):
@@ -151,6 +155,7 @@ class BridgeRuntime:
         self._cancelled_prompt_ids: dict[tuple[str, str], None] = {}
         self._prompt_lock = threading.RLock()
         self._chat_emitters: dict[str, Callable[[dict[str, Any]], None]] = {}
+        self._chat_subscribers: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
         self._event_logs: dict[str, list[dict[str, Any]]] = {}
         self._next_event_ids: dict[str, int] = {}
         self._event_generation = secrets.token_hex(16)
@@ -161,6 +166,19 @@ class BridgeRuntime:
         self._history = HistoryStore()
         self._history_loading_chats: set[str] = set()
         self._configuring_chats: set[str] = set()
+        self.shared = SharedState(config.shared_state_store)
+        self._event_generation = self.shared.generation
+        for workspace in config.workspaces:
+            self.shared.workspace(workspace.absolute_path, workspace.id, workspace.display_name)
+        for chat in self.shared.chats():
+            chat_id = chat["chatId"]
+            page = self.shared.events(chat_id, max(0, chat["revision"] - CHAT_EVENT_LOG_LIMIT), CHAT_EVENT_LOG_LIMIT)
+            self._event_logs[chat_id] = page["events"]
+            self._next_event_ids[chat_id] = chat["revision"] + 1
+            self._chat_status[chat_id] = chat["status"]
+            self._chat_event_generations[chat_id] = chat.get("eventGeneration", self._event_generation)
+            if local_client:
+                local_client.observe_request({"type": "chat.attach", **chat})
 
     def health_response(self) -> dict[str, Any]:
         return {
@@ -212,16 +230,12 @@ class BridgeRuntime:
         return {"agents": [agent.to_wire() for agent in discover_agents()]}
 
     def workspaces_response(self) -> dict[str, Any]:
-        return {
-            "workspaces": [
-                {
-                    "id": workspace.id,
-                    "displayName": workspace.display_name,
-                    "absolutePath": workspace.absolute_path,
-                }
-                for workspace in self.config.workspaces
-            ]
-        }
+        return {"workspaces": self.shared.workspaces()}
+
+    def public_workspaces_response(self) -> dict[str, Any]:
+        # Historical discovery endpoint is unauthenticated; don't expose the private catalog.
+        return {"workspaces": [{"id": w.id, "displayName": w.display_name, "absolutePath": w.absolute_path}
+                               for w in self.config.workspaces]}
 
     def redeem_pairing(self, pairing_id: str, pairing_token: str, device: DeviceInfo) -> dict[str, str]:
         if not self.confirm_pairing(device):
@@ -249,6 +263,20 @@ class BridgeRuntime:
             return responses
 
         message_type = payload.get("type")
+        if message_type == "control.request":
+            from .control import control_response
+            return control_response(self, payload)
+        if message_type in {"chat.attach", "chat.prompt"}:
+            try:
+                registered = self.shared.register(payload)
+                if registered is not None:
+                    payload = {**payload, **{key: registered[key] for key in (
+                        "agentId", "workspacePath", "sessionId", "sessionResumable")}}
+            except ControlError as error:
+                return [{"type": "bridge.error", "chatId": payload.get("chatId"), "error": str(error)},
+                        {"type": "bridge.done", "chatId": payload.get("chatId")}]
+        if message_type in {"session.load", "session.loadRecent"}:
+            self.shared.register(payload)
         if self.local_client is not None:
             self.local_client.observe_request(payload)
         if message_type == "chat.attach":
@@ -338,8 +366,19 @@ class BridgeRuntime:
             responses=responses,
             completed=threading.Event(),
             waiters=[],
+            source="mochi" if payload.get("source") == "mochi" else
+                   "cli" if operation_id.startswith("terminal_") else "human",
         )
         with self._prompt_lock:
+            persisted = self.shared.task(chat_id, operation_id)
+            if persisted is not None and (chat_id, operation_id) not in self._prompt_operations:
+                if persisted.get("contentDigest") is not None and persisted["contentDigest"] != hashlib.sha256(prompt.encode()).hexdigest():
+                    return [{"type": "operation.done", "chatId": chat_id, "operationId": operation_id,
+                             "status": "failed", "error": "Operation ID already used with different content."},
+                            {"type": "bridge.done", "chatId": chat_id}]
+                return [{"type": "operation.accepted", "chatId": chat_id, "operationId": operation_id,
+                         "state": persisted["state"], "duplicate": True},
+                        {"type": "bridge.done", "chatId": chat_id}]
             if chat_id in self._history_loading_chats or chat_id in self._configuring_chats:
                 return [
                     {
@@ -393,6 +432,10 @@ class BridgeRuntime:
                 return responses
 
             queue_for_chat = self._prompt_queues.setdefault(chat_id, deque())
+            if operation.source != "mochi":
+                for queued in list(queue_for_chat):
+                    if queued.source == "mochi":
+                        self._remove_queued_prompt({"chatId": chat_id, "operationId": queued.operation_id}, None)
             starts_immediately = chat_id not in self._active_prompts
             queue_position = 0 if starts_immediately else len(queue_for_chat) + 1
             operation.state = "starting" if starts_immediately else "queued"
@@ -401,23 +444,33 @@ class BridgeRuntime:
                 self._active_prompts[chat_id] = operation
             else:
                 queue_for_chat.append(operation)
-            self._publish_prompt_event(
-                operation,
-                {
-                    "type": "operation.accepted",
-                    "chatId": chat_id,
-                    "operationId": operation_id,
-                    "operationType": "chat.prompt",
-                    "state": operation.state,
-                    "queuePosition": queue_position,
-                    "content": prompt,
-                },
-            )
-            active_operation_id = self._active_prompts[chat_id].operation_id
-            self._publish_prompt_event(
-                operation,
-                self._chat_status_event(chat_id, "busy", active_operation_id, queued_count=queue_position),
-            )
+            try:
+                self._publish_prompt_event(
+                    operation,
+                    {
+                        "type": "operation.accepted",
+                        "chatId": chat_id,
+                        "operationId": operation_id,
+                        "operationType": "chat.prompt",
+                        "state": operation.state,
+                        "queuePosition": queue_position,
+                        "content": prompt,
+                        "source": operation.source,
+                    },
+                )
+                active_operation_id = self._active_prompts[chat_id].operation_id
+                self._publish_prompt_event(
+                    operation,
+                    self._chat_status_event(chat_id, "busy", active_operation_id, queued_count=queue_position),
+                )
+            except sqlite3.Error:
+                self._prompt_operations.pop((chat_id, operation_id), None)
+                if starts_immediately:
+                    self._active_prompts.pop(chat_id, None)
+                else:
+                    queue_for_chat.remove(operation)
+                operation.completed.set()
+                raise
         if starts_immediately:
             threading.Thread(target=self._run_prompt_queue, args=(chat_id,), daemon=True).start()
 
@@ -443,6 +496,7 @@ class BridgeRuntime:
                             "operationType": "chat.prompt",
                             "content": member.content,
                             "batchSize": len(batch),
+                            "source": member.source,
                         },
                     )
 
@@ -475,7 +529,7 @@ class BridgeRuntime:
                         message,
                         lambda event: self._publish_prompt_event(operation, event),
                     ),
-                    update_callback=emit_update if operation.emit is not None or chat_id in self._chat_emitters else None,
+                    update_callback=emit_update if operation.emit is not None or self._subscribers(chat_id) else None,
                     session_callback=emit_session,
                 )
                 operation_status = "completed"
@@ -498,6 +552,8 @@ class BridgeRuntime:
                 operation_status = "failed"
 
             for update in updates:
+                if update.get("update", {}).get("sessionUpdate") == "agentlink_prompt_cancelled":
+                    operation_status = "cancelled"
                 update.setdefault("chatId", chat_id)
                 update.setdefault("operationId", operation.operation_id)
                 self._publish_prompt_event(operation, update)
@@ -608,9 +664,7 @@ class BridgeRuntime:
                     },
                 )
                 targets: list[Callable[[dict[str, Any]], None]] = []
-                chat_emitter = self._chat_emitters.get(chat_id)
-                if chat_emitter is not None:
-                    targets.append(chat_emitter)
+                targets.extend(self._subscribers(chat_id))
                 if removed is not None and removed.emit is not None and not _same_emitter(removed.emit, targets):
                     targets.append(removed.emit)
                 if emit is not None and not _same_emitter(emit, targets):
@@ -649,10 +703,7 @@ class BridgeRuntime:
             self._publish_prompt_transport(operation, enriched)
 
     def _publish_prompt_transport(self, operation: PromptOperation, event: dict[str, Any]) -> None:
-        targets: list[Callable[[dict[str, Any]], None]] = []
-        chat_emitter = self._chat_emitters.get(operation.chat_id)
-        if chat_emitter is not None:
-            targets.append(chat_emitter)
+        targets = self._subscribers(operation.chat_id)
         if operation.emit is not None and not _same_emitter(operation.emit, targets):
             targets.append(operation.emit)
         if event.get("type") == "operation.done":
@@ -663,6 +714,24 @@ class BridgeRuntime:
             operation.responses.append(event)
         for target in targets:
             target(event)
+
+    def _subscribers(self, chat_id: str) -> list[Callable[[dict[str, Any]], None]]:
+        targets = list(self._chat_subscribers.get(chat_id, []))
+        legacy = self._chat_emitters.get(chat_id)
+        if legacy is not None and not _same_emitter(legacy, targets):
+            targets.append(legacy)
+        return targets
+
+    def detach(self, emit: Callable[[dict[str, Any]], None]) -> None:
+        with self._event_lock:
+            for chat_id in list(self._chat_subscribers):
+                self._chat_subscribers[chat_id] = [item for item in self._chat_subscribers[chat_id]
+                                                  if not _same_emitter(item, [emit])]
+                if not self._chat_subscribers[chat_id]:
+                    del self._chat_subscribers[chat_id]
+            for chat_id, item in list(self._chat_emitters.items()):
+                if _same_emitter(item, [emit]):
+                    self._chat_emitters.pop(chat_id, None)
 
     def _finish_prompt_transport(self, operation: PromptOperation) -> None:
         done = {"type": "bridge.done", "chatId": operation.chat_id}
@@ -751,6 +820,8 @@ class BridgeRuntime:
                 claimed = True
             updates = self.agent_manager.load_session(chat_id, agent_id, workspace_path, session_id)
             updates.insert(0, self._session_binding_event(chat_id, AcpSessionBinding(session_id, resumable=True)))
+            if payload.get("workspacePath"):
+                self.shared.bind_session(chat_id, session_id)
         except AcpAgentError as exc:
             updates = [
                 {
@@ -803,11 +874,21 @@ class BridgeRuntime:
             )
             with self._event_lock:
                 self._event_logs.pop(chat_id, None)
+                generation = self.shared.reset_events(chat_id)
                 self._next_event_ids[chat_id] = 1
-                self._chat_event_generations[chat_id] = secrets.token_hex(16)
+                self._chat_event_generations[chat_id] = generation
                 self._chat_status[chat_id] = "idle"
                 page["latestEventId"] = 0
                 page["eventGeneration"] = self._chat_event_generations[chat_id]
+                if payload.get("workspacePath"):
+                    self.shared.bind_session(chat_id, session_id)
+                for subscriber in self._subscribers(chat_id):
+                    subscriber({"type": "chat.attached", "chatId": chat_id, "latestEventId": 0,
+                                "eventGeneration": generation, "checkpointReset": True, "replayed": 0})
+                    subscriber(self._session_binding_event(chat_id, AcpSessionBinding(session_id, resumable=True)))
+                    subscriber({"type": "chat.resyncRequired", "chatId": chat_id,
+                                "latestEventId": 0, "eventGeneration": generation,
+                                "reason": "Session history was explicitly replaced; refresh its history snapshot."})
             return [
                 self._session_binding_event(chat_id, AcpSessionBinding(session_id, resumable=True)),
                 {
@@ -907,7 +988,7 @@ class BridgeRuntime:
                     _string_or_default(payload.get("workspacePath"), ""),
                     session_id,
                     _bool_or_default(payload.get("sessionResumable"), False),
-                    lambda binding: self._append_event(chat_id, self._session_binding_event(chat_id, binding)),
+                    lambda binding: self._record_broadcast(chat_id, self._session_binding_event(chat_id, binding), exclude=emit),
                 )
             except AcpAgentError as exc:
                 binding_error = exc
@@ -950,6 +1031,10 @@ class BridgeRuntime:
                 if active_operation is not None:
                     status_payload["operationId"] = active_operation.operation_id
                 status_event = self._append_event(chat_id, status_payload)
+                for subscriber in self._subscribers(chat_id):
+                    if not _same_emitter(subscriber, [emit] if emit else []):
+                        for event in [*session_events, status_event]:
+                            subscriber(event)
                 status_snapshot = {**status_event, "snapshot": True}
                 resync_responses = (
                     [
@@ -989,6 +1074,9 @@ class BridgeRuntime:
                 for response in resync_responses:
                     self.console.observe(response)
                 if emit is not None:
+                    subscribers = self._chat_subscribers.setdefault(chat_id, [])
+                    if not _same_emitter(emit, subscribers):
+                        subscribers.append(emit)
                     self._chat_emitters[chat_id] = emit
                     for response in responses:
                         emit(response)
@@ -1033,11 +1121,12 @@ class BridgeRuntime:
     def _append_event(self, chat_id: str, event: dict[str, Any], log_operation_id: str | None = None) -> dict[str, Any]:
         with self._event_lock:
             event_id = self._next_event_ids.get(chat_id, 1)
-            self._next_event_ids[chat_id] = event_id + 1
             enriched = event.copy()
             enriched.setdefault("chatId", chat_id)
             enriched["eventId"] = event_id
             enriched.setdefault("timestamp", int(time.time() * 1000))
+            self.shared.append(chat_id, enriched)
+            self._next_event_ids[chat_id] = event_id + 1
             log = self._event_logs.setdefault(chat_id, [])
             log.append(enriched)
             if len(log) > CHAT_EVENT_LOG_LIMIT:
@@ -1045,6 +1134,14 @@ class BridgeRuntime:
             self.console.observe(enriched, log_operation_id)
             if self.local_client is not None:
                 self.local_client.observe_event(enriched)
+            return enriched
+
+    def _record_broadcast(self, chat_id: str, event: dict[str, Any], exclude=None) -> dict[str, Any]:
+        with self._event_lock:
+            enriched = self._append_event(chat_id, event)
+            for subscriber in self._subscribers(chat_id):
+                if not _same_emitter(subscriber, [exclude] if exclude else []):
+                    subscriber(enriched)
             return enriched
 
     def local_approvals(self) -> list[dict[str, Any]]:
@@ -1121,8 +1218,7 @@ class BridgeRuntime:
                         continue
                     event = self._append_event(chat_id, response)
                     published.append(event)
-                    subscriber = self._chat_emitters.get(chat_id)
-                    if subscriber is not None:
+                    for subscriber in self._subscribers(chat_id):
                         subscriber(event)
             return published
         finally:

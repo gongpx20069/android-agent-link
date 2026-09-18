@@ -16,6 +16,31 @@ AgentLink 把远程电脑上的编程助手会话带到 Android。你可以发�
 - **在手机上响应请求。** 批准或拒绝 agent 发来的审批请求。
 - **接着上次的工作继续。** 恢复 agent 提供的已有会话，查看最近历史。
 - **长会话按需阅读。** 更早的本地记录、长回复和工具输出分页显示，不会为了流畅而静默删除历史。
+- **让 Mochi 操作同一批 Chat。** 在同一台手机上从 Mochi 的工具设置连接 AgentLink，
+  跳转后确认调用方、资源和能力范围。电脑凭据仍由 AgentLink 保管，执行审批仍由用户决定。
+
+### Mochi 与共享工作区
+
+需要同时更新两个 Android App **以及电脑上的 bridge**。在 Mochi 中启用 AgentLink
+provider、对应工具和内置 Skill，再从 provider 卡片发起连接。授权范围及撤销由
+AgentLink 管理；需要查看细节或审批时，打开对应的共享 Chat。
+
+CLI、App 和 Mochi 使用 bridge 中同一个工作区、Chat 和任务状态，不另外复制一个
+执行会话。用户的新消息会使旧的 Mochi 跟进失效，并取消尚未执行的旧排队消息；
+取消 Mochi 的工具等待不会自动取消电脑任务。
+
+默认不允许 Mochi 新建工作区。电脑端显式指定允许的已有根目录后才开启：
+
+```powershell
+python .\bridge\run.py start --interactive --workspace-root C:\Repos
+```
+
+创建目录、登记已有目录、HTTPS Git clone 和创建 worktree 都限定在允许根目录的
+子目录内。CLI `/new` 创建的是共享 Chat，可在 Android 刷新共享列表后打开。
+请使用默认 stdlib 服务端；草稿、折叠和滚动位置仍是各客户端自己的状态。
+
+bridge 会在私有本地存储保存有界事件记录和任务身份；重启前未完成的任务标为
+interrupted，不会自动重发。保存范围和恢复限制见 [bridge 指南](bridge/README.md)。
 
 AgentLink 是远程控制端，不会在手机上运行编程 agent。使用时，电脑需要保持唤醒、
 联网，并运行 bridge。

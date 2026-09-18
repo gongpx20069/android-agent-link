@@ -25,6 +25,8 @@ class BridgeConfig:
     machine_name: str = field(default_factory=socket.gethostname)
     workspaces: tuple[WorkspaceConfig, ...] = field(default_factory=tuple)
     device_token_store: Path | None = None
+    shared_state_store: Path | None = None
+    workspace_roots: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def bridge_fingerprint(self) -> str:
@@ -42,7 +44,8 @@ def default_workspace(path: str | None = None) -> WorkspaceConfig:
 
 
 def default_config(host: str = "127.0.0.1", port: int = DEFAULT_PORT, device_token_store: Path | None = None) -> BridgeConfig:
-    return BridgeConfig(host=host, port=port, workspaces=(), device_token_store=device_token_store)
+    return BridgeConfig(host=host, port=port, workspaces=(), device_token_store=device_token_store,
+                        shared_state_store=device_token_store.with_name("shared-state.sqlite3") if device_token_store else None)
 
 
 def default_device_token_store() -> Path:

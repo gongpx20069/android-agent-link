@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import sys
+import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 from .config import DEFAULT_PORT, default_config, default_device_token_store
@@ -36,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--server", choices=("stdlib", "fastapi"), default="stdlib", help="Server backend. Defaults to the standard-library backend.")
     start_parser.add_argument("--log-level", choices=("debug", "info", "warning", "error"), default="info", help="Console verbosity; debug includes event metadata, never message bodies.")
     start_parser.add_argument("--interactive", action="store_true", help="Enable AgentLink terminal chat alongside Android (stdlib backend; requires interactive extra and a terminal).")
+    start_parser.add_argument("--workspace-root", action="append", default=[], help="Allow controlled workspace creation/registration beneath this existing directory (repeatable).")
     start_parser.add_argument("--connection-header", action="append", default=[], metavar="NAME=VALUE", help="Header Android must send when connecting through a relay, e.g. X-Tunnel-Authorization='tunnel <token>'.")
 
     subparsers.add_parser("tailscale-status", help="Print the detected Tailscale status")
@@ -129,6 +132,10 @@ def _start(args: argparse.Namespace) -> int:
         pairing_endpoint = _validate_pairing_endpoint(args.pairing_endpoint) if args.pairing_endpoint else endpoint
 
     config = default_config(host=bind_host, port=args.port, device_token_store=args.device_token_store)
+    roots = tuple(str(Path(root).expanduser().resolve(strict=True)) for root in args.workspace_root)
+    if any(not Path(root).is_dir() for root in roots):
+        raise ValueError("Workspace roots must be existing directories.")
+    config = replace(config, workspace_roots=roots)
 
     pairing_store = PairingStore()
     token = pairing_store.create()
@@ -157,6 +164,7 @@ def _start(args: argparse.Namespace) -> int:
         print(render_terminal_qr(deep_link, ansi=sys.stdout.isatty()), flush=True)
 
     console = ConsoleLog("error" if terminal_client is not None else args.log_level)
+    runtime = None
     try:
         runtime = BridgeRuntime(
             config=config,
@@ -179,7 +187,12 @@ def _start(args: argparse.Namespace) -> int:
     except DeviceTokenStoreError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    except sqlite3.Error:
+        print("Shared conversation storage is unavailable. Repair or restore its private database before starting.", file=sys.stderr)
+        return 1
     finally:
+        if runtime is not None and not runtime._active_prompts:
+            runtime.shared.close()
         console.close()
         console.message("info", "server.stopped")
         if devtunnel_host is not None:

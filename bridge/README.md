@@ -4,6 +4,49 @@ Connect your computer's coding agents to the AgentLink Android app.
 For the shortest setup path, start with the [AgentLink quick start](../README.md).
 This guide covers additional installation and connection options.
 
+## Shared Mochi / Android / terminal control
+
+The default stdlib WebSocket runtime owns a durable shared workspace/chat catalog,
+task identities and a sequenced journal. Existing Android attach/prompt requests
+register their original IDs; terminal `/new` also registers with this catalog.
+`/chats` includes persisted and externally created shared chats. Multiple Android
+connections can subscribe without stealing one another's streams.
+
+Mochi connects through the explicitly authorized AgentLink app on the same phone,
+not directly to machine credentials. The three tool groups are
+`agentlink_workspace`, `agentlink_chat`, and `agentlink_control`. Approval and
+privileged configuration are trusted UI operations, not model-supplied consent.
+See [the control contract](../docs/acp-bridge-contract.md).
+
+Use repeatable `--workspace-root C:\Repos` to permit directory creation,
+registration, HTTPS clone and worktree creation beneath existing approved roots.
+Without this flag those workspace mutations are denied. Paths are canonicalized;
+existing destinations are never overwritten. Git uses argument arrays, disables
+interactive credential prompts and has a 20-second limit. A failed/timed-out Git
+operation can leave a partial directory: inspect it; AgentLink does not delete it
+or blindly retry. Clone URLs cannot contain embedded credentials, query or fragment.
+
+Production stores `shared-state.sqlite3` beside the device-token hash store,
+protected with the same private directory/file permissions. **The journal is not
+encrypted at rest** and contains conversation content; protect disk/backups.
+SQLite's WAL sidecars belong to the same private directory. Embedded/test runtimes
+remain memory-only unless `shared_state_store` is explicitly configured.
+
+The journal keeps up to 10,000 events per chat; individual records above 128 KiB
+are replaced by explicit truncation notices. Reads have bounded pages and byte
+budgets, plus generation/cursor/gap metadata. Task identity records are retained
+separately so journal rotation does not permit duplicate execution. Android's
+encrypted local history and the terminal's bounded live display are projections,
+not unlimited replicas of the shared journal.
+
+After restart, accepted unfinished tasks become `interrupted`: an external command
+may have already run, so inspect before issuing a **new** task ID. Reusing a task
+ID never reruns it; changing its content conflicts. Human input invalidates stale
+Mochi continuations and removes queued Mochi follow-ups. Running ACP cancellation
+returns `cancellation_requested`, not a guarantee that past side effects were undone.
+Cross-chat Mochi writes to an already busy workspace are rejected; use a worktree.
+The optional FastAPI backend remains a discovery/echo scaffold, not this runtime.
+
 ## Install
 
 The bridge requires Python 3.11 or newer. It never creates a Python environment or installs packages during startup. Run one of these explicit installation flows from the `bridge` directory.

@@ -152,7 +152,9 @@ class ConsoleLogTests(unittest.TestCase):
         runtime._log_responses(first)
         self.assertEqual(len(self.lines), 3)
         replay = runtime.websocket_responses({"type": "chat.attach", "chatId": "chat-a", "lastEventId": 0})
-        self.assertEqual([e for e in replay if e.get("operationId") == "op-a"], first)
+        self.assertEqual([e for e in replay if e.get("operationId") == "op-a"],
+                         [e for e in first if e.get("operationId") == "op-a"])
+        self.assertEqual(first[-1]["type"], "chat.status")
         self.assertEqual(sum("operation.finished" in line for line in self.lines), 1)
         self.assertTrue(any("chat.attached" in line and "replayed=32" in line for line in self.lines))
 

@@ -201,6 +201,15 @@ class AcpAgentManager:
                 session_callback(session.binding(replaced_session_id))
             return startup_updates + session.set_config_option(config_id, value)
 
+    def cancel_prompt(self, chat_id: str) -> None:
+        # Cancellation is a notification; acquiring the prompt lock would wait
+        # for exactly the operation we are trying to interrupt.
+        with self._sessions_guard:
+            session = self._sessions.get(chat_id)
+            if session is None:
+                raise AcpAgentError("Agent session is not ready for cancellation.")
+            session.cancel_prompt()
+
     def _chat_lock(self, chat_id: str) -> threading.RLock:
         with self._session_locks_guard:
             return self._session_locks.setdefault(chat_id, threading.RLock())
@@ -274,6 +283,7 @@ class AcpAgentSession:
         self._session_id = session_id
         self._resumable = resumable
         self._next_id = 3
+        self._write_lock = threading.Lock()
         self.permission_callback: PermissionCallback | None = None
         self._pending_updates: list[dict[str, Any]] = []
         self._latest_config_options: list[dict[str, Any]] = []
@@ -440,7 +450,7 @@ class AcpAgentSession:
         return session, updates, scanned_events, truncated
 
     def prompt(self, prompt: str, update_callback: UpdateCallback | None = None) -> list[dict[str, Any]]:
-        _result, updates = self._request(
+        result, updates = self._request(
             "session/prompt",
             {
                 "sessionId": self._session_id,
@@ -450,7 +460,13 @@ class AcpAgentSession:
             update_callback=update_callback,
         )
         self._resumable = True
+        if result.get("stopReason") == "cancelled":
+            updates.append({"type": "session/update", "update": {
+                "sessionUpdate": "agentlink_prompt_cancelled"}})
         return updates
+
+    def cancel_prompt(self) -> None:
+        self._write_json({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": self._session_id}})
 
     @property
     def session_id(self) -> str:
@@ -633,10 +649,11 @@ class AcpAgentSession:
         self._write_json({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}})
 
     def _write_json(self, message: dict[str, Any]) -> None:
-        if self._process.stdin is None:
-            raise AcpAgentError("ACP agent stdin is closed.")
-        self._process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
-        self._process.stdin.flush()
+        with self._write_lock:
+            if self._process.stdin is None:
+                raise AcpAgentError("ACP agent stdin is closed.")
+            self._process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+            self._process.stdin.flush()
 
 
 def _agent_command(agent_id: str, workspace: Path) -> list[str]:

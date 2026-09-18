@@ -1,5 +1,19 @@
 # Product Requirements
 
+## Mochi shared control
+
+- Expose only three grouped Mochi tools: workspace list/create, chat list/create/read,
+  and control send/cancel/configure, plus a corresponding built-in Skill.
+- Connect via an explicit Android authorization screen, with actual caller identity
+  and resource/capability selection. Never expose machine or relay credentials.
+- Use the same authoritative Chat and Workspace IDs in Mochi, Android and CLI;
+  import shared catalogs rather than creating parallel task state.
+- Read current task/configuration/approval/cursor state, not just assistant text.
+- Keep execution approvals and permission escalation in trusted human UI.
+- Reject stale Mochi follow-ups after human takeover, and never automatically rerun
+  uncertain writes or interrupted tasks after restart.
+- Keep new-workspace operations restricted to explicit bridge-owner roots.
+
 ## Account-based computer discovery
 
 - Offer GitHub and Microsoft login from Machines, with QR/link pairing retained

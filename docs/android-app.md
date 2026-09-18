@@ -2,6 +2,115 @@
 
 This document describes the current AgentLink Android client implementation.
 
+## Mochi same-device integration (protocol 1)
+
+AgentLink remains the credential-owning proxy. Mochi never receives device tokens,
+relay headers, OAuth credentials, machine endpoints, or a reusable capability token.
+The bridge is the shared Workspace/Chat/Task authority, not a second Mochi chat store.
+Foreground Android refreshes the shared workspace/chat catalog every five seconds
+(plus network time), imports exact chat/workspace/session IDs, and uses the existing
+authenticated attach/replay lifecycle and encrypted chat cache for messages,
+configuration, approvals and task status. Local legacy chats absent from the fully paginated catalog register using
+`chat.register` with their exact chat ID, title, workspace path, agent ID and saved
+session/resumability. Existing attach/prompt registration remains compatible;
+discovery does not create a replacement remote chat. Registration must be
+idempotent and must not replace an existing remote binding if another frontend
+registered the same ID while catalog pagination was in flight.
+Catalog refresh is foreground-only; existing bounded background monitoring still
+handles chats handed off by the App, not perpetual discovery of new remote chats.
+
+### Explicit IPC
+
+- Package: `com.gongpx.androidacpclient`.
+- Exported bound Messenger service:
+  `com.gongpx.androidacpclient.integration.AgentLinkControlService`.
+- Exported authorization activity:
+  `com.gongpx.androidacpclient.integration.AgentLinkAuthorizationActivity`.
+- Both exported components declare integer manifest metadata
+  `com.gongpx.androidacpclient.PROTOCOL_VERSION=1`.
+- No implicit intents, credential-bearing URIs or caller-supplied package identity.
+  Invoke the fixed activity with `startActivityForResult`, action
+  `com.gongpx.androidacpclient.AUTHORIZE`, and a fresh random `requestId`
+  matching `[A-Za-z0-9_-]{16,128}`. Success returns `RESULT_OK` with **only**
+  the echoed `requestId` and integer `protocolVersion=1`; denial returns cancelled.
+  Re-read service status and shared state after returning.
+- Service request: `Message.what=1`, `replyTo` Messenger and Bundle string fields
+  `requestId` (`[A-Za-z0-9_-]{1,128}`), `method`, `arguments` (JSON object string).
+  Reply: `Message.what=2`, Bundle strings `requestId`, `result`.
+- Result envelope: `{"status":"ok","data":{...}}` or
+  `{"status":"error","code":"...","message":"..."}`. Codes:
+  `PERMISSION_DENIED`, `INVALID_ARGS`, `CONFLICT`, `NOT_FOUND`, `PROVIDER_ERROR`,
+  `TIMEOUT`, `CANCELLED`. Permission/config errors may add `needsAuthorization`
+  or `needsApproval`; these are hints, not authorization.
+- Arguments are bounded to 128 KiB and result JSON to 256 KiB, measured both as
+  UTF-8 and UTF-16 Binder payload estimates. Oversize replies fail explicitly rather
+  than truncating history. Use paginated reads (`limit` 1–100, default 50).
+  Requests run on IO with a 30-second outer timeout and 25-second bridge timeout,
+  with at most eight active calls total and two per UID. Binder death, local timeout
+  and service cancellation **do not cancel remote tasks**.
+
+### Three tools
+
+All remote operations require a user-granted `machineId`. Unknown arguments,
+endpoints, credentials and non-Mochi `source` values are rejected.
+
+| Method | `action` | Permission / bridge action |
+| --- | --- | --- |
+| `agentlink_workspace` | `machines` | read; permitted machine IDs and display names only |
+| `agentlink_workspace` | `list`, `create` | read / create; `workspace.list`, `workspace.create` |
+| `agentlink_chat` | `list`, `read` | read; `chat.list`, `chat.read` |
+| `agentlink_chat` | `create` | create; `chat.create` |
+| `agentlink_control` | `send` | control; `chat.send` |
+| `agentlink_control` | `status` | safe before grant: protocol version, authorized/needsAuthorization, connected (provider transport only); granted status adds scope |
+| `agentlink_control` | `cancel` | control; `task.cancel`, honest unsupported/already-started outcomes |
+| `agentlink_control` | `configure` | control; returns `PERMISSION_DENIED` + `needsApproval`, never forwards configuration |
+
+Transport lifecycle calls may also use `method:"status"` or `method:"revoke"` with
+`arguments:"{}"`. Revocation deletes only the actual calling package's grant,
+never a package selected by an argument; `agentlink_control` action `revoke` is
+equivalent. Its result has `protocolVersion:1`, `authorized:false` and
+`needsAuthorization:true`. Status includes `connected:true` to acknowledge the
+reachable Android provider transport, **not** remote bridge health; individual
+remote calls report bridge errors.
+
+`chat.send` requires `chatId`, `content`, stable `operationId`, and integer
+`expectedHumanRevision` from a fresh `chat.read`. Android forces `source:"mochi"`;
+an optional caller-supplied source is accepted only when already exactly `mochi`.
+It returns the acknowledged task ID/state, not the completed answer; read chat
+events/status later. A human revision conflict is surfaced without auto-retrying
+the write or replacing the caller's expected revision. Workspace creation is
+restricted by bridge workspace roots and the explicit create grant.
+
+Trusted handoff uses the **same fixed activity**, action
+`com.gongpx.androidacpclient.OPEN_CHAT` or
+`com.gongpx.androidacpclient.OPEN_APPROVAL`, with `requestId`, `machineId`, `chatId`.
+It validates the actual calling activity, current signer, read grant, machine scope
+and remote chat before opening AgentLink's chat (including inline approvals).
+Android Back returns through the activity to the caller with the same nonce-only
+result. It never auto-approves or changes configuration.
+The chat is imported into the existing encrypted store before navigation, so a
+newly created CLI/Mochi chat does not depend on the next catalog refresh.
+`com.gongpx.androidacpclient.MANAGE_ACCESS` on the same fixed Activity opens
+AgentLink's trusted connected-app management screen and returns on Android Back.
+
+### Authorization and revocation
+
+The consent screen identifies the installed caller's label, package, UID and
+SHA-256 APK signer certificate digests. The user selects machines and independent
+read/control/create permissions; read is preselected, machines and write access
+are not. Grants cover **all present and future workspaces/chats on selected
+machines**; finer workspace/chat grants are not yet offered. Different APK signers
+are supported through this explicit user consent, not signature permission bypass.
+Grant records are encrypted, excluded from backup/transfer and bound to package
+plus the exact current signer set. Signer changes require new consent. Shared-UID
+callers are rejected because Binder cannot distinguish their packages.
+
+Every Messenger request validates `Message.sendingUid` against installed package
+identity and current signers. Remote calls recheck grants before dispatch and before
+returning data. Revocation is available under **Settings → Connected apps · Mochi
+access and revocation**; it blocks subsequent access but cannot undo submitted
+remote work. Consent and revocation screens reject obscured touches and screenshots.
+
 ## Current Scope
 
 The initial Android app supports machine onboarding plus an MVP chat shell:

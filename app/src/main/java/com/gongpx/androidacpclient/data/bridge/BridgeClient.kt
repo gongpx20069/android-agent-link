@@ -76,6 +76,18 @@ class BridgeClient(
         .build()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    /** Control replies acknowledge submission, not completion of the remote agent turn. */
+    suspend fun controlRequest(machine: Machine, action: String, arguments: JSONObject = JSONObject()): JSONObject =
+        kotlinx.coroutines.withTimeout(25_000) {
+            val requestId = UUID.randomUUID().toString()
+            val payload = JSONObject(arguments.toString())
+                .put("type", "control.request").put("requestId", requestId).put("action", action)
+            val events = sendRawBridgeMessage(machine, payload, maxResponseBytes = 256 * 1024)
+                .result.getOrThrow()
+            events.firstOrNull { it.optString("type") == "control.result" && it.optString("requestId") == requestId }
+                ?: throw IOException("Bridge did not return a control result.")
+        }
+
     suspend fun redeemPairing(payload: PairingPayload): Result<Machine> = withContext(Dispatchers.IO) {
         runCatching {
             val response = postJson(
@@ -735,6 +747,7 @@ class BridgeClient(
         machine: Machine,
         payload: JSONObject,
         allowPartialOnFailure: Boolean = false,
+        maxResponseBytes: Int = Int.MAX_VALUE,
         onEvent: (JSONObject) -> Unit = {},
     ): BridgeSendResult<List<JSONObject>> {
         try {
@@ -749,6 +762,7 @@ class BridgeClient(
                 requestBuilder.addHeader(name, value)
             }
             val events = mutableListOf<JSONObject>()
+            var responseBytes = 0L
             var accepted = false
 
             fun completeWithPartialOrFailure(t: Throwable) {
@@ -778,6 +792,12 @@ class BridgeClient(
                     }
 
                     override fun onMessage(webSocket: WebSocket, text: String) {
+                        responseBytes += text.toByteArray(Charsets.UTF_8).size
+                        if (responseBytes > maxResponseBytes) {
+                            completeWithPartialOrFailure(IOException("Bridge response exceeds the control response limit. Use pagination."))
+                            webSocket.cancel()
+                            return
+                        }
                         val json = runCatching { JSONObject(text) }.getOrNull()
                         if (json?.optString("type") == "bridge.accepted") {
                             accepted = true

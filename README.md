@@ -18,6 +18,34 @@ from your phone. Your projects and agent processes stay on your computer.
 - **Pick up where you left off.** Resume available agent sessions and view recent history.
 - **Browse long conversations without loading everything.** Older saved messages and long
   replies/tool outputs are paged; history is retained, not silently deleted.
+- **Let Mochi control the same chats.** On the same phone, connect AgentLink from
+  Mochi's Tools settings, review the caller and scope in AgentLink, and authorize.
+  Mochi, Android and the terminal use the bridge's shared workspace/chat/task state;
+  credentials stay in AgentLink and execution approvals remain human decisions.
+
+### Mochi and shared workspaces
+
+Update both Android apps **and the computer bridge**. Enable Mochi's AgentLink
+provider/tools and its bundled AgentLink skill. Connect from the provider card;
+AgentLink owns resource/capability selection and revocation. Open the exact shared
+chat in AgentLink to inspect or approve work. Human messages invalidate stale
+Mochi follow-ups; cancelling a Mochi tool wait does not cancel the remote task.
+
+Workspace creation is disabled unless the bridge owner explicitly permits a root:
+
+```powershell
+python .\bridge\run.py start --interactive --workspace-root C:\Repos
+```
+
+The root must already exist. Directory creation, existing-directory registration,
+HTTPS Git clone, and Git worktree creation are restricted to descendants of allowed
+roots. `/new` in the terminal registers a shared chat; refresh Android's shared
+chats to discover it. Use the default stdlib server for this integration.
+
+The bridge saves a bounded shared journal and task identities in private local
+storage. Restarted unfinished tasks are reported as interrupted, never retried
+automatically. Client drafts, folding and scroll position remain local. See the
+[bridge guide](bridge/README.md) for retention and recovery boundaries.
 
 AgentLink is a remote control, not an on-phone agent runtime. Your computer must
 stay awake, online, and running the bridge while you use it.
