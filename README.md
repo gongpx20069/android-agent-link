@@ -32,8 +32,8 @@ Run once in **Windows PowerShell**:
 git clone https://github.com/gongpx20069/android-agent-link.git
 cd android-agent-link
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".\bridge[interactive]"
-.\.venv\Scripts\python.exe .\bridge\run.py start --interactive
+.\.venv\Scripts\python.exe -m pip install -e .\bridge
+.\.venv\Scripts\python.exe .\bridge\run.py start
 ```
 
 Already installed? Only the last command is needed on subsequent starts.
@@ -41,15 +41,27 @@ Follow the Dev Tunnels sign-in prompt if shown. The default connection is privat
 and authenticated: **no inbound firewall ports or extra VPN app on your phone**.
 Keep the computer awake and this terminal running.
 
-### 3. Chat from your phone and terminal
-
-- In the server terminal, enter **`/qrcode`**. On Android, open **Machines → Scan QR**.
-  Check the matching confirmation code, then enter **`/pair y`** in the terminal
-  after leaving the QR view with Esc.
+- The server prints a pairing QR code. On Android, open **Machines → Scan QR**.
+  Check the matching confirmation code, then enter **`y`** at the server's pairing prompt.
 - On Android, open **Chats → New Chat**. Choose the computer, agent, and a project
   path **on the computer**, such as `C:\Repos\my-project`, then send a message.
-- **Continue the same conversation in the terminal.** With one chat and an empty
-  terminal draft, it is selected automatically. For multiple chats, use **`/chats`**.
+
+**You're ready to chat from your phone.** Terminal chat is optional.
+
+### 3. Optional: chat from the terminal too
+
+After any running tasks finish, stop the server with Ctrl+C. From the same repository
+folder, install the terminal extra once and restart in interactive mode:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".\bridge[interactive]"
+.\.venv\Scripts\python.exe .\bridge\run.py start --interactive
+```
+
+Open your chat on Android. With one chat and an empty terminal draft, it is selected
+automatically: **just type to continue**. For multiple chats, use **`/chats`**.
+If pairing is needed in this mode, use **`/qrcode`**, then Esc to return and
+**`/pair y`** to confirm the matching code.
 
 Phone and terminal share the same agent session, messages, task queue and approvals.
 This is AgentLink's terminal UI, not a second independent agent-CLI conversation.

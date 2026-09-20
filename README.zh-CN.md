@@ -32,8 +32,8 @@ GitHub Copilot CLI，或实际支持 `claude --acp` 的 Claude Code 配置。
 git clone https://github.com/gongpx20069/android-agent-link.git
 cd android-agent-link
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".\bridge[interactive]"
-.\.venv\Scripts\python.exe .\bridge\run.py start --interactive
+.\.venv\Scripts\python.exe -m pip install -e .\bridge
+.\.venv\Scripts\python.exe .\bridge\run.py start
 ```
 
 已经安装过？之后只需运行最后一条启动命令。
@@ -41,14 +41,26 @@ python -m venv .venv
 **无需开放入站防火墙端口，手机也无需额外安装 VPN App**。
 保持电脑唤醒，并让这个终端继续运行。
 
-### 3. 手机聊天，电脑终端同步接着聊
-
-- 在 Server 终端输入 **`/qrcode`**，手机打开 **Machines → Scan QR** 扫码。
-  核对两端确认码，在终端按 Esc 离开二维码页面后输入 **`/pair y`** 批准配对。
+- Server 启动后会显示配对二维码，手机打开 **Machines → Scan QR** 扫码。
+  核对两端确认码，在电脑的配对提示处输入 **`y`** 批准。
 - 手机进入 **Chats → New Chat**，选择电脑、agent 和**电脑上的项目目录**，
   例如 `C:\Repos\my-project`，然后发送消息。
-- **电脑终端可以直接接着同一段对话聊。** 只有一个 Chat 且终端草稿为空时会自动选中；
-  多个 Chat 用 **`/chats`** 切换。
+
+**到这里就可以在手机上聊天了，不需要开启终端聊天模式。**
+
+### 3. 可选：电脑终端同步接着聊
+
+等正在运行的任务结束后，按 Ctrl+C 停止 Server。在同一个仓库目录安装一次终端扩展，
+然后以交互模式重新启动：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".\bridge[interactive]"
+.\.venv\Scripts\python.exe .\bridge\run.py start --interactive
+```
+
+在 Android 打开聊天。只有一个 Chat 且终端草稿为空时会自动选中，**直接打字接着聊**；
+多个 Chat 用 **`/chats`** 切换。此模式下若需要配对，输入 **`/qrcode`** 显示二维码，
+核对确认码后按 Esc 返回，再输入 **`/pair y`** 批准。
 
 手机与终端共用同一个 agent 会话、消息、任务队列和审批状态。
 这里使用的是 AgentLink 终端界面，不是另开一段互不相干的 agent CLI 对话。
