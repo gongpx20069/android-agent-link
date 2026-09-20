@@ -2,6 +2,12 @@
 
 This folder defines the project memory layer for AgentLink.
 
+## Using AgentLink
+
+- [Quick start](../README.md) / [快速开始](../README.zh-CN.md): download, start the server, and chat.
+- [User guide](user-guide.md) / [使用指南](user-guide.zh-CN.md): full setup, terminal controls, account discovery, troubleshooting, and optional Mochi integration.
+- [Bridge guide](../bridge/README.md): installation and server configuration.
+
 ## Documents
 
 - `product-requirements.md` describes the target user experience, MVP, and feature boundaries.

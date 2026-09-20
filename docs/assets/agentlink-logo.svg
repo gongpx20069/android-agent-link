@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="208" viewBox="0 0 720 208" role="img" aria-labelledby="title description">
+  <title id="title">AgentLink</title>
+  <desc id="description">A terminal and phone joined by a mint-colored link. Your agents, within reach.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#101c34"/>
+      <stop offset="1" stop-color="#172940"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#74f3d2"/>
+      <stop offset="1" stop-color="#48b9ef"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="718" height="206" rx="28" fill="url(#background)" stroke="#2c435e"/>
+  <path d="M546 1h80L418 207h-80z" fill="#ffffff" opacity=".025"/>
+  <path d="M662 1h35L489 207h-35z" fill="#ffffff" opacity=".025"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="44" y="51" width="116" height="91" rx="17" fill="#172b45" stroke="#7f9bbc" stroke-width="3"/>
+    <path d="m64 80 12 11-12 11m28 0h18" stroke="#eff7ff" stroke-width="5"/>
+    <path d="M79 155h35" stroke="#7f9bbc" stroke-width="4"/>
+    <rect x="139" y="85" width="48" height="78" rx="12" fill="#12233b" stroke="url(#accent)" stroke-width="4"/>
+    <path d="M158 151h10" stroke="#74f3d2" stroke-width="3"/>
+    <path d="m122 126 16-16m-8-10 3-3a12 12 0 0 1 17 17l-5 5m-14 17-3 3a12 12 0 0 1-17-17l5-5"
+          stroke="#12233b" stroke-width="12"/>
+    <path d="m122 126 16-16m-8-10 3-3a12 12 0 0 1 17 17l-5 5m-14 17-3 3a12 12 0 0 1-17-17l5-5"
+          stroke="url(#accent)" stroke-width="5"/>
+  </g>
+  <text x="226" y="107" fill="#f1f6fc" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="57" font-weight="700" letter-spacing="-2">Agent<tspan fill="#74f3d2">Link</tspan></text>
+  <text x="229" y="142" fill="#adc0d6" font-family="Segoe UI, Inter, Arial, sans-serif" font-size="19" letter-spacing="1">Your agents, within reach.</text>
+  <circle cx="669" cy="44" r="5" fill="#74f3d2"/>
+</svg>
