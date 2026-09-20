@@ -335,6 +335,41 @@ class NativeSessionTests(unittest.TestCase):
         self.session.list_sessions("")
         self.client.list_sessions.assert_awaited_with(None)
 
+    def test_native_listing_projects_actual_sdk_metadata_through_runtime(self):
+        from copilot.client import SessionMetadata
+
+        timestamp = "2026-09-20T06:00:00+00:00"
+        self.client.list_sessions.return_value = [
+            SessionMetadata.from_dict({
+                "sessionId": "local", "summary": "Existing work",
+                "startTime": timestamp, "modifiedTime": timestamp, "isRemote": False,
+                "context": {"cwd": str(Path.cwd()), "branch": "main"},
+            }),
+            SessionMetadata.from_dict({
+                "sessionId": "without-context",
+                "startTime": timestamp, "modifiedTime": timestamp, "isRemote": False,
+            }),
+            SessionMetadata.from_dict({
+                "sessionId": "remote",
+                "startTime": timestamp, "modifiedTime": timestamp, "isRemote": True,
+                "context": {"cwd": "/remote/workspace"},
+            }),
+        ]
+        runtime = BridgeRuntime(BridgeConfig(), PairingStore(), agent_manager=AcpAgentManager(copilot_transport="sdk"))
+        self.addCleanup(runtime.shared.close)
+        with patch.object(CopilotAgentSession, "start_without_session", return_value=self.session):
+            responses = runtime.websocket_responses({
+                "type": "session.list", "agentId": "copilot-cli", "workspacePath": str(Path.cwd()),
+            })
+        self.assertEqual(responses, [
+            {"type": "session.list.result", "sessions": [
+                {"sessionId": "local", "title": "Existing work", "cwd": str(Path.cwd()), "updatedAt": timestamp},
+                {"sessionId": "without-context", "title": None, "cwd": None, "updatedAt": timestamp},
+            ]},
+            {"type": "bridge.done"},
+        ])
+        self.client.stop.assert_awaited_once()
+
     def test_permission_change_rejection_is_not_success(self):
         self.native.rpc.permissions.set_approve_all.return_value = SimpleNamespace(success=False)
         with self.assertRaisesRegex(AcpAgentError, "did not accept"):

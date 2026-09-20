@@ -231,6 +231,202 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(screen)
         return "\n".join("".join(row[x].char for x in sorted(row)) for _, row in sorted(screen.data_buffer.items()))
 
+    def mouse(self, code, x, y, release=False):
+        self.pipe.send_text(f"\x1b[<{code};{x + 1};{y + 1}{'m' if release else 'M'}")
+
+    def text_position(self, text, cell=0):
+        row = next(i for i in range(len(self.ui.conversation.lines))
+                   if self.ui.conversation.line_text(i) == text)
+        return (self.ui.conversation_origin.x + cell,
+                self.ui.conversation_origin.y + row - self.ui.conversation_window.vertical_scroll)
+
+    async def test_drag_partial_text_highlights_and_copies_instead_of_row(self):
+        self.ui.transcript.add("one", "select", "You", "alpha beta gamma")
+        await asyncio.sleep(0.2)
+        x, y = self.text_position("alpha beta gamma", 6)
+        self.mouse(0, x, y)
+        await asyncio.sleep(0.1)
+        self.assertTrue(self.ui.conversation.dragging)
+        self.assertFalse(self.ui.conversation.follow)
+        self.mouse(32, x + 4, y)
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.ui.conversation.selected_text(), "beta")
+        selected = [text for style, text in self.ui.conversation.styled_line(self.ui.conversation.cursor)
+                    if "class:text-selection" in style]
+        self.assertEqual("".join(selected), "beta")
+        screen = self.ui.app.renderer._last_screen
+        self.assertIn("class:text-selection", screen.data_buffer[y][x].style)
+        self.assertNotIn("class:text-selection", screen.data_buffer[y][x - 1].style)
+        self.mouse(0, x + 4, y, release=True)
+        with patch("android_acp_bridge.terminal_ui.copy_text") as copy:
+            self.pipe.send_bytes(b"\x19")
+            await asyncio.sleep(0.2)
+            copy.assert_called_once_with("beta")
+        self.assertFalse(self.ui.conversation.dragging)
+        self.assertTrue(self.ui.app.layout.has_focus(self.ui.conversation))
+
+    async def test_reverse_drag_unicode_and_multiline_matches_rendered_cells(self):
+        self.ui.transcript.add("one", "select", "You", "A中e\u0301Z\nsecond")
+        await asyncio.sleep(0.2)
+        x, y = self.text_position("A中e\u0301Z")
+        self.mouse(0, x + 4, y)
+        self.mouse(32, x + 1, y)
+        self.mouse(0, x + 1, y, release=True)
+        await asyncio.sleep(0.15)
+        self.assertEqual(self.ui.conversation.selected_text(), "中e\u0301")
+        self.mouse(0, x + 3, y + 1)
+        self.mouse(32, x + 1, y)
+        self.mouse(0, x + 1, y, release=True)
+        await asyncio.sleep(0.15)
+        self.assertEqual(self.ui.conversation.selected_text(), "中e\u0301Z\nsec")
+
+    async def test_drag_tool_header_never_activates_but_click_still_expands(self):
+        self.client.observe_event(update("tool_call", toolCallId="tool", title="Read file", status="running"))
+        await asyncio.sleep(0.2)
+        row = next(row for row in self.ui.transcript.entries if row.kind == "Tools")
+        line = next(i for i, target in self.ui.conversation.targets.items() if target == (row.number, None))
+        x, y = self.text_position(self.ui.conversation.line_text(line))
+        self.mouse(0, x, y)
+        self.mouse(32, x + 5, y)
+        self.mouse(32, x, y)
+        self.mouse(0, x, y, release=True)
+        await asyncio.sleep(0.15)
+        self.assertFalse(row.expanded)
+        self.mouse(0, x, y)
+        self.mouse(0, x, y, release=True)
+        await asyncio.sleep(0.15)
+        self.assertTrue(row.expanded)
+        self.assertIsNone(self.ui.conversation.selected_text())
+        self.assertIsNone(self.ui.conversation.selection_start)
+
+    async def test_selection_survives_append_but_clears_on_page_resize_and_eviction(self):
+        from prompt_toolkit.data_structures import Size
+        row = self.ui.transcript.add("one", "select", "You", "selected body")
+        await asyncio.sleep(0.2)
+        x, y = self.text_position("selected body")
+        self.mouse(0, x, y)
+        self.mouse(32, x + 8, y)
+        self.mouse(0, x + 8, y, release=True)
+        await asyncio.sleep(0.1)
+        self.ui.transcript.add("one", "append", "Agent", "arrives after selection")
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.ui.conversation.selected_text(), "selected")
+        with patch.object(self.ui.app.output, "get_size", return_value=Size(rows=24, columns=45)):
+            self.ui.app.invalidate()
+            await asyncio.sleep(0.15)
+            self.assertIsNone(self.ui.conversation.selected_text())
+        from prompt_toolkit.data_structures import Point
+        self.ui.conversation.selection_start = Point(0, 0)
+        self.ui.conversation.selection_end = Point(3, 0)
+        self.ui.change_page(1)
+        self.assertIsNone(self.ui.conversation.selected_text())
+        self.ui.conversation.selection_start = Point(0, 0)
+        self.ui.conversation.selection_end = Point(3, 0)
+        for index in range(Transcript.MAX_ENTRIES + 1):
+            self.ui.transcript.add("one", str(index), "You", "evict old rows")
+        await asyncio.sleep(0.2)
+        self.assertNotIn(row, self.ui.transcript.entries)
+        self.assertIsNone(self.ui.conversation.selected_text())
+
+    async def test_scrollbar_track_thumb_wheel_and_outside_release(self):
+        for index in range(70):
+            self.ui.transcript.add("one", str(index), "You", f"History {index}")
+        self.ui.buffer.text = "draft stays"
+        await asyncio.sleep(0.2)
+        bar = self.ui.scrollbar
+        start, size, maximum = bar.geometry()
+        self.assertEqual(start + size, bar.height)
+        screen = self.ui.app.renderer._last_screen
+        position = next(p for w, p in screen.visible_windows_to_write_positions.items() if w.content is bar)
+        x, y = position.xpos, position.ypos
+        self.assertEqual(screen.data_buffer[y + start][x].char, "█")
+        self.mouse(0, x, y)
+        self.mouse(0, x, y, release=True)
+        await asyncio.sleep(0.15)
+        self.assertEqual(self.ui.conversation_window.vertical_scroll, 0)
+        self.mouse(0, x, y)
+        self.mouse(32, x - 4, y + bar.height // 2)
+        await asyncio.sleep(0.15)
+        expected = round((bar.height // 2) * maximum / (bar.height - size))
+        self.assertEqual(self.ui.conversation_window.vertical_scroll, expected)
+        self.assertFalse(self.ui.conversation.follow)
+        self.ui.transcript.add("one", "incoming", "You", "new while browsing")
+        await asyncio.sleep(0.15)
+        self.assertEqual(self.ui.conversation_window.vertical_scroll, expected)
+        maximum = bar.geometry()[2]
+        self.mouse(0, x - 4, y + bar.height + 4, release=True)
+        await asyncio.sleep(0.15)
+        self.assertIsNone(bar.drag_offset)
+        self.assertEqual(self.ui.conversation_window.vertical_scroll, maximum)
+        self.assertTrue(self.ui.app.layout.has_focus(self.ui.conversation))
+        self.assertEqual(self.ui.buffer.text, "draft stays")
+        self.mouse(64, x, y + 2)
+        await asyncio.sleep(0.15)
+        self.assertEqual(self.ui.conversation_window.vertical_scroll, maximum - 3)
+        self.pipe.send_bytes(b"\x1b[F")
+        await asyncio.sleep(0.15)
+        self.assertTrue(self.ui.conversation.follow)
+        self.assertEqual(bar.geometry()[0] + bar.geometry()[1], bar.height)
+
+    async def test_selection_edge_scroll_and_missing_release_hover_are_safe(self):
+        from prompt_toolkit.data_structures import Point
+        from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
+        for index in range(70):
+            self.ui.transcript.add("one", str(index), "You", f"History {index}")
+        await asyncio.sleep(0.2)
+        top = self.ui.conversation_window.vertical_scroll
+        x, y = self.ui.conversation_origin
+        self.mouse(0, x, y + 2)
+        self.mouse(32, x + 4, y - 1)
+        await asyncio.sleep(0.15)
+        self.assertEqual(self.ui.conversation_window.vertical_scroll, top - 3)
+        self.assertIsNotNone(self.ui.conversation.selected_text())
+        self.assertTrue(self.ui.capture_drag(MouseEvent(
+            Point(x + 4, y), MouseEventType.MOUSE_MOVE, MouseButton.NONE, frozenset())))
+        self.assertFalse(self.ui.conversation.dragging)
+        self.ui.scrollbar.drag_offset = 0
+        self.ui.conversation.resume_follow()
+        self.assertIsNone(self.ui.scrollbar.drag_offset)
+        self.assertIsNone(self.ui.conversation.selected_text())
+
+    async def test_drag_release_over_input_does_not_focus_or_submit_and_win32_up_works(self):
+        from prompt_toolkit.data_structures import Point
+        from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
+        self.ui.transcript.add("one", "select", "You", "drag this text")
+        await asyncio.sleep(0.2)
+        x, y = self.text_position("drag this text")
+        self.mouse(0, x, y)
+        self.mouse(32, x + 4, y)
+        self.mouse(0, x + 4, self.ui.conversation_origin.y + self.ui.scrollbar.height + 4, release=True)
+        await asyncio.sleep(0.15)
+        self.assertFalse(self.ui.conversation.dragging)
+        self.assertTrue(self.ui.app.layout.has_focus(self.ui.conversation))
+        self.assertFalse(self.runtime._prompt_operations)
+        control = self.ui.conversation
+        control.mouse_handler(MouseEvent(Point(0, control.cursor), MouseEventType.MOUSE_DOWN, MouseButton.LEFT, frozenset()))
+        control.mouse_handler(MouseEvent(Point(2, control.cursor), MouseEventType.MOUSE_MOVE, MouseButton.LEFT, frozenset()))
+        control.mouse_handler(MouseEvent(Point(2, control.cursor), MouseEventType.MOUSE_UP, MouseButton.NONE, frozenset()))
+        self.assertFalse(control.dragging)
+        self.ui.submit("/mouse")
+        self.assertIsNone(control.selected_text())
+
+    async def test_short_scrollbar_is_inert_and_right_click_does_not_select(self):
+        from prompt_toolkit.data_structures import Point
+        from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
+        self.ui.transcript.entries.clear()
+        self.ui.transcript.revision += 1
+        await asyncio.sleep(0.15)
+        bar = self.ui.scrollbar
+        self.assertEqual(bar.geometry(), (0, bar.height, 0))
+        event = MouseEvent(Point(0, 0), MouseEventType.MOUSE_DOWN, MouseButton.RIGHT, frozenset())
+        self.assertIs(self.ui.conversation.mouse_handler(event), NotImplemented)
+        self.assertIsNone(self.ui.conversation.selection_start)
+        bar.create_content(1, 1)
+        bar.drag_offset = 0
+        bar.seek(100)
+        self.assertEqual(self.ui.conversation_window.vertical_scroll, 0)
+        bar.drag_offset = None
+
     async def test_click_input_after_browsing_restores_visible_typing_and_follow(self):
         for index in range(70):
             self.ui.transcript.add("one", str(index), "Agent", f"History {index}")

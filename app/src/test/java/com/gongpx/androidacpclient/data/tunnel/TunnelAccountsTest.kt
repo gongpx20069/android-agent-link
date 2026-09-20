@@ -34,7 +34,8 @@ class TunnelAccountsTest {
         paired: Machine = machine,
         get: (String, Map<String, String>) -> JSONObject = { _, _ -> tunnel() },
         form: (String, Map<String, String>) -> JSONObject = { _, _ -> error("Unexpected OAuth request") },
-    ) = TunnelAccounts(store, { listOf(paired) }, get, form, { _, _, _ -> error("Unexpected pairing") }, microsoftClientId = "")
+        microsoftClientId: String = "",
+    ) = TunnelAccounts(store, { listOf(paired) }, get, form, { _, _, _ -> error("Unexpected pairing") }, microsoftClientId = microsoftClientId)
 
     @Test
     fun discoversOnlyLabelledHttpPortsAndRetainsBinding() {
@@ -156,6 +157,117 @@ class TunnelAccountsTest {
         assertEquals(1, count)
         val loop = service(get = { url, _ -> JSONObject().put("value", JSONArray()).put("nextLink", url) })
         assertTrue(runCatching { loop.discover(account.provider) }.exceptionOrNull() is IOException)
+    }
+
+    @Test
+    fun microsoftDiscoveryRecoversSecondRegionsMissingBridgePorts() = runBlocking {
+        val microsoft = LoginAccount(LoginProvider.Microsoft, "tenant:user", "Microsoft")
+        val secondOrigin = "https://tunnel-two-4317.jpe1.devtunnels.ms"
+        val second = tunnel().put("clusterId", "jpe1").put("tunnelId", "tunnel-two").apply {
+            getJSONArray("ports").getJSONObject(0).put("portForwardingUris", JSONArray().put(secondOrigin))
+        }
+        val detailUrl = "https://jpe1.rel.tunnels.api.visualstudio.com/tunnels/tunnel-two" +
+            "?api-version=2023-09-27-preview&includePorts=true"
+        for (missingPorts in listOf("empty", "omitted", "unlabelled")) {
+            val summary = JSONObject(second.toString()).apply {
+                when (missingPorts) {
+                    "empty" -> put("ports", JSONArray())
+                    "omitted" -> remove("ports")
+                    "unlabelled" -> getJSONArray("ports").getJSONObject(0).remove("labels")
+                }
+            }
+            val calls = mutableListOf<String>()
+            val service = service(
+                store = MemoryStore(AccountTokens(microsoft, "microsoft-access", null, null)),
+                microsoftClientId = "own-client-id",
+                get = { url, headers ->
+                    calls.add(url)
+                    assertEquals("Bearer microsoft-access", headers["Authorization"])
+                    if (url.contains("global=true")) {
+                        assertTrue(url.contains("includePorts=true&labels=agentlink"))
+                        JSONObject().put("value", JSONArray()
+                            .put(JSONObject().put("clusterId", "usw2").put("value", JSONArray().put(tunnel())))
+                            .put(JSONObject().put("clusterId", "jpe1").put("value", JSONArray().put(summary))))
+                    } else {
+                        assertEquals(detailUrl, url)
+                        second
+                    }
+                },
+            )
+            val computers = service.discover(microsoft.provider)
+            assertEquals(missingPorts, listOf(origin, secondOrigin), computers.map { it.endpoint })
+            assertEquals(listOf(
+                binding.copy(provider = microsoft.provider, accountId = microsoft.id),
+                TunnelBinding(microsoft.provider, microsoft.id, "jpe1", "tunnel-two", 4317),
+            ), computers.map { it.binding })
+            assertEquals(2, calls.size)
+        }
+    }
+
+    @Test
+    fun discoveryKeepsSameNamedMachinesAcrossPagesAndDeduplicatesOnlyBindings() = runBlocking {
+        val next = "https://usw2.rel.tunnels.api.visualstudio.com/tunnels?continuationToken=next"
+        val second = tunnel().put("tunnelId", "tunnel-two").apply {
+            getJSONArray("ports").getJSONObject(0).put("portForwardingUris",
+                JSONArray().put("https://tunnel-two-4317.usw2.devtunnels.ms"))
+        }
+        val service = service(get = { url, _ ->
+            if (url == next) JSONObject().put("value", JSONArray().put(second).put(tunnel()))
+            else JSONObject().put("value", JSONArray().put(JSONObject()
+                .put("value", JSONArray().put(tunnel())).put("nextLink", next)))
+        })
+        val computers = service.discover(account.provider)
+        assertEquals(listOf("tunnel-one", "tunnel-two"), computers.map { it.binding.tunnelId })
+        assertEquals(listOf("Computer", "Computer"), computers.map { it.name })
+    }
+
+    @Test
+    fun discoveryDetailStillRequiresLabelsAndMatchingIdentityAndSurfacesErrors() = runBlocking {
+        val summary = tunnel().put("ports", JSONArray())
+        val detailsWithoutBridge = listOf(
+            tunnel().put("ports", JSONArray()),
+            tunnel().put("labels", JSONArray()),
+            tunnel().apply { getJSONArray("ports").getJSONObject(0).remove("labels") },
+            tunnel().apply { getJSONArray("ports").getJSONObject(0).put("protocol", "tcp") },
+        )
+        for (detail in detailsWithoutBridge) {
+            val service = service(get = { url, _ ->
+                if (url.contains("global=true")) JSONObject().put("value", JSONArray().put(summary))
+                else detail
+            })
+            assertTrue(service.discover(account.provider).isEmpty())
+        }
+        for (detail in listOf(
+            tunnel().put("tunnelId", "other"),
+            tunnel().put("clusterId", "jpe1"),
+            JSONObject("""{"error":{"code":"Unavailable"}}"""),
+            tunnel().apply { remove("ports") },
+        )) {
+            val service = service(get = { url, _ ->
+                if (url.contains("global=true")) JSONObject().put("value", JSONArray().put(summary))
+                else detail
+            })
+            assertTrue(runCatching { service.discover(account.provider) }.exceptionOrNull() is IOException)
+        }
+        val failed = service(get = { url, _ ->
+            if (url.contains("global=true")) JSONObject().put("value", JSONArray().put(summary))
+            else throw TunnelLoginRequired()
+        })
+        assertTrue(runCatching { failed.discover(account.provider) }.exceptionOrNull() is TunnelLoginRequired)
+    }
+
+    @Test
+    fun discoveryValidatesIdentityBeforeSendingCredentialsForDetails() = runBlocking {
+        for ((field, value) in listOf("clusterId" to "evil.example/", "tunnelId" to "../other")) {
+            var requests = 0
+            val service = service(get = { url, _ ->
+                requests++
+                assertTrue(url.contains("global=true"))
+                JSONObject().put("value", JSONArray().put(tunnel().put("ports", JSONArray()).put(field, value)))
+            })
+            assertTrue(runCatching { service.discover(account.provider) }.exceptionOrNull() is IllegalArgumentException)
+            assertEquals(1, requests)
+        }
     }
 
     @Test

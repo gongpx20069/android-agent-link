@@ -18,10 +18,10 @@ from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.history import DummyHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import DynamicContainer, Float, FloatContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import DynamicContainer, Float, FloatContainer, HSplit, Layout, ScrollOffsets, VSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent, UIControl
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.mouse_events import MouseEventType
+from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
@@ -134,6 +134,10 @@ class ConversationControl(UIControl):
         self.follow = True
         self.new_messages = False
         self._key: tuple[Any, ...] | None = None
+        self.selection_start: Point | None = None
+        self.selection_end: Point | None = None
+        self.dragging = False
+        self.dragged = False
 
     def is_focusable(self) -> bool:
         return True
@@ -145,7 +149,12 @@ class ConversationControl(UIControl):
             anchor = self.target() if self.lines else None
             old_cursor = self.cursor
             old_start = next((line for line, target in self.targets.items() if target == anchor), old_cursor)
-            self.lines, self.targets = self.ui.render_conversation(max(4, width - 1))
+            lines, self.targets = self.ui.render_conversation(max(1, width - 1))
+            if self.selection_start is not None and self.selection_end is not None:
+                end = max(self.selection_start.y, self.selection_end.y) + 1
+                if changed_chat or self._key[2] != width or self.lines[:end] != lines[:end]:
+                    self.clear_selection()
+            self.lines = lines
             if self.follow or changed_chat:
                 self.cursor = max(0, len(self.lines) - 1)
                 self.follow = True
@@ -158,7 +167,7 @@ class ConversationControl(UIControl):
             self.cursor = min(self.cursor, max(0, len(self.lines) - 1))
             self._key = key
         return UIContent(
-            get_line=lambda line: self.lines[line], line_count=len(self.lines),
+            get_line=self.styled_line, line_count=len(self.lines),
             cursor_position=Point(x=0, y=self.cursor), show_cursor=self.ui.app.layout.has_focus(self),
         )
 
@@ -166,28 +175,180 @@ class ConversationControl(UIControl):
         return next((self.targets[line] for line in sorted(self.targets, reverse=True) if line <= self.cursor), None)
 
     def move(self, delta: int) -> None:
+        self.clear_selection()
         self.follow = False
         self.cursor = min(max(0, self.cursor + delta), max(0, len(self.lines) - 1))
         self.ui.app.invalidate()
 
     def resume_follow(self) -> None:
+        self.clear_selection()
+        self.ui.scrollbar.drag_offset = None
         self.follow = True
         self.new_messages = False
         self.cursor = max(0, len(self.lines) - 1)
 
+    def clear_selection(self) -> None:
+        self.selection_start = self.selection_end = None
+        self.dragging = self.dragged = False
+
+    def selection_bounds(self) -> tuple[Point, Point] | None:
+        if self.selection_start is None or self.selection_end is None or self.selection_start == self.selection_end:
+            return None
+        return tuple(sorted((self.selection_start, self.selection_end), key=lambda p: (p.y, p.x)))
+
+    def line_text(self, line: int) -> str:
+        return "".join(text for _, text in self.lines[line])
+
+    def selected_text(self) -> str | None:
+        bounds = self.selection_bounds()
+        if bounds is None:
+            return None
+        start, end = bounds
+        return "\n".join(self.line_text(line)[start.x if line == start.y else 0:
+                                             end.x if line == end.y else None]
+                         for line in range(start.y, end.y + 1))
+
+    def styled_line(self, line: int) -> list[tuple[str, str]]:
+        bounds = self.selection_bounds()
+        if bounds is None or not bounds[0].y <= line <= bounds[1].y:
+            return self.lines[line]
+        start, end = bounds
+        left = start.x if line == start.y else 0
+        right = end.x if line == end.y else len(self.line_text(line))
+        fragments = []
+        column = 0
+        for style, text in self.lines[line]:
+            a, b = max(0, left - column), min(len(text), right - column)
+            if a < b:
+                fragments.extend(((style, text[:a]), (style + " class:text-selection", text[a:b]), (style, text[b:])))
+            else:
+                fragments.append((style, text))
+            column += len(text)
+        return fragments
+
+    def point(self, position: Point) -> Point:
+        row = min(max(0, position.y), max(0, len(self.lines) - 1))
+        text = self.line_text(row) if self.lines else ""
+        column = min(max(0, position.x), len(text))
+        while column < len(text) and get_cwidth(text[column]) == 0:
+            column += 1
+        return Point(column, row)
+
+    def scroll_to(self, top: int) -> None:
+        window = self.ui.conversation_window
+        height = window.render_info.window_height if window.render_info else 1
+        top = min(max(0, top), max(0, len(self.lines) - height))
+        window.vertical_scroll = top
+        self.cursor = min(max(self.cursor, top), min(len(self.lines) - 1, top + height - 1))
+        self.follow = False
+        self.ui.app.invalidate()
+
     def mouse_handler(self, mouse_event):
         if mouse_event.event_type == MouseEventType.SCROLL_UP:
-            self.move(-3)
+            self.scroll_to(self.ui.conversation_window.vertical_scroll - 3)
         elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-            self.move(3)
-        elif mouse_event.event_type == MouseEventType.MOUSE_UP:
+            self.scroll_to(self.ui.conversation_window.vertical_scroll + 3)
+        elif mouse_event.event_type == MouseEventType.MOUSE_DOWN and mouse_event.button == MouseButton.LEFT:
+            self.clear_selection()
+            self.ui.scrollbar.drag_offset = None
+            self.ui.buffer.cancel_completion()
             self.ui.app.layout.focus(self)
             self.follow = False
-            self.cursor = mouse_event.position.y
-            self.ui.toggle()
+            self.selection_start = self.selection_end = self.point(mouse_event.position)
+            self.cursor = self.selection_start.y
+            self.dragging = True
+        elif self.dragging and mouse_event.event_type in {MouseEventType.MOUSE_MOVE, MouseEventType.MOUSE_UP}:
+            if mouse_event.button not in {MouseButton.LEFT, MouseButton.NONE, MouseButton.UNKNOWN}:
+                return NotImplemented
+            self.selection_end = self.point(mouse_event.position)
+            self.dragged |= self.selection_end != self.selection_start
+            self.cursor = self.selection_end.y
+            if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                self.dragging = False
+                if not self.dragged:
+                    self.clear_selection()
+                    if self.cursor in self.targets:
+                        self.ui.toggle()
+        else:
+            return NotImplemented
+        self.ui.app.invalidate()
+        return None
+
+
+class ConversationScrollbar(UIControl):
+    def __init__(self, ui: FullScreenTerminal) -> None:
+        self.ui = ui
+        self.height = 1
+        self.drag_offset: int | None = None
+
+    def geometry(self) -> tuple[int, int, int]:
+        count = max(1, len(self.ui.conversation.lines))
+        size = min(self.height, max(1, self.height * self.height // count))
+        maximum = max(0, count - self.height)
+        top = min(maximum, self.ui.conversation_window.vertical_scroll)
+        start = round(top * (self.height - size) / maximum) if maximum else 0
+        return start, size, maximum
+
+    def create_content(self, width: int, height: int) -> UIContent:
+        self.height = max(1, height)
+        start, size, _ = self.geometry()
+        return UIContent(get_line=lambda y: [
+            ("class:scrollbar-thumb" if start <= y < start + size else "class:scrollbar",
+             "█" if start <= y < start + size else "│")
+        ], line_count=self.height, show_cursor=False)
+
+    def seek(self, y: int) -> None:
+        _, size, maximum = self.geometry()
+        travel = self.height - size
+        position = min(max(0, y - (self.drag_offset or 0)), travel)
+        self.ui.conversation.scroll_to(round(position * maximum / travel) if travel else 0)
+
+    def mouse_handler(self, mouse_event):
+        kind = mouse_event.event_type
+        if kind in {MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN}:
+            return self.ui.conversation.mouse_handler(mouse_event)
+        if kind == MouseEventType.MOUSE_DOWN and mouse_event.button == MouseButton.LEFT:
+            self.ui.conversation.clear_selection()
+            self.ui.buffer.cancel_completion()
+            self.ui.app.layout.focus(self.ui.conversation)
+            start, size, _ = self.geometry()
+            y = mouse_event.position.y
+            self.drag_offset = y - start if start <= y < start + size else size // 2
+            self.seek(y)
+        elif self.drag_offset is not None and kind in {MouseEventType.MOUSE_MOVE, MouseEventType.MOUSE_UP}:
+            self.seek(mouse_event.position.y)
+            if kind == MouseEventType.MOUSE_UP:
+                self.drag_offset = None
         else:
             return NotImplemented
         return None
+
+
+class MouseCaptureBody(HSplit):
+    """Keep a held drag in its originating pane, including release over the draft."""
+
+    def __init__(self, ui: FullScreenTerminal, children) -> None:
+        super().__init__(children)
+        self.ui = ui
+
+    def write_to_screen(self, screen, mouse_handlers, write_position, parent_style, erase_bg, z_index):
+        super().write_to_screen(screen, mouse_handlers, write_position, parent_style, erase_bg, z_index)
+        position = screen.visible_windows_to_write_positions.get(self.ui.conversation_window)
+        if position is not None:
+            self.ui.conversation_origin = Point(position.xpos, position.ypos)
+        handlers = {}
+        for y in range(write_position.ypos, write_position.ypos + write_position.height):
+            for x in range(write_position.xpos, write_position.xpos + write_position.width):
+                original = mouse_handlers.mouse_handlers[y][x]
+
+                if original not in handlers:
+                    def handle(event, original=original):
+                        if self.ui.capture_drag(event):
+                            return None
+                        return original(event)
+
+                    handlers[original] = handle
+                mouse_handlers.mouse_handlers[y][x] = handlers[original]
 
 
 class FullScreenTerminal:
@@ -223,17 +384,21 @@ class FullScreenTerminal:
         self.input_control = DraftControl(self)
         self.input_was_focused = True
         self.conversation = ConversationControl(self)
+        self.conversation_origin = Point(0, 0)
+        self.scrollbar = ConversationScrollbar(self)
         self.picker_control = FormattedTextControl(self.picker_text, focusable=True)
         self.pairing_control = FormattedTextControl(
             lambda: [("", self.client.pairing_display or "No startup pairing link available.")],
             focusable=True, get_cursor_position=lambda: Point(self.pairing_column, self.pairing_line),
         )
         kb = self._bindings()
-        conversation_window = Window(self.conversation, wrap_lines=True, always_hide_cursor=False)
+        self.conversation_window = Window(self.conversation, wrap_lines=False, always_hide_cursor=False,
+                                          scroll_offsets=ScrollOffsets(), allow_scroll_beyond_bottom=False)
+        conversation_pane = VSplit([self.conversation_window, Window(self.scrollbar, width=1)])
         pairing_window = Window(self.pairing_control, wrap_lines=False)
-        body = HSplit([
+        body = MouseCaptureBody(self, [
             Window(FormattedTextControl(self.heading), height=1, style="class:heading"),
-            DynamicContainer(lambda: pairing_window if self.show_pairing else conversation_window),
+            DynamicContainer(lambda: pairing_window if self.show_pairing else conversation_pane),
             Window(FormattedTextControl(self.status), height=3, style="class:status"),
             Window(self.input_control, height=3, wrap_lines=True,
                    get_line_prefix=lambda line, wrap: [("class:prompt", self.client.prompt_label() if not line and not wrap else "      ")]),
@@ -254,14 +419,53 @@ class FullScreenTerminal:
                 "heading": "reverse bold", "status": "reverse", "prompt": "bold",
                 "tool": "ansicyan", "failed": "ansired bold", "muted": "ansibrightblack",
                 "picker": "bg:ansiblack ansiwhite", "selected": "reverse",
-                "notice": "ansiyellow",
+                "notice": "ansiyellow", "text-selection": "reverse",
+                "scrollbar": "ansibrightblack", "scrollbar-thumb": "ansicyan",
             }),
             input=input, output=output,
             before_render=self.sync_input_focus,
         )
         self.write("AgentLink | shared Android chat. /qrcode for phone QR/link; /chats to choose; /help for commands.\n"
                    "Tab: focus conversation/input | Enter: expand tool | Esc: input | /model: choose model\n"
+                   "Drag text, then Ctrl+Y: copy selection | Right scrollbar: drag/click to browse\n"
                    "Terminal history is a bounded live view; earlier session history stays on Android.\n")
+
+    def capture_drag(self, event: MouseEvent) -> bool:
+        if (self.show_pairing or self.picker is not None or not self.mouse_enabled
+                or event.event_type not in {MouseEventType.MOUSE_MOVE, MouseEventType.MOUSE_UP}
+                or event.button not in {MouseButton.LEFT, MouseButton.NONE, MouseButton.UNKNOWN}):
+            return False
+        info = self.conversation_window.render_info
+        if info is None:
+            return False
+        if event.event_type == MouseEventType.MOUSE_MOVE and event.button == MouseButton.NONE:
+            # A release outside the terminal may be missing; hover is not a held drag.
+            active = self.conversation.dragging or self.scrollbar.drag_offset is not None
+            self.conversation.dragging = False
+            self.scrollbar.drag_offset = None
+            return active
+        y = event.position.y - self.conversation_origin.y
+        if self.scrollbar.drag_offset is not None:
+            self.scrollbar.mouse_handler(MouseEvent(Point(0, y), event.event_type, event.button, event.modifiers))
+            return True
+        if not self.conversation.dragging:
+            return False
+        if event.event_type == MouseEventType.MOUSE_MOVE and (y < 0 or y >= info.window_height):
+            self.conversation.scroll_to(self.conversation_window.vertical_scroll + (-3 if y < 0 else 3))
+        row = min(len(self.conversation.lines) - 1,
+                  self.conversation_window.vertical_scroll + min(max(0, y), info.window_height - 1))
+        text = self.conversation.line_text(row)
+        cell = max(0, event.position.x - self.conversation_origin.x)
+        column = 0
+        for index, char in enumerate(text):
+            size = max(0, get_cwidth(char))
+            if column + size > cell:
+                break
+            column += size
+        else:
+            index = len(text)
+        self.conversation.mouse_handler(MouseEvent(Point(index, row), event.event_type, event.button, event.modifiers))
+        return True
 
     def sync_input_focus(self, app: Application) -> None:
         focused = app.layout.has_focus(self.input_control)
@@ -304,7 +508,8 @@ class FullScreenTerminal:
         return [
             ("", f" {state} | Model: {model[:40]} | Allow all: {allow_all[:20]} | Queue: {queued}{extra}\n"),
             ("", f" {hint}\n"),
-            ("", " Tab focus | Enter expand | Ctrl+Y copy row | Esc input/latest | /help"),
+            ("", " Drag text | Ctrl+Y copy " + ("selection" if self.conversation.selection_bounds() else "row")
+             + " | Right bar scroll | Esc input/latest"),
         ]
 
     def _bindings(self) -> KeyBindings:
@@ -388,8 +593,12 @@ class FullScreenTerminal:
 
         @kb.add("c-y", filter=browsing)
         def copy_selected(event):
-            row, tool_id = self.selected_entry()
-            self.request_copy(row, tool_id)
+            text = self.conversation.selected_text()
+            if text is not None:
+                self.request_copy_text(text, False, selection=True)
+            else:
+                row, tool_id = self.selected_entry()
+                self.request_copy(row, tool_id)
 
         for key, delta in (("left", -1), ("right", 1)):
             @kb.add(key, filter=browsing)
@@ -451,9 +660,11 @@ class FullScreenTerminal:
     def submit(self, line: str) -> bool:
         command = line.strip().split(" ", 1)[0]
         if command == "/mouse":
+            self.conversation.clear_selection()
+            self.scrollbar.drag_offset = None
             self.mouse_enabled = not self.mouse_enabled
             self.write("App mouse handling enabled." if self.mouse_enabled else
-                       "App mouse handling disabled. Drag to select text and use your terminal's Copy action; /mouse restores tool clicks.")
+                       "App mouse handling disabled. Use your terminal's selection/Copy action; /mouse restores app selection, tool clicks and scrollbar dragging.")
             return True
         if command == "/copy":
             if line.strip() != "/copy":
@@ -522,7 +733,7 @@ class FullScreenTerminal:
             text = row.text
         self.request_copy_text(text, incomplete)
 
-    def request_copy_text(self, text: str, incomplete: bool) -> None:
+    def request_copy_text(self, text: str, incomplete: bool, *, selection: bool = False) -> None:
         if self.copy_busy:
             self.write("Clipboard write already in progress.")
             return
@@ -530,12 +741,13 @@ class FullScreenTerminal:
             self.write("This row has no text to copy.")
             return
         self.copy_busy = True
-        self.start(self.copy_content(text, incomplete))
+        self.start(self.copy_content(text, incomplete, selection=selection))
 
-    async def copy_content(self, text: str, incomplete: bool) -> None:
+    async def copy_content(self, text: str, incomplete: bool, *, selection: bool = False) -> None:
         try:
             await asyncio.to_thread(copy_text, text)
-            self.write("Copied retained source to this computer's clipboard."
+            label = "selected display text" if selection else "retained source"
+            self.write(f"Copied {label} to this computer's clipboard."
                        + (" WARNING: terminal content was truncated/evicted; this may not be the full output." if incomplete else ""))
         except (RuntimeError, UnicodeError) as error:
             self.write("Copy failed: " + display_text(str(error))[:512])
@@ -672,6 +884,7 @@ class FullScreenTerminal:
         row, tool_id = self.selected_entry()
         if row is None or row.kind != "Tools":
             return
+        self.conversation.clear_selection()
         self.conversation.follow = False
         if tool_id is None:
             row.expanded = not row.expanded
@@ -683,6 +896,7 @@ class FullScreenTerminal:
         self.app.invalidate()
 
     def change_page(self, delta: int) -> None:
+        self.conversation.clear_selection()
         row, tool_id = self.selected_entry()
         if row is None:
             return

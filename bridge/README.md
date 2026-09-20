@@ -305,7 +305,7 @@ it does not fetch earlier agent-session history.
 
 Tools are grouped per task and collapsed by default. `/tools` focuses the latest
 group; Tab switches input/conversation focus, Up/Down selects a line, and Enter
-expands/collapses a group or tool. Mouse clicks also work. Tool updates preserve
+expands/collapses a group or tool. Clicking its header also works. Tool updates preserve
 expansion, title and previous fields; supplied output arrays replace older arrays.
 Failed titles are visible even in collapsed groups. Details show literal input,
 output, diff and location data. PgUp/PgDn scroll, Left/Right page long content,
@@ -316,6 +316,28 @@ with the mouse while input stayed focused. Printable typing or bracketed paste
 from conversation focus moves to the draft without sending it. Esc/Tab back to
 input and submitting a message resume the latest view. Merely tabbing into the
 conversation does not pause following; navigation and tool inspection do.
+
+**Select and copy part of the conversation:** hold the left mouse button and drag
+over text (no Shift), then release and press **Ctrl+Y**. The highlighted characters,
+not the entire message, are copied. Reverse and multi-line selections work, including
+expanded tool details. A drag never expands/collapses a tool, even if you drag back
+to the starting point. This is application selection, not the terminal's native
+selection or a timed long-press gesture; it requires mouse-drag reporting from the
+terminal. Merely holding the button without moving does not select a word.
+
+The **right-side vertical scrollbar** shows the current conversation viewport.
+Click its track to jump, or hold and drag its thumb up/down; the mouse wheel and
+keyboard scrolling keep it synchronized. Scrolling pauses auto-follow, even at the
+bottom: End, Esc or returning to input resumes it. Dragging text beyond the top or
+bottom of the conversation scrolls while mouse-move events arrive; release over
+the input/status area ends the drag without typing or activating tools.
+
+Selections copy displayed text, including rendered Markdown and line-wrap breaks,
+only from currently loaded content pages. Use `/copy` or Ctrl+Y **without a
+selection** for retained source across pages. Appending unrelated output preserves
+selection; reflow/resize, changing chat/page/folding, or changes/eviction affecting
+the selected rows clear it rather than copying stale text. A new click, keyboard
+line navigation, scrollbar drag, or returning to input also clears selection.
 
 The header/status area shows the selected chat, task state, model, queue and
 pairing/approval guidance. Input is isolated from refresh/resize. Type `/` to open
@@ -371,10 +393,13 @@ Links/images do not fetch resources or execute code. `NO_COLOR=1` enables monoch
   remains an explicit Android picker action; `/allow-all` is the local config picker.
 - `/copy` copies retained agent-text segments of the latest response in the selected
   chat, preserving Markdown source and all retained pages. Ctrl+Y in conversation
-  focus copies the current message, tool, or tool group (literal JSON). Truncated
+  focus copies highlighted display text when selected; otherwise it copies the
+  current message, tool, or tool group (literal JSON). Truncated
   content/eviction is explicitly warned about; this is not a history download.
-- `/mouse` toggles application mouse handling so native terminal drag-selection
-  and Copy can be used. Keyboard navigation still works; Ctrl+C still clears input.
+- `/mouse` toggles application mouse handling. Turn it off if you prefer the
+  terminal's native drag-selection and Copy action; app selection, tool clicks and
+  the draggable scrollbar are then disabled. Native selection behavior depends on
+  the terminal emulator. Keyboard navigation still works; Ctrl+C still clears input.
   Clipboard writes target the bridge computer, not an SSH client's desktop.
   Windows uses PowerShell Set-Clipboard; macOS uses pbcopy; Linux uses an available
   wl-copy, xclip or xsel. No utility is installed automatically. Missing/unavailable

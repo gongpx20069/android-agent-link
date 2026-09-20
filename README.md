@@ -18,34 +18,6 @@ from your phone. Your projects and agent processes stay on your computer.
 - **Pick up where you left off.** Resume available agent sessions and view recent history.
 - **Browse long conversations without loading everything.** Older saved messages and long
   replies/tool outputs are paged; history is retained, not silently deleted.
-- **Let Mochi control the same chats.** On the same phone, connect AgentLink from
-  Mochi's Tools settings, review the caller and scope in AgentLink, and authorize.
-  Mochi, Android and the terminal use the bridge's shared workspace/chat/task state;
-  credentials stay in AgentLink and execution approvals remain human decisions.
-
-### Mochi and shared workspaces
-
-Update both Android apps **and the computer bridge**. Enable Mochi's AgentLink
-provider/tools and its bundled AgentLink skill. Connect from the provider card;
-AgentLink owns resource/capability selection and revocation. Open the exact shared
-chat in AgentLink to inspect or approve work. Human messages invalidate stale
-Mochi follow-ups; cancelling a Mochi tool wait does not cancel the remote task.
-
-Workspace creation is disabled unless the bridge owner explicitly permits a root:
-
-```powershell
-python .\bridge\run.py start --interactive --workspace-root C:\Repos
-```
-
-The root must already exist. Directory creation, existing-directory registration,
-HTTPS Git clone, and Git worktree creation are restricted to descendants of allowed
-roots. `/new` in the terminal registers a shared chat; refresh Android's shared
-chats to discover it. Use the default stdlib server for this integration.
-
-The bridge saves a bounded shared journal and task identities in private local
-storage. Restarted unfinished tasks are reported as interrupted, never retried
-automatically. Client drafts, folding and scroll position remain local. See the
-[bridge guide](bridge/README.md) for retention and recovery boundaries.
 
 AgentLink is a remote control, not an on-phone agent runtime. Your computer must
 stay awake, online, and running the bridge while you use it.
@@ -162,6 +134,11 @@ session offered by that agent. When an agent requests approval, respond from
 **Approvals**. Available sessions, models, and permission behavior depend on the
 installed agent CLI.
 
+Prompts added while the agent is busy appear above the input as compact previews
+(up to 80 characters/two lines). Tap a preview to expand or collapse the original
+message. Long expanded text and the queue scroll within a bounded area; only the
+display is shortened, not the message sent to the agent.
+
 ## Chat from your computer too
 
 AgentLink has an optional terminal chat mode of its own, separate from the agent
@@ -202,6 +179,10 @@ and Enter to expand/collapse a group or individual tool. Expanded tools show the
 input/output and diff data. Failed tool titles remain visible even when collapsed.
 Use PgUp/PgDn to scroll, End to follow new messages, and Esc to return to input.
 Mouse clicking is also supported. Browsing older content pauses automatic following.
+Hold the left mouse button and drag across conversation text to select a portion
+without Shift; release and press **Ctrl+Y** to copy the highlighted text. Dragging
+does not expand/collapse tools. Click or drag the scrollbar on the right to browse
+the retained conversation; End returns to the latest messages.
 Clicking the input box restores typing and following; typing or pasting while
 focused on the conversation also returns to input without losing the text.
 Esc or Tab back to input, and submitting a message, resume the latest view.
@@ -223,15 +204,18 @@ The terminal is a bounded live display, not an archive: oversized replies/detail
 or older evicted entries have explicit notices. Full Android delivery is unchanged.
 Use `/copy` for the latest retained reply, or focus a message/tool with Tab and
 arrows then press Ctrl+Y to copy that row's retained source, across its display
-pages. Truncation/eviction is reported. Copy writes to the bridge computer's
+pages when no text selection is active. A mouse selection copies only highlighted
+displayed text, not hidden details or other source pages. Truncation/eviction is
+reported. Copy writes to the bridge computer's
 clipboard, not to a phone or SSH client's clipboard; failures are explicit.
 `/mouse` disables application mouse handling for native terminal selection;
 run it again to restore tool clicks. Ctrl+C still clears input, not copies.
 
-On Android, long-press message text to select it, or use **Copy all** for the
-message's raw source across pages. Code sections and expanded tool details also
-have copy buttons. Very large text above 128 Ki UTF-16 code units is refused
-without replacing the clipboard; select a smaller portion instead.
+On Android, long-press message text, drag the selection handles to choose a portion,
+then tap **Copy** in the system menu. Plan steps and expanded tool details support
+the same interaction; there are no **Copy all** buttons. Selection applies to the
+current page. Code sections retain a copy button; code-copy requests above 128 Ki
+UTF-16 code units are refused without replacing the clipboard.
 
 | Terminal command | Action |
 | --- | --- |
@@ -242,7 +226,7 @@ without replacing the clipboard; select a smaller portion instead.
 | `/mouse` | Toggle app mouse handling to use native terminal text selection. |
 | `/model` | Select an advertised model for the current shared chat. |
 | `/allow-all` | Choose session permission setting, Enter to review, then `y` to apply. |
-| `/new copilot-cli C:\Repos\my-project` | Create a terminal-local chat for an installed agent. |
+| `/new copilot-cli C:\Repos\my-project` | Create a shared chat for an installed agent. |
 | `/approvals` | Review pending approval details. |
 | `/approve <approval-id>`, `/deny <approval-id>` | Decide a request; approval requires reviewing it first. |
 | `/pair y`, `/pair n` | Confirm or deny phone pairing after checking the displayed code. |
@@ -250,9 +234,9 @@ without replacing the clipboard; select a smaller portion instead.
 | `/send <text>` | Send text that starts with `/`, rather than treating it as a terminal command. |
 | `/help`, `/quit` | Show help, or stop the bridge and disconnect Android. |
 
-For a shared conversation, **create/open it on Android first**. A terminal-local
-`/new` chat is not automatically added to the phone's Chats list. Chat selection
-and terminal history are not persisted across bridge restarts.
+Create/open a conversation on Android, or use terminal `/new` and refresh Android's
+shared chats to discover it. The bridge persists the shared catalog and a bounded
+journal; terminal selection and its live display are not restored across restarts.
 Interactive mode does not print the QR/link at startup: use `/qrcode` to open
 a dedicated view that incoming chat output cannot replace. Ordinary server modes
 still print it at startup. The original token expiry is unchanged.
@@ -311,6 +295,35 @@ Both phone and computer need Tailscale installed, connected, and signed in to th
 same tailnet. Pair through the bridge's QR code. ZeroTier setup is not automated.
 Local transport is for testing and does not make the computer remotely reachable.
 
+## Optional: Mochi integration
+
+On the same phone, connect AgentLink from Mochi's Tools settings, review the caller
+and scope in AgentLink, and authorize. Mochi, Android and the terminal use the
+bridge's shared workspace/chat/task state; credentials stay in AgentLink and
+execution approvals remain human decisions.
+
+Update both Android apps **and the computer bridge**. Enable Mochi's AgentLink
+provider/tools and its bundled AgentLink skill. Connect from the provider card;
+AgentLink owns resource/capability selection and revocation. Open the exact shared
+chat in AgentLink to inspect or approve work. Human messages invalidate stale
+Mochi follow-ups; cancelling a Mochi tool wait does not cancel the remote task.
+
+Workspace creation is disabled unless the bridge owner explicitly permits a root:
+
+```powershell
+python .\bridge\run.py start --interactive --workspace-root C:\Repos
+```
+
+The root must already exist. Directory creation, existing-directory registration,
+HTTPS Git clone, and Git worktree creation are restricted to descendants of allowed
+roots. `/new` in the terminal registers a shared chat; refresh Android's shared
+chats to discover it. Use the default stdlib server for this integration.
+
+The bridge saves a bounded shared journal and task identities in private local
+storage. Restarted unfinished tasks are reported as interrupted, never retried
+automatically. Client drafts, folding and scroll position remain local. See the
+[bridge guide](bridge/README.md) for retention and recovery boundaries.
+
 ## Need help?
 
 The computer terminal now shows task and tool summaries instead of streamed
@@ -322,7 +335,9 @@ bridge start command. This does not change streaming replies on your phone.
 | `android-acp-bridge` is not recognized | Use the explicit `.\.venv\Scripts\python.exe .\bridge\run.py start` command above, from the repository folder. |
 | Phone cannot connect | Check that the computer is awake and the bridge is running. For QR connections, refresh an expired QR/tunnel credential. |
 | Account discovery shows no computers | Update and restart the bridge. Check that both devices use the same provider and account; GitHub and Microsoft are separate identities. |
+| Find shows only one of two computers | Update the Android app: discovery now checks regional details when the global list omits bridge ports. Keep both bridges running with distinct tunnel IDs; do not reuse `--devtunnel-id agentlink` on both. |
 | Dev Tunnels reports `Login token expired` | Use the exact CLI login command printed by the bridge, then restart it. Phone sign-in does not renew the computer's login. |
+| `ClientSSH ... send window is full` | Dev Tunnels is waiting for SSH channel flow-control credit. Occasional pauses can recover automatically; sustained warnings plus stalled output warrant checking the network and whether the receiving app is consuming data. This message alone does not mean the agent failed. |
 | Pairing was cancelled but the computer still waits | Press Enter to dismiss its outstanding confirmation prompt before trying again. |
 | Agent is missing or fails to start | Install and sign in to the agent CLI on the computer, and check that its ACP command works there. |
 

@@ -145,6 +145,12 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Opening a chat automatically scrolls to the newest message.
 - Fixed bottom prompt box for sending chat messages.
 - While an Agent turn is running, the send button becomes Add and submits the prompt to the bridge FIFO. At the next turn boundary, all prompts already waiting are shown as individual user messages but sent to ACP as one FIFO-ordered batch. Queued prompts appear in a separate pending area and tapping Remove hides one immediately while retaining a durable encrypted cancellation tombstone. Android retries pending cancellations with bounded exponential backoff, including after process restart, and never resends removed content.
+- Each pending prompt defaults to an 80-Unicode-code-point preview (plus an
+  ellipsis for longer text), with line breaks flattened and at most two rendered
+  lines. Tap the preview to expand/collapse the original text. Expanded text
+  scrolls within 120 dp; the queue itself scrolls within 180 dp so it cannot
+  consume the whole chat screen. Expansion is keyed by chat/operation, and neither
+  previewing nor expanding changes the saved/sent prompt or its removal behavior.
 - In Chat detail, the history list and prompt composer move above the Android soft keyboard while the header stays anchored; the composer does not keep the bottom navigation bar gap above the keyboard.
 - Horizontally scrollable command chips above the prompt box.
 - Chat prompt WebSocket calls disable the client read timeout, send WebSocket pings, and ignore bridge accepted/heartbeat events; the bridge responds to pings and sends heartbeat messages during long-running Agent turns so idle network paths do not abort the prompt while waiting for ACP updates.
@@ -166,13 +172,13 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Common command chips are prioritized before other ACP-advertised commands: `model`, `resume`, and `allow-all`.
 - Built-in `allow-all` opens an on/off picker when the ACP agent exposes the `allow_all` session config option.
 - Agent/system message bubbles render basic Markdown: headings, bullets, quotes, fenced code blocks, pipe tables, bold, italic, inline code, and link-style text. Tables honor Markdown column alignment and scroll horizontally when wider than the message bubble.
-- Message bodies support long-press text selection. Copy all copies the original
-  message source across pages; code sections and expanded activity/detail sections
-  have explicit copy actions. Tool expansion is restricted to the header so detail
-  selection does not collapse the card. Clipboard errors are shown to the user.
-  Copy refuses text above 128 Ki UTF-16 code units rather than risking oversized
-  Android Binder transfers or silently truncating; smaller visible text remains
-  selectable. Streamed messages copy the current source snapshot on click.
+- Message bodies, plan steps and expanded tool details support long-press text
+  selection: drag the selection handles and choose the system Copy action.
+  There are no Copy all buttons. Selection is limited to rendered content on the
+  current page; change pages to select other content. Code sections retain their
+  explicit copy action, which rejects text above 128 Ki UTF-16 code units with a
+  visible error rather than silently truncating. Tool expansion is restricted to
+  the header so detail selection does not collapse the card.
 - Collapsible agent activity cards for ACP `tool_call` and `tool_call_update` events.
 - ACP `plan` updates render as a dedicated compact progress card with step status and priority indicators; each full plan update replaces the previous card instead of appearing as a Tool Call activity.
 - Approval list with approve/deny actions backed by ACP `session/request_permission`.
@@ -236,7 +242,14 @@ and relay requests; local sign-out remains available. GitHub and QR pairing rema
 available. No user is asked to enter a client ID or change app registration.
 
 Signed-in accounts are separate from paired machines. Discovery lists only
-`agentlink`-labelled tunnels/ports from the management API. Account-paired machines
+`agentlink`-labelled tunnels/ports from the management API. It enumerates all
+regions and pagination links, deduplicating by the complete account/tunnel/port
+binding, not computer name. When a labelled tunnel's global listing has missing,
+empty or unlabelled/non-HTTP bridge ports, discovery reads its regional details
+with `includePorts=true` before filtering it out. Identifiers are validated before
+sending credentials; detail identity, labels and forwarding addresses are checked
+again. Detail failures remain visible errors, not a successful partial list.
+Account-paired machines
 save the provider/account ID and tunnel/cluster/port binding, not an identity token
 in the machine headers. Before HTTP and WebSocket connections, network workers
 obtain a connect-scoped tunnel token; the in-memory cache lasts at most five minutes.

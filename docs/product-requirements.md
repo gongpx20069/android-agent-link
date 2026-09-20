@@ -87,10 +87,13 @@ Chat
 - Keep prompts and approval details literal. Markdown must not execute code,
   fetch images, open links or pass remote terminal control sequences through.
 - Provide explicit terminal copying of the latest reply or selected message/tool,
-  with source formatting preserved and retention-limit warnings. Support native
+  with source formatting preserved and retention-limit warnings. Left-drag selects
+  displayed text without Shift; Ctrl+Y copies the highlighted portion. A clickable,
+  draggable right-side scrollbar browses retained conversation rows. Support native
   terminal selection by disabling app mouse handling. Android messages support
-  long-press selection and source/code/detail copy buttons across retained pages;
-  oversized clipboard requests fail visibly, never silently truncate.
+  long-press partial selection in messages, plan steps and tool details, without
+  Copy all buttons. Selection applies to the displayed page; code-section copy
+  remains available and oversized code-copy requests fail visibly, never truncate.
 - Avoid duplicate input echoes and per-update tool lines. Retain bounded completed
   tool groups and show failed tool titles even while collapsed.
 - Keep pairing and approval explicit through one input controller, with default
@@ -153,6 +156,10 @@ Permission modes for MVP:
 - Synchronize every persisted Chat's Bridge status when the app starts, so the Chat list is correct before a Chat is opened.
 - Allow prompts submitted while a chat is busy or waiting for approval to queue in FIFO order. After the active response completes, concatenate every prompt already waiting and send them together as the next ACP turn; prompts added during that turn form the following batch.
 - Show queued prompts separately from the conversation timeline and allow removing a prompt before it starts, with immediate local feedback.
+- Keep each queued prompt collapsed to an 80-character preview with a two-line
+  display cap. Tapping expands/collapses the full original message in a bounded
+  scroll area; cap the entire queue area's height even when many prompts wait.
+  Preview truncation must never truncate saved or transmitted prompts.
 - Provide quick access to approvals, diffs, logs, and chat settings.
 - Provide a Settings feedback entry that explicitly welcomes feature requests, bug reports, and development collaboration, linking to this repository's GitHub Issues and the developer contact email.
 - When an Agent response completes while AgentLink is in the background, show a system notification containing the Chat name, latest Agent response, and a direct link to that Chat.

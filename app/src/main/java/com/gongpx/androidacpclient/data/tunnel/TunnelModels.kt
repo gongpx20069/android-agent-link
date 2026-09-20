@@ -7,6 +7,11 @@ import org.json.JSONObject
 
 enum class LoginProvider { GitHub, Microsoft }
 
+internal fun requireTunnelIdentity(clusterId: String, tunnelId: String) {
+    require(clusterId.matches(Regex("[a-z0-9]{2,20}")))
+    require(tunnelId.matches(Regex("[a-zA-Z0-9-]{1,100}")))
+}
+
 data class TunnelBinding(
     val provider: LoginProvider,
     val accountId: String,
@@ -16,8 +21,7 @@ data class TunnelBinding(
 ) {
     init {
         require(accountId.isNotBlank())
-        require(clusterId.matches(Regex("[a-z0-9]{2,20}")))
-        require(tunnelId.matches(Regex("[a-zA-Z0-9-]{1,100}")))
+        requireTunnelIdentity(clusterId, tunnelId)
         require(port in 1..65535)
     }
 

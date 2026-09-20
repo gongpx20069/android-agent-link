@@ -335,7 +335,7 @@ class CopilotAgentSession(AcpAgentSession):
             session_filter = SessionListFilter(working_directory=str(_resolve_workspace(workspace_path)))
         sessions = self._run(self._client.list_sessions(session_filter))
         return [{"sessionId": s.session_id, "title": s.summary,
-                 "cwd": s.context.cwd if s.context is not None else None,
+                 "cwd": s.context.working_directory if s.context is not None else None,
                  "updatedAt": s.modified_time.isoformat()} for s in sessions if not s.is_remote]
 
     def _require_idle(self) -> None:

@@ -80,8 +80,10 @@ dependencies {
     implementation(libs.okhttp)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 
     testImplementation(libs.junit)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.json)
     testImplementation("org.robolectric:robolectric:4.16.1")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")

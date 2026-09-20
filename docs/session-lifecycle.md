@@ -39,6 +39,9 @@ claim the native backend's background completion guarantees.
 The adapter translates native events into existing ACP-shaped display updates.
 It never reads private Copilot session files to infer liveness and never sends an
 extra model prompt to poll, keep alive, or automatically continue a task.
+Session listing translates the SDK's `SessionContext.working_directory` property
+to the existing wire field `cwd`; `cwd` is a JSON field, not a Python SDK attribute.
+Sessions without context remain valid and remote sessions remain excluded.
 The dedicated event queue is bounded; overflow or delivery failure is an explicit
 failure, not silent loss or successful completion. A native protocol ping checks
 transport health without advancing the agent.

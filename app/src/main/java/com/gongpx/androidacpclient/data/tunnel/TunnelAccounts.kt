@@ -159,14 +159,41 @@ class TunnelAccounts internal constructor(
             val rows = listValues(json)
             for (row in rows) {
                 if (row.has("error") && !row.isNull("error")) throw IOException("A tunnel region could not be queried. Refresh to retry.")
-                if (row.has("tunnelId")) result.addAll(parseDiscoveredTunnel(row, tokens.account))
+                if (row.has("tunnelId")) result.addAll(discoverTunnel(row, tokens))
                 else {
-                    listValues(row).forEach { result.addAll(parseDiscoveredTunnel(it, tokens.account)) }
+                    listValues(row).forEach { result.addAll(discoverTunnel(it, tokens)) }
                     row.optionalText("nextLink")?.let(pending::add)
                 }
             }
         }
         return result.distinctBy { it.binding }
+    }
+
+    private fun discoverTunnel(summary: JSONObject, tokens: AccountTokens): List<DiscoveredTunnel> {
+        if (!summary.hasLabel("agentlink")) return emptyList()
+        val ports = summary.optJSONArray("ports")
+        val hasBridgePort = ports?.objects()?.any {
+            it.hasLabel("agentlink") && it.optString("protocol") in setOf("http", "https")
+        } == true
+        if (hasBridgePort) return parseDiscoveredTunnel(summary, tokens.account)
+
+        // Global discovery can report no ports while the regional tunnel already
+        // advertises a running bridge. Confirm against the owning cluster.
+        val clusterId = summary.getString("clusterId")
+        val tunnelId = summary.getString("tunnelId")
+        requireTunnelIdentity(clusterId, tunnelId)
+        val detail = getJson(
+            "https://$clusterId.rel.tunnels.api.visualstudio.com/tunnels/$tunnelId" +
+                "?api-version=$API_VERSION&includePorts=true",
+            auth(tokens),
+        )
+        if (detail.has("error") && !detail.isNull("error")) {
+            throw IOException("Tunnel details could not be queried. Refresh to retry.")
+        }
+        if (detail.optionalText("clusterId") != clusterId ||
+            detail.optionalText("tunnelId") != tunnelId
+        ) throw IOException("Tunnel identity changed during discovery. Refresh to retry.")
+        return parseDiscoveredTunnel(detail, tokens.account)
     }
 
     private fun listValues(json: JSONObject): List<JSONObject> {

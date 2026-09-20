@@ -2732,34 +2732,7 @@ private fun ChatDetailScreen(
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        visibleQueuedPrompts.forEach { queued ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 3.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    queued.text,
-                                    modifier = Modifier.weight(1f),
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                                Surface(
-                                    modifier = Modifier.clickable { onRemoveQueuedPrompt(queued.operationId) },
-                                    shape = RoundedCornerShape(999.dp),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                    color = Color.Transparent,
-                                ) {
-                                    Text(
-                                        strings.removeQueuedPrompt,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
+                        QueuedPromptList(chat.id, visibleQueuedPrompts, onRemoveQueuedPrompt)
                         Spacer(Modifier.height(5.dp))
                     }
                     if (commands.isNotEmpty()) {
@@ -2785,6 +2758,76 @@ private fun ChatDetailScreen(
                         Spacer(Modifier.height(5.dp))
                     }
                     ChatPromptComposer(chat.id, isBusy, onSendMessage)
+                }
+            }
+        }
+    }
+}
+
+internal const val QUEUED_PROMPT_PREVIEW_CHARACTERS = 80
+
+internal fun queuedPromptPreview(text: String): String {
+    var end = 0
+    var count = 0
+    while (end < text.length && count < QUEUED_PROMPT_PREVIEW_CHARACTERS) {
+        end += Character.charCount(text.codePointAt(end))
+        count++
+    }
+    return text.substring(0, end).replace(Regex("\\s"), " ") + if (end < text.length) "..." else ""
+}
+
+@Composable
+internal fun QueuedPromptList(chatId: String, prompts: List<QueuedPrompt>, onRemove: (String) -> Unit) {
+    val strings = LocalAppStrings.current
+    androidx.compose.runtime.key(chatId) {
+        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 180.dp)) {
+            items(prompts, key = { it.operationId }) { queued ->
+                var expanded by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+                val preview = remember(queued.text) { queuedPromptPreview(queued.text) }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Column(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
+                            Text(
+                                preview,
+                                maxLines = 2,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                if (expanded) strings.reliability("Collapse", "收起")
+                                else strings.reliability("Expand", "展开"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        if (expanded) {
+                            SelectionContainer {
+                                Text(
+                                    queued.text,
+                                    modifier = Modifier.fillMaxWidth().heightIn(max = 120.dp)
+                                        .verticalScroll(rememberScrollState()),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier.clickable { onRemove(queued.operationId) },
+                        shape = RoundedCornerShape(999.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        color = Color.Transparent,
+                    ) {
+                        Text(
+                            strings.removeQueuedPrompt,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
@@ -2982,7 +3025,7 @@ private fun ResumeDialog(state: ResumeDialogState, onDismiss: () -> Unit, onSele
 }
 
 @Composable
-private fun CopyTextButton(text: String, label: String? = null) {
+private fun CopyTextButton(text: String, label: String) {
     val context = LocalContext.current
     val strings = LocalAppStrings.current
     androidx.compose.foundation.text.selection.DisableSelection {
@@ -3006,13 +3049,13 @@ private fun CopyTextButton(text: String, label: String? = null) {
                 android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
             },
         ) {
-            Text(label ?: strings.reliability("Copy all", "复制全文"))
+            Text(label)
         }
     }
 }
 
 @Composable
-private fun ChatTimelineItem(item: ChatMessage) {
+internal fun ChatTimelineItem(item: ChatMessage) {
     if (item.kind == ChatMessageKind.CommandUpdate || item.kind == ChatMessageKind.ConfigUpdate) {
         return
     }
@@ -3057,7 +3100,6 @@ private fun ChatTimelineItem(item: ChatMessage) {
                         MarkdownMessageText(item.text, textColor)
                     }
                 }
-                CopyTextButton(item.text)
             }
         }
     }
@@ -3304,14 +3346,15 @@ private fun AgentActivityItem(item: ChatMessage) {
     ) {
         Column(Modifier.padding(12.dp)) {
             Row(Modifier.fillMaxWidth().clickable { expanded = !expanded }, horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Column {
-                    Text(item.title ?: strings.agentActivity, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                    Text(item.text, style = MaterialTheme.typography.bodySmall)
+                SelectionContainer {
+                    Column {
+                        Text(item.title ?: strings.agentActivity, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                        Text(item.text, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
                 Text(if (expanded) strings.hide else strings.details, style = MaterialTheme.typography.labelMedium)
             }
             if (expanded && !item.details.isNullOrBlank()) {
-                CopyTextButton(item.details)
                 Spacer(Modifier.height(8.dp))
                 Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)) {
                     val sections by produceState<List<Pair<String, String>>?>(null, item.details) {
@@ -3338,7 +3381,6 @@ private fun PagedDetailText(text: String) {
     var page by remember { mutableStateOf(0) }
     val count = ((text.length + 4095) / 4096).coerceAtLeast(1)
     val current = page.coerceAtMost(count - 1)
-    CopyTextButton(text)
     androidx.compose.foundation.text.selection.SelectionContainer {
         Text(
             detailTextPage(text, current),
@@ -3375,7 +3417,6 @@ private fun AgentPlanItem(item: ChatMessage) {
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-            CopyTextButton(item.details ?: item.text)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -3429,17 +3470,18 @@ private fun AgentPlanItem(item: ChatMessage) {
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                     )
-                    Text(
-                        text = parseInlineMarkdown(entry.content),
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textDecoration = if (entry.status == AgentPlanEntryStatus.Completed) {
-                            TextDecoration.LineThrough
-                        } else {
-                            TextDecoration.None
-                        },
-                    )
+                    SelectionContainer(Modifier.weight(1f)) {
+                        Text(
+                            text = parseInlineMarkdown(entry.content),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textDecoration = if (entry.status == AgentPlanEntryStatus.Completed) {
+                                TextDecoration.LineThrough
+                            } else {
+                                TextDecoration.None
+                            },
+                        )
+                    }
                     if (priorityColor != Color.Transparent) {
                         Box(
                             modifier = Modifier

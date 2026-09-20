@@ -357,12 +357,22 @@ Markdown/layout work while keeping bounded retained content accessible.
 Explicit `/copy` and conversation Ctrl+Y snapshot retained source and write it
 to a local clipboard utility in a worker thread. No remote OSC52 or shell
 interpolation is used; contents travel via stdin, with bounded timeouts and
-explicit errors. `/mouse` dynamically disables app mouse reporting for native
+explicit errors. A left-button drag selects displayed text without Shift, and
+Ctrl+Y copies that selection instead of the focused entry's source. Dragging
+does not activate a tool. The right-side scrollbar supports track clicks and
+thumb dragging through retained rows while pausing auto-follow; End resumes it.
+`/mouse` dynamically disables app mouse reporting for native
 terminal selection. Android wraps each message body in SelectionContainer and
-provides copy actions for source text/code/detail sections. Clipboard source is
-not reconstructed from visible pages. A 128 Ki UTF-16 limit rejects oversized
-Android writes without replacing the clipboard; there is no extra transcript
+uses long-press selection and the system copy menu for rendered text, plan steps
+and tool details on the current page, without Copy all buttons. The code-section
+copy action retains the original source. A 128 Ki UTF-16 limit rejects oversized
+code-section writes without replacing the clipboard; there is no extra transcript
 cache or continuous clipboard work on streaming updates.
+
+Android selection regressions use Compose UI tests on Robolectric with native
+text metrics at the minimum supported API level. They exercise long-press and
+the system-menu copy callback on real message, plan and tool-detail composables,
+rather than testing only the clipboard helper. Test libraries are debug/test-only.
 
 Only agent replies are formatted: prompts, labels, tool summaries and approval
 details remain literal. Remote control sequences are removed before parsing;

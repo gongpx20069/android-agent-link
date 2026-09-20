@@ -27,6 +27,15 @@ so different computers do not contend for a single `agentlink` tunnel. Existing
 users can pass `--devtunnel-id agentlink` to retain their prior address, or select
 the new computer entry and pair again; old tunnels are not deleted automatically.
 
+Multiple computers can use the same Microsoft or GitHub account. Each needs its
+own tunnel ID and running bridge; computers with the same hostname must explicitly
+choose different `--devtunnel-id` values. Do not use the legacy `agentlink` ID on
+both. The phone enumerates all regions and checks regional details when a global
+list entry omits bridge ports. A live CLI check found a tunnel with zero ports in
+`devtunnel list` but an active 4317 HTTP port in `devtunnel show <id>`; the list
+summary alone must not exclude that computer. Update Android and press Find again
+if an older app shows only one computer.
+
 The phone lists discovered computers, requests pairing, and shows a six-digit
 confirmation code. The developer compares it with the bridge console and enters
 `y` or `yes` within two minutes to approve. Enter or any other input denies the
