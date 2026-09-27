@@ -36,6 +36,7 @@ internal fun resolveToolAction(method: String, action: String): ToolAction {
             setOf("mode", "path", "displayName", "name", "sourceWorkspaceId", "branch", "url", "repositoryUrl"))
         "agentlink_chat" to "list" -> ToolAction("chat.list", "read", setOf("workspaceId", "offset", "limit"))
         "agentlink_chat" to "read" -> ToolAction("chat.read", "read", setOf("chatId", "afterEventId", "limit"))
+        "agentlink_chat" to "task" -> ToolAction("task.read", "read", setOf("chatId", "taskId"))
         "agentlink_chat" to "create" -> ToolAction("chat.create", "create", setOf("workspaceId", "agentId", "title", "chatId"))
         "agentlink_control" to "send" -> ToolAction("chat.send", "control",
             setOf("chatId", "content", "operationId", "expectedHumanRevision"))
@@ -54,6 +55,14 @@ internal fun checkedArguments(arguments: JSONObject, action: ToolAction): JSONOb
     }
     val payload = JSONObject()
     action.fields.forEach { field -> if (arguments.has(field)) payload.put(field, arguments.get(field)) }
+    if (action.bridgeAction == "task.read") {
+        for (field in listOf("chatId", "taskId")) {
+            val value = arguments.opt(field)
+            if (value !is String || value.isBlank() || value.length > 256 || value.any(Char::isISOControl)) {
+                throw ControlFailure("INVALID_ARGS", "Task follow-up requires an exact chatId and taskId.")
+            }
+        }
+    }
     if (action.bridgeAction == "workspace.create" && payload.has("url")) {
         if (payload.has("repositoryUrl")) throw ControlFailure("INVALID_ARGS", "Supply only one repository URL.")
         payload.put("repositoryUrl", payload.remove("url"))

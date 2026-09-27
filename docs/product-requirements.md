@@ -13,6 +13,10 @@
 - Reject stale Mochi follow-ups after human takeover, and never automatically rerun
   uncertain writes or interrupted tasks after restart.
 - Keep new-workspace operations restricted to explicit bridge-owner roots.
+- Offer bounded durable read-only task receipts for Mochi's asynchronous follow-up.
+  Reconnect/replay must not resend work; completed execution is not verified
+  fulfillment. Local result presentation and next-wake briefings belong to Mochi,
+  while approvals, continuation and cancellation retain the same native chat.
 
 ## Account-based computer discovery
 

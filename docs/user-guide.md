@@ -308,6 +308,15 @@ AgentLink owns resource/capability selection and revocation. Open the exact shar
 chat in AgentLink to inspect or approve work. Human messages invalidate stale
 Mochi follow-ups; cancelling a Mochi tool wait does not cancel the remote task.
 
+New Mochi-submitted tasks support durable result receipts. Mochi collects these
+read-only, keeps result cards locally, and may give a short briefing on the next
+“Hi Mochi” rather than speaking unexpectedly. A second wake dismisses that brief
+and its unread markers, not the task history or remote execution. Input takes
+priority, so unsupported simultaneous speech skips the brief. Collection may be
+delayed by Android background limits or an offline computer. “Run ended” is not
+a claim that the result was verified. Open the card's original chat to inspect
+the answer, approve, continue or cancel.
+
 Workspace creation is disabled unless the bridge owner explicitly permits a root:
 
 ```powershell

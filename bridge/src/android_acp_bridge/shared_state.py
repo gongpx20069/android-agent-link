@@ -30,9 +30,11 @@ def required_text(value: Any, name: str, limit: int = 1024) -> str:
 class SharedState:
     EVENT_LIMIT = 10000
     EVENT_BYTES = 128 * 1024
+    RESULT_CHARS = 2000
 
     def __init__(self, path: Path | None = None) -> None:
         self.lock = threading.RLock()
+        self._active_receipts: dict[str, set[str]] = {}
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             DeviceTokenStore._make_private(path.parent)
@@ -61,8 +63,10 @@ class SharedState:
                     self._put_chat(chat)
             for chat, identity, raw in self.db.execute("SELECT chat,id,data FROM tasks").fetchall():
                 task = json.loads(raw)
-                if task["state"] in {"starting", "running", "queued"}:
+                if task["state"] in {"starting", "running", "queued", "waitingApproval"}:
                     task["state"] = "interrupted"
+                    task["revision"] = task.get("revision", 0) + 1
+                    task["updatedAt"] = int(time.time() * 1000)
                     self.db.execute("UPDATE tasks SET data=? WHERE chat=? AND id=?", (json.dumps(task), chat, identity))
         self.generation = self.db.execute("SELECT value FROM metadata WHERE key='generation'").fetchone()[0]
 
@@ -136,8 +140,47 @@ class SharedState:
 
     def tasks(self, chat: str) -> list[dict[str, Any]]:
         with self.lock:
-            return [json.loads(row[0]) for row in self.db.execute(
+            return [{key: value for key, value in json.loads(row[0]).items() if key not in {"resultText", "resultTruncated"}}
+                    for row in self.db.execute(
                 "SELECT data FROM tasks WHERE chat=? ORDER BY rowid DESC LIMIT 100", (chat,))]
+
+    def task_receipt(self, chat: str, identity: str) -> dict[str, Any]:
+        with self.lock:
+            self.chat(chat)
+            task = self.task(chat, identity)
+            if task is None:
+                raise ControlError("NOT_FOUND", "Task was not found. Do not resend an uncertain write.")
+            return {key: task.get(key, default) for key, default in {
+                "chatId": chat, "taskId": identity, "source": "unknown", "state": "unknown",
+                "revision": 0, "updatedAt": 0, "resultText": "", "resultTruncated": False,
+            }.items()}
+
+    def _update_active_receipts(self, chat: str, event: dict[str, Any]) -> None:
+        kind = event["type"]
+        update = event.get("update", {})
+        text = None
+        if kind == "session/update" and update.get("sessionUpdate") == "agent_message_chunk":
+            content = update.get("content")
+            if isinstance(content, dict) and content.get("type") == "text" and isinstance(content.get("text"), str):
+                text = content["text"]
+        waiting = kind == "chat.status" and event.get("status") in {"waitingApproval", "busy"}
+        if text is None and not waiting:
+            return
+        for identity in tuple(self._active_receipts.get(chat, ())):
+            task = self.task(chat, identity)
+            if task is None:
+                continue
+            original = task.copy()
+            if text is not None:
+                combined = task.get("resultText", "") + text
+                task["resultText"] = combined[:self.RESULT_CHARS]
+                task["resultTruncated"] = task.get("resultTruncated", False) or len(combined) > self.RESULT_CHARS
+            if waiting:
+                state = "waitingApproval" if event["status"] == "waitingApproval" else "running"
+                if task["state"] != state:
+                    task.update(state=state, revision=task.get("revision", 0) + 1, updatedAt=event["timestamp"])
+            if task != original:
+                self.db.execute("UPDATE tasks SET data=? WHERE chat=? AND id=?", (json.dumps(task), chat, identity))
 
     def append(self, chat_id: str, event: dict[str, Any]) -> None:
         with self.lock, self.db:
@@ -169,6 +212,7 @@ class SharedState:
             elif kind == "session/update" and event.get("update", {}).get("sessionUpdate") == "config_option_update":
                 chat["configOptions"] = event["update"].get("configOptions", [])
             self._put_chat(chat)
+            self._update_active_receipts(chat_id, event)
             if kind in {"operation.accepted", "operation.started", "operation.done", "chat.prompt.remove.result"}:
                 identity = event.get("operationId")
                 if identity:
@@ -176,12 +220,17 @@ class SharedState:
                     if event.get("status") == "already_started":
                         return
                     task.update(state=event.get("status") or event.get("state") or "running",
-                                updatedAt=event["timestamp"])
+                                updatedAt=event["timestamp"], revision=task.get("revision", 0) + 1)
                     if "source" in event:
                         task["source"] = event["source"]
                     if kind == "operation.accepted":
                         task["contentDigest"] = hashlib.sha256(str(event.get("content", "")).encode()).hexdigest()
                     self.db.execute("INSERT OR REPLACE INTO tasks VALUES(?,?,?)", (chat_id, identity, json.dumps(task)))
+                    active = self._active_receipts.setdefault(chat_id, set())
+                    if task["state"] in {"starting", "running", "waitingApproval"}:
+                        active.add(identity)
+                    else:
+                        active.discard(identity)
 
     def events(self, chat: str, after: int = 0, limit: int = 50, budget: int = 180000) -> dict[str, Any]:
         with self.lock:

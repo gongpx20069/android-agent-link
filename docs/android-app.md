@@ -59,6 +59,7 @@ endpoints, credentials and non-Mochi `source` values are rejected.
 | `agentlink_workspace` | `machines` | read; permitted machine IDs and display names only |
 | `agentlink_workspace` | `list`, `create` | read / create; `workspace.list`, `workspace.create` |
 | `agentlink_chat` | `list`, `read` | read; `chat.list`, `chat.read` |
+| `agentlink_chat` | `task` | read; `task.read` with exact chatId/taskId; bounded durable result receipt |
 | `agentlink_chat` | `create` | create; `chat.create` |
 | `agentlink_control` | `send` | control; `chat.send` |
 | `agentlink_control` | `status` | safe before grant: protocol version, authorized/needsAuthorization, connected (provider transport only); granted status adds scope |
@@ -72,6 +73,13 @@ equivalent. Its result has `protocolVersion:1`, `authorized:false` and
 `needsAuthorization:true`. Status includes `connected:true` to acknowledge the
 reachable Android provider transport, **not** remote bridge health; individual
 remote calls report bridge errors.
+
+The additive `task` action is for authorized read-only task follow-up, not a
+fourth model tool. It uses the same UID/signer/machine/read-grant checks before
+dispatch and delivery. Mochi can periodically collect receipts for its own
+submitted operations, including after reconnect, without keeping an IPC
+subscription alive or replaying a write. Old bridges reject the unknown action
+explicitly; clients must show that follow-up needs a bridge update.
 
 `chat.send` requires `chatId`, `content`, stable `operationId`, and integer
 `expectedHumanRevision` from a fresh `chat.read`. Android forces `source:"mochi"`;

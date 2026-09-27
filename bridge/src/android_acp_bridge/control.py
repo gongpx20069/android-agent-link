@@ -87,6 +87,10 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
         return {"chat": chat}
 
     chat_id = required_text(payload.get("chatId"), "chatId", 256)
+    if action == "task.read":
+        identity = required_text(payload.get("taskId"), "taskId", 256)
+        return {"task": runtime.shared.task_receipt(chat_id, identity),
+                "online": True, "observedAt": int(time.time() * 1000)}
     if action == "chat.read":
         # Approval publication takes its own lock before the event lock.
         # Snapshot separately rather than invert that ordering during a read.

@@ -22,6 +22,51 @@ from test_runtime import BlockingAgentManager, FakeAgentManager
 
 
 class SharedControlTests(unittest.TestCase):
+    def test_durable_receipt_is_exact_bounded_and_survives_journal_reset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = self.runtime(shared_state_store=Path(directory) / "shared.sqlite3")
+            self.register(runtime)
+            runtime._append_event("chat", {"type": "operation.accepted", "operationId": "mochi",
+                                         "state": "starting", "content": "private prompt", "source": "mochi"})
+            runtime._append_event("chat", {"type": "operation.accepted", "operationId": "queued",
+                                         "state": "queued", "content": "later", "source": "mochi"})
+            runtime._append_event("chat", {"type": "session/update", "update": {
+                "sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "private thought"}}})
+            runtime._append_event("chat", {"type": "session/update", "update": {
+                "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "result " * 1000}}})
+            runtime._append_event("chat", {"type": "chat.status", "status": "waitingApproval"})
+            waiting = self.request(runtime, "task.read", chatId="chat", taskId="mochi")["data"]["task"]
+            self.assertEqual(waiting["state"], "waitingApproval")
+            self.assertEqual(len(waiting["resultText"]), 2000)
+            self.assertTrue(waiting["resultTruncated"])
+            self.assertNotIn("contentDigest", waiting)
+            self.assertNotIn("private", waiting["resultText"])
+            self.assertEqual(self.request(runtime, "task.read", chatId="chat", taskId="queued")["data"]["task"]["resultText"], "")
+            runtime._append_event("chat", {"type": "chat.status", "status": "busy"})
+            runtime._append_event("chat", {"type": "operation.done", "operationId": "mochi", "status": "completed"})
+            receipt = self.request(runtime, "task.read", chatId="chat", taskId="mochi")["data"]["task"]
+            self.assertGreater(receipt["revision"], waiting["revision"])
+            runtime.shared.reset_events("chat")
+            self.assertEqual(self.request(runtime, "task.read", chatId="chat", taskId="mochi")["data"]["task"], receipt)
+            self.assertNotIn("resultText", runtime.shared.tasks("chat")[0])
+            runtime.shared.close()
+            restored = self.runtime(shared_state_store=Path(directory) / "shared.sqlite3")
+            try:
+                self.assertEqual(self.request(restored, "task.read", chatId="chat", taskId="mochi")["data"]["task"], receipt)
+                interrupted = self.request(restored, "task.read", chatId="chat", taskId="queued")["data"]["task"]
+                self.assertEqual(interrupted["state"], "interrupted")
+                self.assertGreater(interrupted["revision"], 1)
+            finally:
+                restored.shared.close()
+
+    def test_receipt_lookup_never_creates_or_resends_work(self):
+        runtime = self.runtime()
+        self.register(runtime)
+        self.assertEqual(self.request(runtime, "task.read", chatId="chat", taskId="absent")["code"], "NOT_FOUND")
+        self.assertEqual(self.request(runtime, "task.read", chatId="chat", taskId="")["code"], "INVALID_ARGS")
+        self.assertEqual(runtime.shared.tasks("chat"), [])
+        self.assertEqual(runtime._active_prompts, {})
+
     def runtime(self, **config) -> BridgeRuntime:
         manager = config.pop("manager", FakeAgentManager())
         instance = BridgeRuntime(BridgeConfig(machine_name="test", **config), PairingStore(), False, manager)

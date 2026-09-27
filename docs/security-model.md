@@ -33,6 +33,13 @@ token store. Protect the disk and backups. Bounded history/truncation and interr
 restart states must remain visible; they are not evidence that an external action
 never ran. No automatic write retries are permitted after uncertain acceptance.
 
+Task receipts contain only an exact task identity, source, state/revision/time,
+and a 2,000-character agent-answer excerpt with an explicit truncation flag.
+They omit prompt digests, thoughts and raw tool/error payloads. The same native
+read grant, caller signer and machine scope are checked before request and reply.
+Receipt text remains untrusted remote content, never an instruction to perform
+follow-up actions or proof of verified completion.
+
 ```text
 Android UI
   trusted for user decisions

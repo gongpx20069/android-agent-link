@@ -5,6 +5,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class IntegrationProtocolTest {
+    @Test fun taskFollowUpIsBoundedReadOnlyAndCannotSupplyCredentials() {
+        val spec = resolveToolAction("agentlink_chat", "task")
+        assertEquals("read", spec.permission)
+        assertEquals("task.read", spec.bridgeAction)
+        val arguments = JSONObject().put("chatId", "chat").put("taskId", "operation")
+        assertEquals("operation", checkedArguments(arguments, spec).getString("taskId"))
+        for (value in listOf("", "a".repeat(257), "line\nbreak")) {
+            assertThrows(ControlFailure::class.java) { checkedArguments(JSONObject(arguments.toString()).put("taskId", value), spec) }
+        }
+        assertThrows(ControlFailure::class.java) { checkedArguments(arguments.put("source", "mochi"), spec) }
+    }
+
     @Test fun toolsHaveIndependentPermissionsAndNoApprovalBypass() {
         assertEquals("read", resolveToolAction("agentlink_workspace", "list").permission)
         assertEquals("create", resolveToolAction("agentlink_workspace", "create").permission)

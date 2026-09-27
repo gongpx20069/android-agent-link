@@ -23,6 +23,7 @@ Errors include `INVALID_ARGS`, `NOT_FOUND`, `PERMISSION_DENIED`, `CONFLICT`,
 | `chat.read` | chatId, afterEventId (default 0), limit (30 default, 100 max) | chat, events, tasks, approvals, latestEventId, nextEventId, hasMore, truncated, eventGeneration, online, observedAt |
 | `chat.send` | chatId, content, operationId, source, expectedHumanRevision | taskId, chatId, state; duplicate on retry |
 | `task.cancel` | chatId, operationId | taskId, state; cancellation_requested is not completed cancellation |
+| `task.read` | chatId, taskId | task, online, observedAt; bounded durable receipt, independent of journal retention |
 | `chat.configure` | chatId; configId/value to set, omitted to refresh | chat |
 
 Workspace modes are `directory`, `register_existing`, `clone`, `worktree`.
@@ -41,6 +42,19 @@ message increments it and cancels queued Mochi follow-ups; active work is not
 silently cancelled. Same task ID/content returns existing state even after restart;
 different content conflicts. Interrupted tasks are never automatically rerun.
 Different chats cannot start Mochi work in a workspace with another active chat.
+
+`task.read` is read-only and never starts or retries work. Its `task` contains
+`chatId`, `taskId`, `source`, `state`, monotonic per-task `revision`, `updatedAt`,
+`resultText` (at most 2,000 characters), and `resultTruncated`. The receipt
+survives journal trimming, reconnects and process restart. Only agent message
+text is retained, never tool arguments, thoughts or raw error bodies. The text
+is an unverified remote answer, not proof that tests passed or a request was
+fulfilled. Older tasks can have empty text. `waitingApproval` is actionable;
+`interrupted` means the bridge cannot prove the execution outcome. Completion,
+failure, cancellation and interruption are distinct. Reading an unknown task
+returns `NOT_FOUND`, never a synthetic completion. Consumers deduplicate by
+chat/task/revision, keep viewed and announced state separately, and follow only
+operations they submitted. Receipt observation does not authorize a follow-up.
 
 Legacy attach/prompt registers original IDs and preserves authoritative bindings.
 Explicit session history loading changes the binding and invalidates old follow-ups.

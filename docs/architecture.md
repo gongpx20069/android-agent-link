@@ -35,6 +35,15 @@ approval state machine. Drafts, scroll and folding stay client-local. Read respo
 declare observation time, online state, journal truncation and page continuation;
 an offline client cannot claim current remote status.
 
+Each durable task also retains a bounded agent-answer excerpt and an independent
+monotonic receipt revision. `task.read` returns the exact task without scanning
+the bounded journal, so event trimming/reset does not erase its final outcome.
+Queued operations do not inherit another turn's output; members of a running
+batch share that turn's answer. Startup changes unfinished receipts to
+`interrupted` and advances their revision, never to success. The existing JSON
+task records are extended additively; no SQLite table migration is needed.
+General chat snapshots omit answer excerpts to keep page payloads bounded.
+
 ## Why a Bridge Exists
 
 Many coding agents communicate over stdio and assume a desktop/server environment. Android should not directly manage those agent processes. The bridge provides:
