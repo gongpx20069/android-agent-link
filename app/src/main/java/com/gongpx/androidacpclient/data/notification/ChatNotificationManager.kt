@@ -50,7 +50,7 @@ class ChatNotificationManager(private val context: Context) {
         notificationManager.notify(
             chatId.hashCode(),
             Notification.Builder(context, CHANNEL_ID)
-                .setSmallIcon(R.drawable.ic_agentlink)
+                .setSmallIcon(R.drawable.ic_agentlink_notification)
                 .setContentTitle(chatTitle)
                 .setContentText(preview)
                 .setStyle(Notification.BigTextStyle().bigText(preview))
@@ -81,7 +81,7 @@ class ChatNotificationManager(private val context: Context) {
 
     fun ongoingNotification(chatCount: Int): Notification =
         Notification.Builder(context, MONITOR_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_agentlink)
+            .setSmallIcon(R.drawable.ic_agentlink_notification)
             .setContentTitle(context.getString(R.string.monitor_title))
             .setContentText(context.getString(R.string.monitor_description, chatCount))
             .setContentIntent(openChat(null))
@@ -93,7 +93,7 @@ class ChatNotificationManager(private val context: Context) {
 
     private fun alert(chatId: String, title: String, message: String): Notification =
         Notification.Builder(context, ALERT_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_agentlink)
+            .setSmallIcon(R.drawable.ic_agentlink_notification)
             .setContentTitle(title)
             .setContentText(message)
             .setStyle(Notification.BigTextStyle().bigText(message))

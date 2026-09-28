@@ -2,6 +2,28 @@
 
 This document describes the current AgentLink Android client implementation.
 
+## App identity
+
+The app and README use the mint/lavender interlocking-ring mark introduced on
+the [AgentLink website](https://gongpx20069.github.io/hi-mochi/agentlink/).
+`docs/assets/agentlink-icon.svg` is the standalone vector artwork;
+`docs/assets/agentlink-logo.svg` is the README wordmark.
+
+Both manifest icon attributes use `mipmap/ic_launcher`. Android 8+ selects
+the adaptive icon with a full-bleed `#192B2C` background and a transparent
+108-unit foreground; the mark fits inside the central 66-unit safe circle.
+Android 13+ additionally supplies a white-alpha monochrome layer for themed
+icons. The unqualified vector provides a non-adaptive fallback without
+density-specific bitmaps (the app minimum SDK is 26).
+
+Completion, approval, error, and monitoring notifications use the separate
+transparent white `ic_agentlink_notification` silhouette, never the opaque
+launcher background. Android 12+ uses the manifest launcher icon for its
+system splash; no new startup screen or delay is introduced.
+`AppIconTest` checks resource selection, rendering, safe-zone geometry, and
+notification icon wiring on Android 8 and 13. This branding update changes
+neither application ID nor signing configuration or stored data.
+
 ## Mochi same-device integration (protocol 1)
 
 AgentLink remains the credential-owning proxy. Mochi never receives device tokens,
