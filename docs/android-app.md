@@ -35,7 +35,8 @@ messages; conflicting operations block sending while retaining the draft.
 Saveable state holders retain per-chat drafts across chat/tab navigation. A
 rejected local submission does not clear the composer. The chat header keeps
 identity/status visible and collapses full paths and connection diagnostics into
-Details. Machines presents QR/link pairing before optional account discovery.
+Details. Machines presents GitHub/Microsoft account login and discovery first,
+followed by QR/link pairing and the saved computer list.
 
 Stop current task targets its exact operation ID through `task.cancel`, never
 a `/stop` prompt. The UI keeps the task busy until authoritative completion,

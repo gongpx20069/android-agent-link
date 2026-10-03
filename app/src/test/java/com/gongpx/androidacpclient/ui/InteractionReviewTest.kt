@@ -44,6 +44,27 @@ class InteractionReviewTest {
         }
     }
 
+    @Test fun missingAgentsRemainVisibleInNewSessionAfterCatalogRefresh() {
+        val installed = listOf(
+            Agent("claude-code", "Claude Code", "available"),
+            Agent("copilot-cli", "GitHub Copilot CLI", "available"),
+        )
+        val missing = listOf(
+            Agent("kimi-cli", "Kimi Code", "missing"),
+            Agent("qwen-code", "Qwen Code", "missing"),
+            Agent("deepseek-harness", "DeepSeek Harness", "missing"),
+        )
+        val machines = mutableStateOf(listOf(machine("A").copy(agents = installed)))
+        compose.setContent { Screen(machines.value) }
+        compose.runOnIdle { machines.value = listOf(machine("A").copy(agents = installed + missing)) }
+        missing.forEach { agent ->
+            compose.onNodeWithText(agent.displayName).performScrollTo().assertIsDisplayed().performClick()
+            compose.onNodeWithText("Create Chat").performScrollTo().assertIsNotEnabled()
+        }
+        compose.onNodeWithText("GitHub Copilot CLI").performScrollTo().performClick()
+        compose.onNodeWithText("Create Chat").performScrollTo().assertIsEnabled()
+    }
+
     @Test fun backgroundRefreshDoesNotChangeComputerAgentOrWorkspaceSelection() {
         val machines = mutableStateOf(listOf(machine("A"), machine("B")))
         var created: Triple<String, String, String>? = null
@@ -135,12 +156,18 @@ class InteractionReviewTest {
         compose.onNode(hasSetTextAction()).assertTextEquals("not sent")
     }
 
-    @Test fun firstRunOffersQrFirstWithoutHidingAccountDiscovery() {
+    @Test fun accountDiscoveryComesBeforeQrForEmptyAndSavedMachines() {
+        val machines = mutableStateOf<List<Machine>>(emptyList())
         compose.setContent { MaterialTheme {
-            MachinesScreen(PaddingValues(), emptyList(), null, { Text("Account discovery") }, {}, {}, {}, {})
+            MachinesScreen(PaddingValues(), machines.value, null, { Text("Account discovery") }, {}, {}, {}, {})
         } }
-        compose.onNodeWithText("Scan QR").assertIsDisplayed()
-        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(3)
-        compose.onNodeWithText("Account discovery").assertIsDisplayed()
+        fun assertAccountFirst() {
+            val account = compose.onNodeWithText("Account discovery").assertIsDisplayed().fetchSemanticsNode()
+            val qr = compose.onNodeWithText("Scan QR").assertIsDisplayed().fetchSemanticsNode()
+            assertTrue("Account login must appear above QR pairing", account.boundsInRoot.top < qr.boundsInRoot.top)
+        }
+        assertAccountFirst()
+        compose.runOnIdle { machines.value = (1..10).map { machine(it.toString()) } }
+        assertAccountFirst()
     }
 }

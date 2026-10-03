@@ -3877,6 +3877,7 @@ internal fun MachinesScreen(
     var pairingLink by remember { mutableStateOf("") }
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item(key = "account-discovery") { accountPanel() }
         item {
             ElevatedCard(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
                 Column(Modifier.padding(18.dp)) {
@@ -3908,7 +3909,6 @@ internal fun MachinesScreen(
                 }
             }
         }
-        item(key = "account-discovery") { accountPanel() }
     }
 }
 

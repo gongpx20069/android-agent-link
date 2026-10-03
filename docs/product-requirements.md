@@ -103,7 +103,8 @@ Chat
 - Preserve drafts across chats/tabs and unsuccessful submissions. Block sending
   during context changes rather than silently targeting a different session.
 - Keep identity and task status prominent; make verbose connection diagnostics
-  expandable and present QR pairing before optional account discovery.
+  expandable and present GitHub/Microsoft account login and discovery before
+  QR/link pairing and the saved computer list.
 - Offer explicit cancellation of the current task without sending the draft,
   clearing unrelated queued messages or claiming that a cancellation request is completion.
 
