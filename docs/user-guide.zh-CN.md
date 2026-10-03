@@ -121,6 +121,11 @@ Microsoft 的令牌刷新及连接令牌签发仍需实测；收到 refresh toke
 agent 发起审批请求时，在 **Approvals** 中处理。
 可恢复的会话、可用模型和权限行为取决于电脑上安装的 agent CLI。
 
+Android 中选择会话或配置后，还需点击**恢复**或**应用**确认。
+切换 Chat 或底部标签时会保留各自草稿；聊天页的**详情**可查看完整项目路径与连接状态。
+**停止当前任务**只请求取消，不会发送草稿，也不会清空其他排队消息。
+已执行的操作无法撤销，请等待 Agent 确认状态，不要把“已请求停止”当作任务已经结束。
+
 Agent 忙碌时追加的消息显示在输入框上方，默认只预览前 80 个字符、最多两行。
 点击预览可展开或收起原文；长原文和待发送队列在限定高度内滚动，不会挤满聊天页面。
 仅显示做截短，实际保存和发送的内容保持完整。
@@ -203,6 +208,7 @@ Android 长按消息文字后，拖动选区两端选择需要的片段，再点
 | `/new copilot-cli C:\Repos\my-project` | 为已安装的 agent 创建共享会话。 |
 | `/approvals` | 查看待审批请求的详细内容。 |
 | `/approve <approval-id>`、`/deny <approval-id>` | 批准或拒绝；批准前必须先查看详情。 |
+| `/choose <approval-id> <option-id>`、`/answer <approval-id> <JSON>` | 先用 `/approvals` 查看详情，再选择具体授权选项或回答问题。 |
 | `/pair y`、`/pair n` | 核对配对码后，批准或拒绝手机配对。 |
 | `/qrcode`、`/pairing` | 按需打开配对二维码/链接；Esc 返回聊天。 |
 | `/send <text>` | 发送以 `/` 开头的文字，不将其视为终端命令。 |
@@ -234,10 +240,20 @@ Agent 声明支持的斜杠命令也会出现在菜单里。未知命令明确�
 | Agent | AgentLink 接入情况 |
 | --- | --- |
 | GitHub Copilot CLI | 默认通过原生 SDK 连接已安装并登录的 CLI，等待后台任务结束后才显示空闲；兼容选项见 [bridge 指南](../bridge/README.md#copilot-background-task-lifecycle)。 |
-| Claude Code | 安装 `claude` 后可发现；需要实际支持 `claude --acp` 的版本或配置。 |
+| Claude Code | 使用 `claude-agent-acp` 0.81.2、Node.js 22+ 及电脑本地的 Claude 登录，参见[安装说明](../bridge/README.md#claude-code)。 |
+| Kimi Code | 使用原生 `kimi acp`，基线为新版 JavaScript Kimi Code 2.1.1；电脑上执行 `kimi login`。支持会话恢复及问题表单。 |
+| Qwen Code | 使用原生 `qwen --acp`，基线为 0.24.6；在电脑完成认证。支持会话恢复及 Qwen 问题表单。 |
+| DeepSeek Harness | 使用原生 `dsh --profile acp`，固定 0.1.7-rc.2 预览版。支持恢复上下文，不支持旧消息回放。[安装说明](../bridge/README.md#deepseek-harness)。 |
 
-其他 agent 尚未接入。CLI 出现在电脑的 agent 列表中，只代表发现了安装，
-不代表已经确认它兼容 ACP。
+安装与限制见 [Kimi/Qwen 说明](../bridge/README.md#kimi-code-and-qwen-code)。
+手机 `/config` 可选择 agent 暴露的模式、思考等设置；终端 `/config` 列出配置 ID，
+`/config <id>` 打开选项，选择后按 `y` 确认。Qwen 问题表单支持填写选项或自定义答案，
+多选时用逗号分隔。尚未接入 `qwen serve`。
+CLI 出现在列表中只代表发现了安装，不代表认证成功；真实模型对话与手机验收仍需登录账号后完成。
+
+DeepSeek Harness 会保留 AgentLink 已保存的消息，但导入外部会话无法带回旧消息。
+切换会话时显示上下文分界；Bridge 事件过期后会显示历史缺失提示。
+可以继续对话不代表缺失的消息已经恢复。
 
 ## 关于持续连接
 

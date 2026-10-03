@@ -363,8 +363,10 @@ class NativeSessionTests(unittest.TestCase):
             })
         self.assertEqual(responses, [
             {"type": "session.list.result", "sessions": [
-                {"sessionId": "local", "title": "Existing work", "cwd": str(Path.cwd()), "updatedAt": timestamp},
-                {"sessionId": "without-context", "title": None, "cwd": None, "updatedAt": timestamp},
+                {"sessionId": "local", "title": "Existing work", "cwd": str(Path.cwd()), "updatedAt": timestamp,
+                 "historyReplaySupported": True},
+                {"sessionId": "without-context", "title": None, "cwd": None, "updatedAt": timestamp,
+                 "historyReplaySupported": True},
             ]},
             {"type": "bridge.done"},
         ])

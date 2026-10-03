@@ -14,6 +14,10 @@
   &nbsp; · &nbsp; <a href="https://gongpx20069.github.io/hi-mochi/zh-CN/agentlink/">产品介绍</a>
 </p>
 
+**GitHub Copilot CLI · Claude Code · Kimi Code · Qwen Code · DeepSeek Harness**
+
+一个 Android App，连接多个 Agent、项目和电脑。
+
 ## 快速开始
 
 ### 1. 下载 App
@@ -23,8 +27,8 @@
 
 ### 2. 在电脑上启动 Server
 
-电脑需要 **Python 3.11+、Git，以及已经安装并登录的 coding agent**：
-GitHub Copilot CLI，或实际支持 `claude --acp` 的 Claude Code 配置。
+电脑需要 **Python 3.11+、Git，以及至少一个已经安装并配置好的 coding agent**。
+不用全部安装，选择你常用的即可；参见[支持的编程助手](#支持的编程助手)。
 项目文件和 agent 都留在电脑上，不在手机上运行。
 
 首次使用，在 **Windows PowerShell** 中执行：
@@ -74,6 +78,27 @@ python -m venv .venv
 | 在手机上批准或拒绝 agent 请求 | 恢复 agent 提供的已有会话 |
 | Android 长按选字复制 | 终端鼠标拖选、滚动查看 |
 | 待发送消息紧凑预览，点击展开 | 长历史按需加载，不必一次读入全部 |
+
+## 支持的编程助手
+
+创建 Chat 时选择 Agent。每个 Chat 独立绑定 Agent、项目和会话；
+切换 Chat 不等于把上下文迁移给另一个厂商。
+
+| Agent | 电脑端准备 | 会话恢复 |
+| --- | --- | --- |
+| **GitHub Copilot CLI** | 安装 CLI 并在本地登录；[原生 SDK 连接说明](bridge/README.md#copilot-background-task-lifecycle) | 上下文与历史 |
+| **Claude Code** | 本地 Claude 认证 + [Claude ACP 适配器](bridge/README.md#claude-code) | 上下文与历史 |
+| **Kimi Code** | 新版 JavaScript Kimi Code + `kimi login`；[安装说明](bridge/README.md#kimi-code-and-qwen-code) | 上下文与历史 |
+| **Qwen Code** | 安装 Qwen Code 并完成本地认证；[安装说明](bridge/README.md#kimi-code-and-qwen-code) | 上下文与历史 |
+| **DeepSeek Harness** | 固定预览版本并配置本地 Provider；[安装说明](bridge/README.md#deepseek-harness) | 仅上下文，不回放旧消息 |
+
+上表描述**当前源码的支持情况**。下载的 APK 以发布说明为准；
+新接入的 Agent 可能需要同时更新 App 和 Bridge。版本及运行环境要求见各安装说明。
+列表显示“已安装”不代表模型认证已经成功。
+
+模型、推理和权限选项以 Agent 实际提供的能力为准。
+AgentLink 会保留已保存消息，但无法导入 DeepSeek Harness 外部会话的旧历史。
+手机与电脑共用 AgentLink 的终端界面，不是镜像另一个独立运行的厂商 CLI。
 
 ## 需要时再看
 

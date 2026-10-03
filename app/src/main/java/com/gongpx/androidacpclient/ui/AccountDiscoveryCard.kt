@@ -17,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,6 +32,7 @@ import com.gongpx.androidacpclient.data.model.Machine
 import com.gongpx.androidacpclient.data.tunnel.DeviceLogin
 import com.gongpx.androidacpclient.data.tunnel.DiscoveredTunnel
 import com.gongpx.androidacpclient.data.tunnel.LoginProvider
+import com.gongpx.androidacpclient.data.tunnel.LoginAccount
 import com.gongpx.androidacpclient.data.tunnel.TunnelAccounts
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -49,7 +51,7 @@ internal fun AccountDiscoveryCard(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
-    var signedIn by remember { mutableStateOf(accounts.accounts()) }
+    var signedIn by remember(accounts) { mutableStateOf<List<LoginAccount>?>(null) }
     var discovered by remember { mutableStateOf<List<DiscoveredTunnel>?>(null) }
     var selectedProvider by remember { mutableStateOf<LoginProvider?>(null) }
     var login by remember { mutableStateOf<DeviceLogin?>(null) }
@@ -75,6 +77,8 @@ internal fun AccountDiscoveryCard(
                 status = text("The service returned invalid account or tunnel metadata.", "服务返回了无效的账号或隧道信息。")
             } catch (_: IllegalStateException) {
                 status = text("Could not save account state securely.", "无法安全保存账号状态。")
+            } catch (_: SecurityException) {
+                status = text("Could not access saved account credentials securely.", "无法安全读取已保存的账号凭据。")
             } finally {
                 login = null
                 pairingCode = null
@@ -87,6 +91,10 @@ internal fun AccountDiscoveryCard(
         onDispose { job?.cancel() }
     }
 
+    LaunchedEffect(accounts) {
+        runOperation { signedIn = accounts.accounts() }
+    }
+
     ElevatedCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(text("Sign in & find computers", "登录并发现电脑"), style = MaterialTheme.typography.titleLarge)
@@ -94,8 +102,14 @@ internal fun AccountDiscoveryCard(
                 "Use the same account as the computer's Dev Tunnel. First pairing still requires confirmation on the computer.",
                 "使用与电脑 Dev Tunnel 相同的账号。首次配对仍需在电脑上确认。",
             ))
-            for (provider in LoginProvider.entries) {
-                val account = signedIn.firstOrNull { it.provider == provider }
+            if (signedIn == null) {
+                if (busy) Text(text("Loading saved accounts…", "正在读取已保存的账号…"))
+                else OutlinedButton(onClick = { runOperation { signedIn = accounts.accounts() } }) {
+                    Text(text("Retry loading accounts", "重试读取账号"))
+                }
+            }
+            if (signedIn != null) for (provider in LoginProvider.entries) {
+                val account = signedIn.orEmpty().firstOrNull { it.provider == provider }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (account == null) {
                         Button(enabled = !busy && (provider != LoginProvider.Microsoft || accounts.microsoftEnabled), onClick = {

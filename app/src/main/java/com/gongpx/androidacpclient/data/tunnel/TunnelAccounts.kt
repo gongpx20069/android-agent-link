@@ -28,8 +28,12 @@ class TunnelAccounts internal constructor(
 
     val microsoftEnabled: Boolean get() = microsoftClientId.isNotBlank()
 
-    fun accounts(): List<LoginAccount> = synchronized(lock) {
-        LoginProvider.entries.mapNotNull { store.load(it)?.account }
+    // Token refresh/discovery share this lock. Even a metadata read can wait
+    // for network I/O, so callers must never acquire it on the UI thread.
+    suspend fun accounts(): List<LoginAccount> = withContext(Dispatchers.IO) {
+        synchronized(lock) {
+            LoginProvider.entries.mapNotNull { store.load(it)?.account }
+        }
     }
 
     fun signOut(provider: LoginProvider) = synchronized(lock) {

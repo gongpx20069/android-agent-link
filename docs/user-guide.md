@@ -134,6 +134,14 @@ session offered by that agent. When an agent requests approval, respond from
 **Approvals**. Available sessions, models, and permission behavior depend on the
 installed agent CLI.
 
+On Android, choose a session or configuration value, then press **Resume** or
+**Apply** to confirm. Drafts stay with their chat when you change chats or tabs.
+Use **Details** in the chat header for the full project path and connection
+diagnostics. **Stop current task** requests cancellation without sending your
+draft; already executed actions cannot be undone and queued messages remain.
+Wait for the agent's confirmed status rather than assuming the stop request
+means it has finished.
+
 Prompts added while the agent is busy appear above the input as compact previews
 (up to 80 characters/two lines). Tap a preview to expand or collapse the original
 message. Long expanded text and the queue scroll within a bounded area; only the
@@ -229,6 +237,7 @@ UTF-16 code units are refused without replacing the clipboard.
 | `/new copilot-cli C:\Repos\my-project` | Create a shared chat for an installed agent. |
 | `/approvals` | Review pending approval details. |
 | `/approve <approval-id>`, `/deny <approval-id>` | Decide a request; approval requires reviewing it first. |
+| `/choose <approval-id> <option-id>`, `/answer <approval-id> <JSON>` | Select the exact permission or answer a question after reviewing `/approvals`. |
 | `/pair y`, `/pair n` | Confirm or deny phone pairing after checking the displayed code. |
 | `/qrcode`, `/pairing` | Show the pairing QR/link on demand; Esc returns to chat. |
 | `/send <text>` | Send text that starts with `/`, rather than treating it as a terminal command. |
@@ -265,10 +274,20 @@ Use a real terminal, not a redirected pipe; the standard-library server is requi
 | Agent | AgentLink integration |
 | --- | --- |
 | GitHub Copilot CLI | Native SDK transport by default, with session-level background completion. Requires an installed, signed-in CLI; see the [bridge guide](../bridge/README.md#copilot-background-task-lifecycle) for compatibility. |
-| Claude Code | Available when `claude` is installed; requires a version or setup that actually supports `claude --acp`. |
+| Claude Code | Uses `claude-agent-acp` 0.81.2, Node.js 22+, and local Claude authentication. See [setup](../bridge/README.md#claude-code). |
+| Kimi Code | Native `kimi acp`, current JavaScript Kimi Code 2.1.1 baseline; local `kimi login`. Supports session recovery and question forms. |
+| Qwen Code | Native `qwen --acp`, 0.24.6 baseline; local authentication. Supports session recovery and Qwen question forms. |
+| DeepSeek Harness | Native `dsh --profile acp`, pinned 0.1.7-rc.2 preview. Supports context resume, but not historical-message replay. [Setup](../bridge/README.md#deepseek-harness). |
 
-Other agents are not currently integrated. An installed CLI appearing in the
-machine's agent list does not by itself prove ACP compatibility.
+See [Kimi/Qwen setup and limitations](../bridge/README.md#kimi-code-and-qwen-code).
+Use Android `/config` or terminal `/config <id>` for advertised mode/reasoning
+settings. Other agents are not currently integrated. An installed CLI appearing
+in the machine's agent list does not by itself prove successful authentication.
+
+For DeepSeek Harness, saved AgentLink messages are retained; imported external
+sessions do not include their old messages. Session changes show a context
+boundary. If bridge events have expired, a missing-history warning remains
+visible; continuing does not mean those messages were recovered.
 
 ## Staying connected
 

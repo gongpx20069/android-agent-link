@@ -7,6 +7,7 @@ import com.gongpx.androidacpclient.data.model.BridgeApprovalRequest
 import com.gongpx.androidacpclient.data.model.Chat
 import com.gongpx.androidacpclient.data.model.reconcileApprovalSnapshot
 import com.gongpx.androidacpclient.data.model.resolve
+import com.gongpx.androidacpclient.data.model.toApprovalOptions
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -46,6 +47,9 @@ internal object ApprovalJsonCodec {
                 expiresAtMillis = item.optionalLong("expiresAtMillis"),
                 decidedAtMillis = item.optionalLong("decidedAtMillis"),
                 error = item.optString("error").ifBlank { null },
+                options = item.optJSONArray("options").toApprovalOptions(),
+                interaction = item.optString("interaction", "permission"),
+                requestedSchema = item.optJSONObject("requestedSchema")?.toString(),
             )
         }
     }
@@ -60,6 +64,11 @@ internal object ApprovalJsonCodec {
                 .put("createdAtMillis", item.createdAtMillis).put("details", item.details)
                 .put("expiresAtMillis", item.expiresAtMillis).put("decidedAtMillis", item.decidedAtMillis)
                 .put("error", item.error)
+                .put("interaction", item.interaction)
+                .put("requestedSchema", item.requestedSchema?.let { JSONObject(it) })
+                .put("options", JSONArray(item.options.map {
+                    JSONObject().put("optionId", it.optionId).put("name", it.name).put("kind", it.kind)
+                }))
         }).toString()
 
     private fun JSONObject.optionalLong(key: String): Long? =

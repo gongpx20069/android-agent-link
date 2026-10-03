@@ -109,6 +109,8 @@ class ApprovalRecoveryTests(unittest.TestCase):
     def test_permission_without_approval_callback_never_defaults_to_allow(self) -> None:
         session = MagicMock()
         session.permission_callback = None
+        session._connection.closed.is_set.return_value = False
+        session._connection.cancelled.is_set.return_value = False
         AcpAgentSession._handle_permission_request(session, PERMISSION)
         self.assertEqual(session._write_json.call_args.args[0]["result"]["outcome"], {"outcome": "selected", "optionId": "no"})
         session.permission_callback = lambda _: "reject-once"

@@ -273,6 +273,9 @@ class ChatMonitorService : Service() {
                 onSession = { sessionId, resumable, _ ->
                     apply { persist(state, state.chat.bindAcpSession(sessionId, resumable)) }
                 },
+                onHistoryCapability = { supported ->
+                    apply { persist(state, state.chat.copy(historyReplaySupported = supported)) }
+                },
                 onEventGeneration = { generation, reset ->
                     apply {
                         if (reset || (state.chat.bridgeEventGeneration != null && state.chat.bridgeEventGeneration != generation)) {

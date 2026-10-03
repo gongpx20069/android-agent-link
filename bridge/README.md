@@ -4,6 +4,137 @@ Connect your computer's coding agents to the AgentLink Android app.
 For the shortest setup path, start with the [AgentLink quick start](../README.md).
 This guide covers additional installation and connection options.
 
+## Claude Code
+
+Install the validated ACP adapter explicitly (Node.js 22 or newer):
+
+```powershell
+npm install -g @agentclientprotocol/claude-agent-acp@0.81.2
+claude-agent-acp --version
+claude-agent-acp --cli auth login
+```
+
+The adapter includes the Claude Agent SDK runtime. Existing compatible local
+Claude authentication can be reused; credentials never move to Android. Restart
+the bridge deliberately after existing tasks finish, then choose Claude Code.
+The bridge never installs the adapter, logs in, migrates sessions, or enables
+permission bypass automatically. It rejects other adapter versions pending
+compatibility validation; do not install an unpinned `latest`/preview build.
+Windows npm shims are resolved to Node + the package entry point without passing
+workspace paths through a command shell.
+
+Saved sessions are paginated; history replay and context-only resume are chosen
+from negotiated capabilities. A live session is not replaced just to read history.
+Messages and interactions keep flowing after a prompt RPC returns. Announced
+background shell/workflow tasks keep the operation active until they finish;
+cancellation also requests their termination. Long-running servers/monitors can
+therefore keep a prompt busy until cancelled. This is not a guarantee about
+unreported external processes, nor an attachment to an independently running
+Claude terminal. Native subagent-session UI and URL/OAuth forms are not negotiated.
+
+Android displays exact permission options and separate question forms. In the
+terminal, first use `/approvals`, then `/choose <approval-id> <option-id>` or
+`/answer <approval-id> <JSON object>`. `/approve` chooses only an unambiguous
+allow-once option; it cannot answer questions or silently grant persistent access.
+Unsupported forms fail explicitly; use local login for authentication.
+
+The pinned adapter handshake and non-model session listing were checked on Windows.
+Automated tests use deterministic events for background work and approvals.
+Authenticated model turns and physical-phone acceptance remain to be exercised
+with a signed-in Claude account.
+
+## Kimi Code and Qwen Code
+
+Both use native stdio ACP, with no additional adapter. Install the CLI you want
+on the computer, authenticate locally, then restart the bridge after active work
+finishes. The phone's agent selector and terminal `/new` use the same catalog.
+
+| Agent / bridge ID | Published baseline | Runtime | Bridge launch |
+| --- | --- | --- | --- |
+| Kimi Code / `kimi-cli` | `@moonshot-ai/kimi-code@2.1.1` | Node.js 22.19+ | `kimi acp` |
+| Qwen Code / `qwen-code` | `@qwen-code/qwen-code@0.24.6` | Node.js 22+ | `qwen --acp` |
+
+```powershell
+# Install either or both explicitly.
+npm install -g @moonshot-ai/kimi-code@2.1.1
+kimi login
+npm install -g @qwen-code/qwen-code@0.24.6
+qwen
+```
+
+In Qwen's local CLI, complete its authentication setup before using AgentLink.
+Kimi means the current JavaScript Kimi Code distribution, not the archived
+Python `kimi-cli`. Discovery only confirms an executable is on PATH; it does not
+validate login. ACP1 capabilities are negotiated at connection time. These
+baselines are recommended, not an exact-version rejection rule as with Claude.
+Windows npm shims resolve the installed package's declared JavaScript entry point
+without invoking a shell. Missing/broken installations and authentication errors
+are explicit; the bridge never installs packages or grants automatic approval.
+
+Both support paginated session listing, history replay via `session/load`, and
+context-only recovery via `session/resume`. Existing local history is not sent as
+new prompts. Model, mode and thinking/reasoning options appear only when advertised.
+Android's `/config` opens all supported settings; the terminal `/config` lists
+their IDs and `/config <id>` opens a picker (choose, then `y` to apply).
+`/model` and `/allow-all` retain their existing behavior. Grouped model values
+retain their exact provider IDs. A mode can enable automatic execution; review
+the advertised name/description before selecting it.
+
+Kimi uses native form elicitation for questions, including multiple questions and
+multi-select fields. Qwen's `qwenInteractionKind: user_question` extension is
+translated into a separate form, never a generic approval. Each Qwen question has
+a required text answer; its suggested choices/descriptions are displayed. Enter
+an option label, a custom answer, or comma-separated labels for multiple choices.
+Answers return using Qwen's numeric question keys and `answers` response field.
+Cancelling/denying does not submit an answer. Other Qwen permissions preserve
+their exact allow-once / project / user option IDs.
+
+These integrations keep receiving events between RPCs, but do not negotiate
+Qwen's private daemon/liveness protocol or promise whole-session background-job
+completion beyond standard ACP prompt settlement. `qwen serve`, attaching to an
+independently running vendor terminal, and session migration are not included.
+
+The published executables were exercised on Windows in isolated, unsigned-in
+homes: initialize, empty session listing, explicit authentication-required
+responses, and clean EOF shutdown. Model turns and phone acceptance with real
+accounts still need to be exercised. The regression suite uses subprocess peers
+for prompt streaming, questions/permissions, configuration, cancellation and
+session recovery; it does not contact a model.
+
+## DeepSeek Harness
+
+`deepseek-harness` launches native `dsh --profile acp`. The developer-preview
+baseline is **`@deepseek-ai/dsh@0.1.7-rc.2`**, exercised with Node.js 24.
+Install explicitly on the computer and configure the provider there:
+
+```powershell
+npm install -g @deepseek-ai/dsh@0.1.7-rc.2
+dsh
+```
+
+The bridge checks `dsh --version`; ACP's `agentInfo.version` is not the package
+version. Other preview releases require compatibility validation. Discovery
+only checks installation, not provider credentials. Credentials/configuration
+stay on the computer; ACP `authenticate` success does not verify model access.
+
+Streaming, tool updates, one-shot permissions, cancellation and advertised
+model/reasoning settings use the common ACP transport and `/config` UI.
+Persisted sessions support listing and context resume, **not transcript replay**.
+Android labels these sessions, retains its saved messages, and marks a boundary
+when switching contexts. External sessions' old messages cannot be imported.
+After a journal gap, the app retains saved messages and shows an explicit
+missing-history warning after an authoritative idle snapshot; it never fabricates
+an empty successful history or reads DSH's private database.
+
+DSH does not expose ACP question forms, modes, commands or client filesystem/
+terminal capabilities in this baseline. AgentLink does not add these surfaces or
+attach to an independently running DSH terminal. Prompt settlement follows DSH's
+ACP response, not an inferred guarantee about unreported external processes.
+
+The actual Windows package completed isolated initialize/list/new-session,
+EOF shutdown and restart/resume without a model request. Authenticated model
+turns and phone acceptance remain separate from those protocol checks.
+
 ## Copilot background-task lifecycle
 
 Copilot uses the native SDK transport by default. Upgrade the bridge dependencies
@@ -21,7 +152,7 @@ confirmed permission UI if you want that mode.
 
 For older CLI compatibility, explicitly use `--copilot-transport acp`. That mode
 retains ACP's limitations for post-prompt background work; there is no automatic
-fallback. Claude Code continues using ACP.
+fallback. Claude Code, Kimi Code, Qwen Code and DeepSeek Harness continue using ACP.
 
 Do not restart an active bridge to apply this change: wait for work to finish or
 explicitly cancel it first. Updating files does not hot-patch an existing process

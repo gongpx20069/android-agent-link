@@ -15,6 +15,9 @@ fun BridgeApprovalRequest.toApproval(chat: Chat, nowMillis: Long): Approval = Ap
     details = details,
     createdAtMillis = createdAtMillis.takeIf { it > 0 } ?: nowMillis,
     expiresAtMillis = expiresAtMillis,
+    options = options,
+    interaction = interaction,
+    requestedSchema = requestedSchema,
 )
 
 fun Approval.resolve(status: String, decidedAt: Long): Approval {

@@ -23,6 +23,7 @@ internal object ChatJsonCodec {
             .put("createdAtMillis", createdAtMillis)
             .put("acpSessionId", acpSessionId)
             .put("acpSessionResumable", acpSessionResumable)
+            .put("historyReplaySupported", historyReplaySupported)
             .put("messages", JSONArray(messages.map { it.toJson() }))
             .put("queuedPrompts", JSONArray(queuedPrompts.map { it.toJson() }))
             .put("lastBridgeEventId", lastBridgeEventId)
@@ -54,6 +55,7 @@ internal object ChatJsonCodec {
             createdAtMillis = getLong("createdAtMillis"),
             acpSessionId = sessionId,
             acpSessionResumable = optBoolean("acpSessionResumable", sessionId != null),
+            historyReplaySupported = optBoolean("historyReplaySupported", true),
             messages = optJSONArray("messages").orEmpty().mapJsonObjects { it.toChatMessage() },
             queuedPrompts = optJSONArray("queuedPrompts").orEmpty().mapJsonObjects { it.toQueuedPrompt() },
             lastBridgeEventId = optInt("lastBridgeEventId", 0),

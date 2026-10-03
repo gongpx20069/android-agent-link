@@ -52,6 +52,7 @@ fun mergeSharedChat(machine: Machine, remote: JSONObject, local: Chat?): Chat {
         agentId = agentId, agentName = machine.agents.firstOrNull { it.id == agentId }?.displayName ?: agentId,
         acpSessionId = remote.opt("sessionId") as? String,
         acpSessionResumable = remote.optBoolean("sessionResumable"),
+        historyReplaySupported = remote.optBoolean("historyReplaySupported", base.historyReplaySupported),
         agentStatus = remote.optString("status", base.agentStatus),
     )
 }

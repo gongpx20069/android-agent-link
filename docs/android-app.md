@@ -2,6 +2,48 @@
 
 This document describes the current AgentLink Android client implementation.
 
+## Native coding agents
+
+Kimi Code and Qwen Code appear through the bridge's existing dynamic agent catalog.
+No vendor-specific navigation is added. `/config` lists advertised select/boolean
+settings, including modes and thinking/reasoning; grouped model options are
+flattened for display without changing their value IDs. Command availability
+refreshes on configuration updates as well as command updates. The existing
+configuration request/acknowledgement and busy guards remain authoritative.
+Kimi question forms support native choices/multi-select; Qwen questions show
+suggested options and accept required text answers, including custom answers.
+
+DeepSeek Harness uses the same agent picker, permissions and `/config` UI.
+Negotiated `historyReplaySupported` persists in encrypted chat metadata and
+passes through shared-catalog and foreground/background connection updates.
+No-replay session pickers are labelled explicitly. Context resume retains local
+messages, timeline and disk-pagination cursor, clears only provider history-page
+pointers, and marks a context boundary instead of replacing the transcript.
+Journal-gap recovery waits for authoritative idle, persists a missing-history
+warning and acknowledges the checkpoint without requesting unsupported replay.
+
+## Interaction review
+
+New-chat computer/agent choices survive catalog refreshes. Session-list state is
+scoped to computer, agent and mode; late responses cannot populate another
+selection. Both session pickers scroll through every returned entry rather than
+silently limiting the list. Recovery and configuration dialogs require explicit
+confirmation, and dismissed dialogs cannot be reopened by an older response.
+Session/configuration changes use current chat state, preserving newly arrived
+messages; conflicting operations block sending while retaining the draft.
+
+Saveable state holders retain per-chat drafts across chat/tab navigation. A
+rejected local submission does not clear the composer. The chat header keeps
+identity/status visible and collapses full paths and connection diagnostics into
+Details. Machines presents QR/link pairing before optional account discovery.
+
+Stop current task targets its exact operation ID through `task.cancel`, never
+a `/stop` prompt. The UI keeps the task busy until authoritative completion,
+does not discard queued messages, and explicitly reports uncertain/error results.
+Compose regressions cover selection refresh, stale list responses, full session
+access, confirmation, draft retention, and stopping without submitting a draft.
+Physical-device layout/frame-time acceptance remains separate.
+
 ## App identity
 
 The app and README use the mint/lavender interlocking-ring mark introduced on
@@ -228,8 +270,19 @@ keeps a prompt busy through background execution until root session idle, while
 continuously projecting messages, child-agent activity, tools and approvals onto
 the existing WebSocket contract. No Android protocol change is required.
 `--copilot-transport acp` is an explicit compatibility option without the native
-background-completion guarantee. Claude Code still requires a `claude` CLI that
-exposes an ACP server command.
+background-completion guarantee. Claude Code uses the separately installed,
+version-checked Claude ACP adapter; detection does not claim authentication.
+Unavailable agents cannot start chats or session-list requests. Claude model and
+permission-mode pickers appear only when the session advertises those options.
+
+Permission cards preserve exact option IDs and label persistent permission.
+Questions have a separate bounded, scrollable form for text, numbers, booleans
+and enumerated single/multi-select fields. The bridge validates answers before
+resolving the shared pending request. Reconnect and encrypted storage preserve
+the original schema/options; an answer is not an execution approval. Mochi
+continues to hand off to this trusted UI, never deciding approvals itself.
+Background-task updates have a collapsible count/list in the chat header and
+individual activity cards. The existing busy state and prompt queue are retained.
 
 ## Pairing UX
 
@@ -422,6 +475,15 @@ The app maps these bridge/ACP events:
 - `bridge.done` -> legacy one-shot request terminator during the transition to persistent chat channels.
 
 ## Persistent Chat Channel Design
+
+Opening Machines while a reconnect refreshes Dev Tunnel credentials must not
+block navigation. Account metadata reads are suspending IO operations: they share
+the credential lock with token refresh and discovery, whose network calls can
+take tens of seconds. The account card renders a loading state first, retains
+explicit read errors with a retry action, and does not mistake an uncompleted
+read for a signed-out account. Login/logout refreshes use the same IO-only API.
+Leaving the card cancels its UI operation without waiting on the network worker.
+Credential locking, token rotation and sign-out semantics are unchanged.
 
 The Android connection model is one `ChatConnection` per active chat. The connection opens when a chat detail screen is active or a background operation needs to keep the chat live.
 

@@ -14,6 +14,10 @@
   &nbsp; · &nbsp; <a href="https://gongpx20069.github.io/hi-mochi/agentlink/">Website</a>
 </p>
 
+**GitHub Copilot CLI · Claude Code · Kimi Code · Qwen Code · DeepSeek Harness**
+
+One Android app for multiple agents, projects and computers.
+
 ## Quick start
 
 ### 1. Download the app
@@ -23,8 +27,8 @@ on your **Android 8.0+** phone. Releases are currently marked **Pre-release**.
 
 ### 2. Start the server on your computer
 
-You need **Python 3.11+, Git, and an installed, signed-in coding agent**:
-GitHub Copilot CLI, or Claude Code with a setup that supports `claude --acp`.
+You need **Python 3.11+, Git, and at least one installed, configured coding agent**.
+You do not need to install every agent; see [supported agents](#supported-coding-agents).
 Your code and agent processes stay on this computer.
 
 Run once in **Windows PowerShell**:
@@ -75,6 +79,29 @@ This is AgentLink's terminal UI, not a second independent agent-CLI conversation
 | Approve agent requests from your phone | Resume sessions offered by your agent |
 | Long-press on Android to copy selected text | Drag-select and scroll in the terminal |
 | Keep queued messages compact; tap to expand | Read older history without loading it all at once |
+
+## Supported coding agents
+
+Choose an agent when creating a chat. Each chat keeps its own agent, project and
+session; switching chats does not move conversation context between providers.
+
+| Agent | Computer setup | Session recovery |
+| --- | --- | --- |
+| **GitHub Copilot CLI** | Installed CLI with local sign-in; [native SDK connection](bridge/README.md#copilot-background-task-lifecycle) | Context and history |
+| **Claude Code** | Local Claude authentication + [Claude ACP adapter](bridge/README.md#claude-code) | Context and history |
+| **Kimi Code** | Current JavaScript Kimi Code + `kimi login`; [setup](bridge/README.md#kimi-code-and-qwen-code) | Context and history |
+| **Qwen Code** | Qwen Code with local authentication; [setup](bridge/README.md#kimi-code-and-qwen-code) | Context and history |
+| **DeepSeek Harness** | Pinned developer preview with local provider configuration; [setup](bridge/README.md#deepseek-harness) | Context only; no old-message replay |
+
+This table describes **current source support**. Downloaded APKs follow their
+release notes; new integrations may need a newer app **and** bridge. Version and
+runtime requirements are in the setup links. An installed CLI is not proof of
+successful model authentication.
+
+Model, reasoning and permission choices depend on what each agent exposes.
+AgentLink retains saved messages, but cannot retrieve DeepSeek Harness's external
+session history. Phone and computer use AgentLink's shared terminal, not a mirror
+of a separately running vendor CLI.
 
 ## More when you need it
 

@@ -66,6 +66,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.Composable
@@ -82,6 +83,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.produceState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -94,9 +97,11 @@ import com.gongpx.androidacpclient.data.model.detailTextPage
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -112,6 +117,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
@@ -126,7 +132,10 @@ import com.gongpx.androidacpclient.data.model.Agent
 import com.gongpx.androidacpclient.data.model.AgentPlanEntryPriority
 import com.gongpx.androidacpclient.data.model.AgentPlanEntryStatus
 import com.gongpx.androidacpclient.data.model.AgentSessionInfo
+import com.gongpx.androidacpclient.data.model.withResumedContext
+import com.gongpx.androidacpclient.data.model.withUnrecoverableHistoryGap
 import com.gongpx.androidacpclient.data.model.Approval
+import com.gongpx.androidacpclient.data.model.ApprovalAnswer
 import com.gongpx.androidacpclient.data.model.ApprovalStatus
 import com.gongpx.androidacpclient.data.model.AvailableCommand
 import com.gongpx.androidacpclient.data.model.BridgeApprovalRequest
@@ -222,7 +231,7 @@ private fun approvalStatusLabel(status: ApprovalStatus, strings: AppStrings): St
 
 private fun agentStatusLabel(status: String, strings: AppStrings): String = when (status) {
     "busy" -> strings.reliability("Agent: running", "Agent：运行中")
-    "waitingApproval" -> strings.reliability("Agent: waiting for approval", "Agent：等待审批")
+    "waitingApproval" -> strings.reliability("Agent: waiting for your response", "Agent：等待你确认或回答")
     "idle" -> strings.reliability("Agent: idle", "Agent：空闲")
     "failed" -> strings.reliability("Agent: failed", "Agent：失败")
     else -> strings.reliability("Agent: awaiting status confirmation", "Agent：等待状态确认")
@@ -634,13 +643,16 @@ fun AgentLinkApp(
     val authenticationRequiredChatIds = remember { mutableStateListOf<String>() }
     val loadingHistoryChatIds = remember { mutableStateListOf<String>() }
     val sessionLoadingChatIds = remember { mutableStateListOf<String>() }
+    val configuringChatIds = remember { mutableStateListOf<String>() }
+    val cancellingChatIds = remember { mutableStateListOf<String>() }
+    val chatUiStateHolder = rememberSaveableStateHolder()
     val snackbar = remember { SnackbarHostState() }
     var storesLoaded by remember { mutableStateOf(false) }
     var storageError by remember { mutableStateOf<String?>(null) }
     var historyDialogChat by remember { mutableStateOf<Chat?>(null) }
     var notificationsEnabled by remember { mutableStateOf(chatNotificationManager.notificationsEnabled()) }
-    var selectedTab by remember { mutableStateOf(AppTab.Chats) }
-    var selectedChatId by remember { mutableStateOf<String?>(null) }
+    var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chats) }
+    var selectedChatId by rememberSaveable { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     var scannerOpen by remember { mutableStateOf(false) }
     var resumeDialogState by remember { mutableStateOf<ResumeDialogState?>(null) }
@@ -706,6 +718,7 @@ fun AgentLinkApp(
                 workspacePath = path,
                 workspaceName = path.trimEnd('\\', '/').substringAfterLast('\\').substringAfterLast('/'),
                 bridgeResyncRequired = false,
+                historyReplaySupported = session.historyReplaySupported,
             )
         }
         if (!prepend && page.eventGeneration != null) {
@@ -879,6 +892,7 @@ fun AgentLinkApp(
             createdAtMillis = System.currentTimeMillis(),
             acpSessionId = session.sessionId,
             acpSessionResumable = true,
+            historyReplaySupported = session.historyReplaySupported,
             messages = listOf(
                 ChatMessage(
                     role = MessageRole.System,
@@ -893,6 +907,18 @@ fun AgentLinkApp(
         selectedTab = AppTab.Chats
         launchBridge {
             try {
+                if (!session.historyReplaySupported) {
+                    bridgeClient.resumeSessionContext(machine, chat.id, agent.id, path, session.sessionId).result
+                        .onSuccess { result ->
+                            val current = chats.firstOrNull { it.id == chat.id } ?: return@onSuccess
+                            upsertChat(current.withResumedContext(result, strings.contextOnlyNotice()))
+                        }
+                        .onFailure {
+                            val current = chats.firstOrNull { it.id == chat.id } ?: return@onFailure
+                            upsertChat(current.withMessage(MessageRole.System, strings.openSessionFailed(it.message)))
+                        }
+                    return@launchBridge
+                }
                 bridgeClient.loadRecentSessionPage(
                     machine,
                     chat.id,
@@ -943,7 +969,7 @@ fun AgentLinkApp(
 
     }
 
-    fun updateApproval(approval: Approval, status: ApprovalStatus) {
+    fun updateApproval(approval: Approval, answer: ApprovalAnswer) {
         if (approval.status != ApprovalStatus.Pending) return
         val machine = machines.firstOrNull { it.id == approval.machineId }
         if (machine == null) {
@@ -954,7 +980,10 @@ fun AgentLinkApp(
         approvalStore.upsert(approval.copy(status = ApprovalStatus.Submitting, error = null))
         refreshApprovals()
         launchBridge {
-            bridgeClient.sendApprovalDecisionValidated(machine, approval.id, if (status == ApprovalStatus.Approved) "approved" else "denied")
+            bridgeClient.sendApprovalDecisionValidated(
+                machine, approval.id, if (answer.status == ApprovalStatus.Approved) "approved" else "denied",
+                answer.optionId, answer.content,
+            )
                 .onSuccess { result ->
                     approvalStore.resolve(approval.id, result.status, System.currentTimeMillis())
                     chatNotificationManager.cancelApproval(approval.id)
@@ -1155,7 +1184,7 @@ fun AgentLinkApp(
 
     fun deleteApproval(approval: Approval) {
         if (approval.status.isActionable()) {
-            updateApproval(approval, ApprovalStatus.Denied)
+            updateApproval(approval, ApprovalAnswer(ApprovalStatus.Denied))
             return
         }
         approvalStore.remove(approval.id)
@@ -1168,26 +1197,37 @@ fun AgentLinkApp(
             upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
             return
         }
-        resumeDialogState = ResumeDialogState(chat = chat, sessions = null, error = null)
+        val request = ResumeDialogState(chat = chat, sessions = null, error = null)
+        resumeDialogState = request
         launchBridge {
             bridgeClient.listSessions(machine, chat.agentId, chat.workspacePath)
                 .onSuccess { sessions ->
-                    resumeDialogState = ResumeDialogState(chat = chat, sessions = sessions, error = null)
+                    if (resumeDialogState === request) resumeDialogState = request.copy(sessions = sessions)
                 }
                 .onFailure {
-                    resumeDialogState = ResumeDialogState(chat = chat, sessions = emptyList(), error = it.message)
+                    if (resumeDialogState === request) resumeDialogState = request.copy(sessions = emptyList(), error = it.message)
                 }
         }
     }
 
     fun loadResumeSession(chat: Chat, session: AgentSessionInfo) {
+        val current = chats.firstOrNull { it.id == chat.id } ?: return
+        if (current.id in busyChatIds || current.id in sessionLoadingChatIds || current.id in configuringChatIds ||
+            current.queuedPrompts.isNotEmpty() || current.acpSessionId != chat.acpSessionId) {
+            upsertChat(current.withMessage(MessageRole.System, strings.reliability(
+                "The session changed or is busy. Wait for it to finish, then reopen session recovery.",
+                "会话已变化或正在运行，请等待结束后重新打开会话恢复。",
+            )))
+            resumeDialogState = null
+            return
+        }
         val machine = machines.firstOrNull { it.id == chat.machineId }
         if (machine == null) {
             upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
             return
         }
         resumeDialogState = null
-        val loading = chat.withActivity(
+        val loading = current.withActivity(
             title = strings.resumeSession,
             summary = session.title ?: session.sessionId,
             details = "sessionId=${session.sessionId}\ncwd=${session.cwd.orEmpty()}\nupdatedAt=${session.updatedAt.orEmpty()}",
@@ -1199,6 +1239,18 @@ fun AgentLinkApp(
         launchBridge {
             try {
             val path = session.cwd?.ifBlank { null } ?: chat.workspacePath
+            if (!session.historyReplaySupported) {
+                bridgeClient.resumeSessionContext(machine, chat.id, chat.agentId, path, session.sessionId).result
+                    .onSuccess { result ->
+                        val current = chats.firstOrNull { it.id == chat.id } ?: return@onSuccess
+                        upsertChat(current.withResumedContext(result, strings.contextOnlyNotice(current.acpSessionId != result.sessionId)))
+                    }
+                    .onFailure {
+                        val current = chats.firstOrNull { it.id == chat.id } ?: return@onFailure
+                        upsertChat(current.withMessage(MessageRole.System, strings.resumeFailed(it.message)))
+                    }
+                return@launchBridge
+            }
             bridgeClient.loadRecentSessionPage(
                 machine,
                 chat.id,
@@ -1219,7 +1271,8 @@ fun AgentLinkApp(
     }
 
     fun showModelDialog(chat: Chat, option: ConfigOption) {
-        modelDialogState = ModelDialogState(chat = chat, option = option)
+        val request = ModelDialogState(chat = chat, option = option)
+        modelDialogState = request
         val machine = machines.firstOrNull { it.id == chat.machineId } ?: return
         launchBridge {
             bridgeClient.refreshConfigOptions(
@@ -1238,9 +1291,9 @@ fun AgentLinkApp(
                     val refreshedOption = when {
                         option.id.normalizedKey() == "model" -> refreshed.modelConfigOption()
                         option.id.normalizedKey() in ALLOW_ALL_KEYS -> refreshed.allowAllConfigOption()
-                        else -> null
+                        else -> refreshed.configOptions().firstOrNull { it.id == option.id }
                     }
-                    if (refreshedOption != null) {
+                    if (refreshedOption != null && modelDialogState === request) {
                         modelDialogState = ModelDialogState(chat = refreshed, option = refreshedOption)
                     }
                 }
@@ -1252,19 +1305,31 @@ fun AgentLinkApp(
     }
 
     fun setModel(chat: Chat, option: ConfigOption, value: ConfigOptionValue) {
+        val current = chats.firstOrNull { it.id == chat.id } ?: return
+        modelDialogState = null
+        if (current.id in busyChatIds || current.id in sessionLoadingChatIds || current.id in configuringChatIds ||
+            current.acpSessionId != chat.acpSessionId) {
+            upsertChat(current.withMessage(MessageRole.System, strings.reliability(
+                "The session changed or is busy. Reopen agent settings after it becomes idle.",
+                "会话已变化或正在运行，请空闲后重新打开 Agent 设置。",
+            )))
+            return
+        }
         val machine = machines.firstOrNull { it.id == chat.machineId }
         if (machine == null) {
             upsertChat(chat.withMessage(MessageRole.System, strings.machineUnavailable))
             return
         }
         modelDialogState = null
-        val changing = chat.withActivity(
-            title = strings.setModel,
+        val changing = current.withActivity(
+            title = option.name,
             summary = value.name,
             details = "configId=${option.id}\nvalue=${value.value}\n${value.description.orEmpty()}",
         )
         upsertChat(changing)
+        configuringChatIds.add(chat.id)
         launchBridge {
+            try {
             bridgeClient.setConfigOption(
                 machine,
                 chat.id,
@@ -1284,6 +1349,50 @@ fun AgentLinkApp(
                     val current = chats.firstOrNull { current -> current.id == chat.id } ?: return@onFailure
                     upsertChat(current.withMessage(MessageRole.System, strings.modelChangeFailed(it.message)))
                 }
+            } finally {
+                configuringChatIds.remove(chat.id)
+            }
+        }
+    }
+
+    fun cancelTask(chat: Chat) {
+        if (chat.id in cancellingChatIds) return
+        val operationId = activePromptOperationIds[chat.id]
+        val machine = machines.firstOrNull { it.id == chat.machineId }
+        val current = chats.firstOrNull { it.id == chat.id } ?: return
+        if (operationId == null || machine == null || chat.id !in statusSynchronizedChatIds) {
+            upsertChat(current.withMessage(MessageRole.System, strings.reliability(
+                "Reconnect to confirm the active task before stopping it.",
+                "请重连并确认当前任务后再停止。",
+            )))
+            return
+        }
+        cancellingChatIds.add(chat.id)
+        launchBridge {
+            try {
+                val result = bridgeClient.cancelTask(machine, chat.id, operationId)
+                val latest = chats.firstOrNull { it.id == chat.id } ?: return@launchBridge
+                val notice = when (result) {
+                    "cancellation_requested" -> strings.reliability(
+                        "Stop requested. Waiting for the agent; completed actions cannot be undone. Queued messages are unchanged.",
+                        "已请求停止，正在等待 Agent 确认。已执行的操作无法撤销；排队消息保持不变。",
+                    )
+                    "cancelled" -> strings.reliability("The selected queued task was cancelled.", "所选排队任务已取消。")
+                    else -> strings.reliability("This task is no longer cancellable. Check the latest status.", "此任务已无法取消，请查看最新状态。")
+                }
+                upsertChat(latest.withMessage(MessageRole.System, notice))
+            } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                chats.firstOrNull { it.id == chat.id }?.let { upsertChat(it.withMessage(MessageRole.System, strings.reliability(
+                    "Stop request timed out. Its outcome is unknown; check the task status.",
+                    "停止请求超时，结果尚未确认，请查看任务状态。",
+                ))) }
+            } catch (error: java.io.IOException) {
+                chats.firstOrNull { it.id == chat.id }?.let { upsertChat(it.withMessage(MessageRole.System, strings.reliability(
+                    "Could not confirm stopping the task: ", "无法确认停止任务：",
+                ) + error.message)) }
+            } finally {
+                cancellingChatIds.remove(chat.id)
+            }
         }
     }
 
@@ -1374,6 +1483,16 @@ fun AgentLinkApp(
         upsertChat(current.copy(bridgeResyncRequired = true))
         // Loading ACP history can replace the process; wait for an authoritative idle snapshot.
         if (chatId !in statusSynchronizedChatIds || current.agentStatus in setOf("busy", "waitingApproval")) return
+        if (!current.historyReplaySupported) {
+            if (current.agentStatus != "idle") return
+            val warning = strings.reliability(
+                "Some bridge events have expired and this agent cannot replay them. Saved messages are retained, but history has a gap. You can continue from the restored context.",
+                "部分 Bridge 事件已过期，当前 Agent 无法回放。已保存消息保留，但历史存在缺失；可以从已恢复的上下文继续对话。",
+            )
+            upsertChat(current.withUnrecoverableHistoryGap(pendingResyncEventIds.remove(chatId), warning))
+            resyncSnapshotChatIds.remove(chatId)
+            return
+        }
         val currentMachine = machines.firstOrNull { it.id == current.machineId }
         val sessionId = current.acpSessionId
         if (currentMachine == null || sessionId == null) {
@@ -1556,6 +1675,14 @@ fun AgentLinkApp(
             onSession = { sessionId, resumable, _ ->
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
                 handleSessionBinding(chat.id, sessionId, resumable)
+            },
+            onHistoryCapability = { supported ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                val current = chats.firstOrNull { it.id == chat.id } ?: return@openChatConnection
+                val updated = current.copy(historyReplaySupported = supported)
+                upsertChat(if (!supported && current.historyReplaySupported) {
+                    updated.withMessage(MessageRole.System, strings.contextOnlyNotice())
+                } else updated)
             },
             onEventId = {
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
@@ -1770,7 +1897,8 @@ fun AgentLinkApp(
                         val agents = remoteAgents?.let { rows ->
                             List(rows.length()) { index ->
                                 val item = rows.getJSONObject(index)
-                                Agent(item.getString("id"), item.getString("displayName"), item.optString("status", "unknown"))
+                                Agent(item.getString("id"), item.getString("displayName"), item.optString("status", "unknown"),
+                                    item.optString("statusMessage").ifBlank { null })
                             }
                         } ?: machine.agents
                         if (machine.workspaces != workspaces || machine.agents != agents) {
@@ -1991,7 +2119,7 @@ fun AgentLinkApp(
                     },
                 ) { padding ->
                     when (selectedTab) {
-                        AppTab.Chats -> ChatsScreen(
+                        AppTab.Chats -> chatUiStateHolder.SaveableStateProvider("chats") { ChatsScreen(
                             padding = padding,
                             machines = machines,
                             chats = chats,
@@ -2001,6 +2129,7 @@ fun AgentLinkApp(
                             approvals = approvals,
                             connectedChatIds = statusSynchronizedChatIds.toSet(),
                             loadingHistoryChatIds = loadingHistoryChatIds.toSet(),
+                            sessionOperationChatIds = (sessionLoadingChatIds + configuringChatIds).toSet(),
                             onApprovalDecision = ::updateApproval,
                             onLoadOlder = ::loadOlderHistory,
                             onRetryConnection = { chat ->
@@ -2017,6 +2146,8 @@ fun AgentLinkApp(
                             onBackToList = { selectedChatId = null },
                             onResume = ::showResumeDialog,
                             onModel = ::showModelDialog,
+                            cancellingChatIds = cancellingChatIds.toSet(),
+                            onCancelTask = ::cancelTask,
                             onRemoveQueuedPrompt = { chat, operationId ->
                                 val current = chats.firstOrNull { it.id == chat.id } ?: chat
                                 if (current.queuedPrompts.none { it.operationId == operationId }) return@ChatsScreen
@@ -2031,11 +2162,15 @@ fun AgentLinkApp(
                                 }
                             },
                             onSendMessage = { chat, message ->
-                                if (storageError != null) return@ChatsScreen
-                                val current = chats.firstOrNull { it.id == chat.id } ?: return@ChatsScreen
+                                if (storageError != null) return@ChatsScreen false
+                                val current = chats.firstOrNull { it.id == chat.id } ?: return@ChatsScreen false
+                                if (current.bridgeResyncRequired || chat.id in sessionLoadingChatIds || chat.id in configuringChatIds) {
+                                    return@ChatsScreen false
+                                }
                                 val machine = machines.firstOrNull { it.id == current.machineId }
                                 if (machine == null) {
                                     upsertChat(current.withMessage(MessageRole.System, strings.machineUnavailable))
+                                    false
                                 } else {
                                     val operationId = "op_" + UUID.randomUUID()
                                     pendingLocalPromptStartEventIds[chat.id] = current.lastBridgeEventId
@@ -2052,6 +2187,7 @@ fun AgentLinkApp(
                                         ),
                                     )
                                     upsertChat(updated)
+                                    if (storageError != null) return@ChatsScreen false
                                     latestAgentPreviews.remove(chat.id)
                                     val activeConnection = chatConnections[chat.id]
                                     val sent = activeConnection?.sendPrompt(
@@ -2070,9 +2206,10 @@ fun AgentLinkApp(
                                         }
                                         ensureChatConnection(updated)
                                     }
+                                    true
                                 }
                             },
-                        )
+                        ) }
                         AppTab.Approvals -> ApprovalsScreen(padding, approvals, ::updateApproval, ::deleteApproval)
                         AppTab.Machines -> MachinesScreen(
                             padding = padding,
@@ -2159,6 +2296,7 @@ fun AgentLinkApp(
                 state = state,
                 onDismiss = { resumeDialogState = null },
                 onSelect = { loadResumeSession(state.chat, it) },
+                onRetry = { showResumeDialog(state.chat) },
             )
         }
         modelDialogState?.let { state ->
@@ -2327,7 +2465,7 @@ private fun SettingsScreen(
 }
 
 @Composable
-private fun ChatsScreen(
+internal fun ChatsScreen(
     padding: PaddingValues,
     machines: List<Machine>,
     chats: List<Chat>,
@@ -2337,7 +2475,8 @@ private fun ChatsScreen(
     approvals: List<Approval>,
     connectedChatIds: Set<String>,
     loadingHistoryChatIds: Set<String>,
-    onApprovalDecision: (Approval, ApprovalStatus) -> Unit,
+    sessionOperationChatIds: Set<String>,
+    onApprovalDecision: (Approval, ApprovalAnswer) -> Unit,
     onLoadOlder: (Chat) -> Unit,
     onRetryConnection: (Chat) -> Unit,
     onCreateChat: (Machine, String, Agent) -> Unit,
@@ -2349,13 +2488,27 @@ private fun ChatsScreen(
     onResume: (Chat) -> Unit,
     onModel: (Chat, ConfigOption) -> Unit,
     onRemoveQueuedPrompt: (Chat, String) -> Unit,
-    onSendMessage: (Chat, String) -> Unit,
+    onSendMessage: (Chat, String) -> Boolean,
+    cancellingChatIds: Set<String> = emptySet(),
+    onCancelTask: (Chat) -> Unit = {},
 ) {
     val strings = LocalAppStrings.current
+    val detailStateHolder = rememberSaveableStateHolder()
     val selectedChat = chats.firstOrNull { it.id == selectedChatId }
+    var choosingConfiguration by remember(selectedChat?.id) { mutableStateOf(false) }
     if (selectedChat != null) {
+        if (choosingConfiguration) {
+            ConfigurationOptionsDialog(
+                options = selectedChat.configOptions(),
+                onDismiss = { choosingConfiguration = false },
+                onSelect = { option ->
+                    choosingConfiguration = false
+                    onModel(selectedChat, option)
+                },
+            )
+        }
         val selectedMachineState = if (selectedChat.id in connectedChatIds) ConnectionState.Online else ConnectionState.Offline
-        ChatDetailScreen(
+        detailStateHolder.SaveableStateProvider(selectedChat.id) { ChatDetailScreen(
             padding = padding,
             chat = selectedChat,
             isBusy = selectedChat.id in busyChatIds,
@@ -2363,6 +2516,9 @@ private fun ChatsScreen(
             approvals = approvals.filter { it.chatId == selectedChat.id && it.status.isActionable() },
             onApprovalDecision = onApprovalDecision,
             loadingHistory = selectedChat.id in loadingHistoryChatIds,
+            sessionOperationInProgress = selectedChat.id in sessionOperationChatIds,
+            cancelling = selectedChat.id in cancellingChatIds,
+            onCancelTask = { onCancelTask(selectedChat) },
             onLoadOlder = { onLoadOlder(selectedChat) },
             onRetryConnection = { onRetryConnection(selectedChat) },
             onBack = onBackToList,
@@ -2373,25 +2529,28 @@ private fun ChatsScreen(
                     BUILT_IN_MODEL_COMMAND.name -> onModel(selectedChat, selectedChat.modelConfigOption() ?: fallbackModelConfigOption())
                     BUILT_IN_RESUME_COMMAND.name -> onResume(selectedChat)
                     BUILT_IN_ALLOW_ALL_COMMAND.name -> onModel(selectedChat, selectedChat.allowAllConfigOption() ?: fallbackAllowAllConfigOption(strings))
+                    BUILT_IN_CONFIG_COMMAND.name -> choosingConfiguration = true
                     else -> onSendMessage(selectedChat, "/" + command.name)
                 }
             },
-        )
+        ) }
         return
     }
 
-    var selectedMachineId by remember(machines) { mutableStateOf(machines.firstOrNull()?.id.orEmpty()) }
+    detailStateHolder.SaveableStateProvider("new-chat") {
+    var selectedMachineId by rememberSaveable { mutableStateOf(machines.firstOrNull()?.id.orEmpty()) }
     val selectedMachine = machines.firstOrNull { it.id == selectedMachineId } ?: machines.firstOrNull()
-    var workspacePath by remember { mutableStateOf("") }
-    var selectedAgentId by remember(selectedMachine) { mutableStateOf(selectedMachine?.agents?.firstOrNull()?.id.orEmpty()) }
-    val selectedAgent = selectedMachine?.agents?.firstOrNull { it.id == selectedAgentId } ?: selectedMachine?.agents?.firstOrNull()
-    var newChatMode by remember { mutableStateOf(NewChatMode.NewSession) }
-    var existingSessions by remember { mutableStateOf<List<AgentSessionInfo>?>(null) }
-    var existingSessionsLoading by remember { mutableStateOf(false) }
-    var existingSessionsError by remember { mutableStateOf<String?>(null) }
-    var selectedExistingSessionId by remember { mutableStateOf<String?>(null) }
+    var workspacePath by rememberSaveable(selectedMachine?.id) { mutableStateOf("") }
+    var selectedAgentId by rememberSaveable(selectedMachine?.id) { mutableStateOf(selectedMachine?.agents?.firstOrNull { it.status == "available" }?.id.orEmpty()) }
+    val selectedAgent = selectedMachine?.agents?.firstOrNull { it.id == selectedAgentId }
+        ?: selectedMachine?.agents?.firstOrNull { it.status == "available" } ?: selectedMachine?.agents?.firstOrNull()
+    var newChatMode by rememberSaveable { mutableStateOf(NewChatMode.NewSession) }
+    var existingSessions by remember(selectedMachine?.id, selectedAgent?.id, newChatMode) { mutableStateOf<List<AgentSessionInfo>?>(null) }
+    var existingSessionsLoading by remember(selectedMachine?.id, selectedAgent?.id, newChatMode) { mutableStateOf(false) }
+    var existingSessionsError by remember(selectedMachine?.id, selectedAgent?.id, newChatMode) { mutableStateOf<String?>(null) }
+    var selectedExistingSessionId by remember(selectedMachine?.id, selectedAgent?.id, newChatMode) { mutableStateOf<String?>(null) }
 
-    var newChatExpanded by remember { mutableStateOf(chats.isEmpty()) }
+    var newChatExpanded by rememberSaveable { mutableStateOf(chats.isEmpty()) }
     LaunchedEffect(chats.isEmpty()) {
         if (chats.isEmpty()) {
             newChatExpanded = true
@@ -2403,7 +2562,7 @@ private fun ChatsScreen(
             ElevatedCard(colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                 Column(Modifier.padding(18.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column {
+                        Column(Modifier.weight(1f)) {
                             Text(strings.newChat, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                             Text(
                                 if (newChatExpanded) strings.chooseMachineWorkspaceAgent else strings.tapCreateAgentSession,
@@ -2426,7 +2585,7 @@ private fun ChatsScreen(
                             },
                         )
                         Spacer(Modifier.height(10.dp))
-                        Text("Machine", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(strings.reliability("Computer", "电脑"), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             machines.forEach { machine ->
                                 SelectableOptionCard(
@@ -2435,7 +2594,7 @@ private fun ChatsScreen(
                                     subtitle = "${machine.connectionState.name} · ${machine.endpoint}",
                                     onClick = {
                                         selectedMachineId = machine.id
-                                        selectedAgentId = machine.agents.firstOrNull()?.id.orEmpty()
+                                        selectedAgentId = machine.agents.firstOrNull { it.status == "available" }?.id.orEmpty()
                                     },
                                 )
                             }
@@ -2450,7 +2609,11 @@ private fun ChatsScreen(
                                 SelectableOptionCard(
                                     selected = selectedAgent?.id == agent.id,
                                     title = agent.displayName,
-                                    subtitle = agent.status,
+                                    subtitle = when (agent.status) {
+                                        "available" -> strings.reliability("Installed · credentials stay on computer", "已安装 · 认证保留在电脑上")
+                                        "missing_adapter" -> strings.reliability("Needs ACP adapter", "需要安装 ACP 适配器")
+                                        else -> strings.reliability("Not installed", "未安装")
+                                    } + (agent.statusMessage?.takeIf { selectedAgent?.id == agent.id }?.let { "\n$it" } ?: ""),
                                     onClick = { selectedAgentId = agent.id },
                                 )
                             }
@@ -2469,7 +2632,7 @@ private fun ChatsScreen(
                             )
                             Spacer(Modifier.height(10.dp))
                             Button(
-                                enabled = selectedMachine != null && selectedAgent != null,
+                                enabled = selectedMachine != null && selectedAgent?.status == "available",
                                 onClick = { onCreateChat(selectedMachine!!, workspacePath, selectedAgent!!) },
                             ) {
                                 Text(strings.createChat)
@@ -2477,7 +2640,7 @@ private fun ChatsScreen(
                         } else {
                             Spacer(Modifier.height(10.dp))
                             Button(
-                                enabled = selectedMachine != null && selectedAgent != null && !existingSessionsLoading,
+                                enabled = selectedMachine != null && selectedAgent?.status == "available" && !existingSessionsLoading,
                                 onClick = {
                                     existingSessionsLoading = true
                                     existingSessionsError = null
@@ -2506,14 +2669,15 @@ private fun ChatsScreen(
                             existingSessions?.let { sessions ->
                                 Spacer(Modifier.height(8.dp))
                                 if (sessions.isEmpty()) {
-                                    EmptyStateCard(strings.noResumableSessions, strings.noResumableSessionsForAgent)
+                                    if (existingSessionsError == null) EmptyStateCard(strings.noResumableSessions, strings.noResumableSessionsForAgent)
                                 } else {
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        sessions.take(12).forEach { session ->
+                                    LazyColumn(Modifier.heightIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        items(sessions, key = { it.sessionId }) { session ->
                                             SelectableOptionCard(
                                                 selected = selectedExistingSessionId == session.sessionId,
                                                 title = session.title ?: session.sessionId,
-                                                subtitle = listOfNotNull(session.cwd, session.updatedAt).joinToString(" · "),
+                                                subtitle = listOfNotNull(session.cwd, session.updatedAt,
+                                                    if (!session.historyReplaySupported) strings.reliability("Context only; no history replay", "仅恢复上下文，不回放历史") else null).joinToString(" · "),
                                                 onClick = { selectedExistingSessionId = session.sessionId },
                                             )
                                         }
@@ -2521,7 +2685,7 @@ private fun ChatsScreen(
                                     Spacer(Modifier.height(10.dp))
                                     val selectedSession = sessions.firstOrNull { it.sessionId == selectedExistingSessionId }
                                     Button(
-                                        enabled = selectedMachine != null && selectedAgent != null && selectedSession != null,
+                                        enabled = selectedMachine != null && selectedAgent?.status == "available" && selectedSession != null,
                                         onClick = { onOpenExistingSession(selectedMachine!!, selectedAgent!!, selectedSession!!) },
                                     ) {
                                         Text(strings.openSession)
@@ -2544,7 +2708,10 @@ private fun ChatsScreen(
         } else {
             items(chats, key = { it.id }) { chat ->
                 val machineState = if (chat.id in connectedChatIds) ConnectionState.Online else ConnectionState.Offline
-                SwipeToDeleteItem(onDelete = { onDeleteChat(chat) }) {
+                SwipeToDeleteItem(onDelete = {
+                    detailStateHolder.removeState(chat.id)
+                    onDeleteChat(chat)
+                }) {
                     ElevatedCard(onClick = { onOpenChat(chat) }, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
                             Row(
@@ -2568,7 +2735,8 @@ private fun ChatsScreen(
                                     )
                                 }
                             }
-                            Text("${chat.machineName} · ${chat.workspacePath}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${chat.agentName} · ${chat.machineName}", maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(chat.workspacePath, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                             Text(agentStatusLabel(chat.agentStatus, strings), color = MaterialTheme.colorScheme.primary)
                             val pending = approvals.count { it.chatId == chat.id && it.status.isActionable() }
                             if (pending > 0) Text(strings.pending(pending), color = MaterialTheme.colorScheme.error)
@@ -2582,23 +2750,29 @@ private fun ChatsScreen(
     }
 }
 
+}
+
 @Composable
-private fun ChatDetailScreen(
+internal fun ChatDetailScreen(
     padding: PaddingValues,
     chat: Chat,
     isBusy: Boolean,
     connectionState: ConnectionState,
     approvals: List<Approval>,
-    onApprovalDecision: (Approval, ApprovalStatus) -> Unit,
+    onApprovalDecision: (Approval, ApprovalAnswer) -> Unit,
     loadingHistory: Boolean,
+    sessionOperationInProgress: Boolean,
     onLoadOlder: () -> Unit,
     onRetryConnection: () -> Unit,
     onBack: () -> Unit,
-    onSendMessage: (String) -> Unit,
+    onSendMessage: (String) -> Boolean,
     onRemoveQueuedPrompt: (String) -> Unit,
     onCommand: (AvailableCommand) -> Unit,
+    cancelling: Boolean = false,
+    onCancelTask: () -> Unit = {},
 ) {
     val strings = LocalAppStrings.current
+    var showConnectionDetails by rememberSaveable(chat.id) { mutableStateOf(false) }
     val visibleMessages = remember(chat.messages) {
         chat.messages.filter { it.kind != ChatMessageKind.CommandUpdate && it.kind != ChatMessageKind.ConfigUpdate }
     }
@@ -2607,13 +2781,15 @@ private fun ChatDetailScreen(
     var previousFirstMessage by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     BackHandler(onBack = onBack)
     val commandUpdate = chat.messages.lastOrNull { it.kind == ChatMessageKind.CommandUpdate }
-    val commands = remember(commandUpdate) {
+    val configUpdate = chat.messages.lastOrNull { it.kind == ChatMessageKind.ConfigUpdate }
+    val commands = remember(commandUpdate, configUpdate, chat.agentId) {
         val advertisedCommands = chat.availableCommands()
         buildList {
-            add(BUILT_IN_MODEL_COMMAND)
+            if (chat.agentId == "copilot-cli" || chat.modelConfigOption() != null) add(BUILT_IN_MODEL_COMMAND)
             add(BUILT_IN_RESUME_COMMAND)
-            add(BUILT_IN_ALLOW_ALL_COMMAND)
-            val builtIns = setOf(BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name, BUILT_IN_ALLOW_ALL_COMMAND.name)
+            if (chat.agentId == "copilot-cli" || chat.allowAllConfigOption() != null) add(BUILT_IN_ALLOW_ALL_COMMAND)
+            if (chat.configOptions().isNotEmpty()) add(BUILT_IN_CONFIG_COMMAND)
+            val builtIns = setOf(BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name, BUILT_IN_ALLOW_ALL_COMMAND.name, BUILT_IN_CONFIG_COMMAND.name)
             addAll(advertisedCommands.filterNot { it.name in builtIns }.sortedBy { COMMON_COMMAND_ORDER.indexOf(it.name).let { index -> if (index < 0) Int.MAX_VALUE else index } })
         }
     }
@@ -2650,14 +2826,42 @@ private fun ChatDetailScreen(
                 OutlinedButton(onClick = onBack) {
                     Text(strings.back)
                 }
-                Column {
+                Column(Modifier.weight(1f)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         ChatStatusDot(isBusy = isBusy, connectionState = connectionState)
-                        Text(chat.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(chat.title, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     }
-                    Text("${chat.machineName} · ${chat.workspacePath}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(chat.agentName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                    Text(agentStatusLabel(chat.agentStatus, strings), style = MaterialTheme.typography.labelMedium)
+                    Text("${chat.agentName} · ${chat.machineName} · ${chat.workspaceName}", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(agentStatusLabel(chat.agentStatus, strings), modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+                        TextButton(onClick = { showConnectionDetails = !showConnectionDetails }) {
+                            Text(strings.reliability(if (showConnectionDetails) "Hide details" else "Details",
+                                if (showConnectionDetails) "收起详情" else "详情"))
+                        }
+                    }
+                    val background = chat.messages.lastOrNull { it.activityId == "agentlink_background_tasks" }
+                    val tasks = remember(background?.details) {
+                        background?.details?.let { JSONObject(it).optJSONArray("tasks") }
+                    }
+                    var showTasks by remember(chat.id) { mutableStateOf(false) }
+                    if (tasks != null && tasks.length() > 0) {
+                        TextButton(onClick = { showTasks = !showTasks }) {
+                            Text(strings.reliability("Background tasks: ${tasks.length()}", "后台任务：${tasks.length()}"))
+                        }
+                        if (showTasks) Column(Modifier.heightIn(max = 120.dp).verticalScroll(rememberScrollState())) {
+                            repeat(tasks.length()) { index ->
+                                val task = tasks.getJSONObject(index)
+                                Text("${task.optString("name")} · ${task.optString("state")}", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                    if (showConnectionDetails) {
+                    SelectionContainer {
+                        Text(chat.workspacePath, modifier = Modifier.heightIn(max = 100.dp).verticalScroll(rememberScrollState()),
+                            style = MaterialTheme.typography.bodySmall)
+                    }
                     Text(
                         if (connectionState == ConnectionState.Online) strings.reliability("Connection: synchronized", "连接：已同步")
                         else strings.reliability("Connection: disconnected / reconnecting", "连接：已断开 / 正在重连"),
@@ -2669,6 +2873,7 @@ private fun ChatDetailScreen(
                                 java.text.DateFormat.getTimeInstance().format(java.util.Date(chat.lastSyncAtMillis)),
                             style = MaterialTheme.typography.labelSmall,
                         )
+                    }
                     }
                 }
             }
@@ -2747,17 +2952,30 @@ private fun ChatDetailScreen(
                                     BUILT_IN_MODEL_COMMAND.name,
                                     BUILT_IN_RESUME_COMMAND.name,
                                     BUILT_IN_ALLOW_ALL_COMMAND.name,
+                                    BUILT_IN_CONFIG_COMMAND.name,
                                 )
                                 CommandPill(
                                     command = command,
-                                    enabled = !isBusy || !sessionOperation,
+                                    enabled = !sessionOperation || (!isBusy && !sessionOperationInProgress &&
+                                        !chat.bridgeResyncRequired && connectionState == ConnectionState.Online && approvals.isEmpty()),
                                     onClick = { onCommand(command) },
                                 )
                             }
                         }
                         Spacer(Modifier.height(5.dp))
                     }
-                    ChatPromptComposer(chat.id, isBusy, onSendMessage)
+                    if (sessionOperationInProgress) Text(
+                        strings.reliability("Updating session…", "正在更新会话…"),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    ChatPromptComposer(chat.id, isBusy, onSendMessage, enabled = !sessionOperationInProgress && !chat.bridgeResyncRequired)
+                    if (isBusy) TextButton(
+                        enabled = !cancelling && connectionState == ConnectionState.Online,
+                        onClick = onCancelTask,
+                    ) {
+                        Text(strings.reliability(if (cancelling) "Requesting stop…" else "Stop current task",
+                            if (cancelling) "正在请求停止…" else "停止当前任务"))
+                    }
                 }
             }
         }
@@ -2835,17 +3053,16 @@ internal fun QueuedPromptList(chatId: String, prompts: List<QueuedPrompt>, onRem
 }
 
 @Composable
-private fun ChatPromptComposer(chatId: String, isBusy: Boolean, onSend: (String) -> Unit) {
+internal fun ChatPromptComposer(chatId: String, isBusy: Boolean, onSend: (String) -> Boolean, enabled: Boolean = true) {
     val strings = LocalAppStrings.current
     var message by androidx.compose.runtime.saveable.rememberSaveable(chatId) { mutableStateOf("") }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         CompactPromptField(message, { message = it }, modifier = Modifier.weight(1f))
         Button(
-            enabled = message.isNotBlank(),
+            enabled = enabled && message.isNotBlank(),
             onClick = {
                 val submitted = message
-                message = ""
-                onSend(submitted)
+                if (onSend(submitted)) message = ""
             },
             modifier = Modifier.defaultMinSize(minWidth = 68.dp, minHeight = 42.dp),
         ) { Text(if (isBusy) strings.appendPrompt else strings.send) }
@@ -2873,6 +3090,7 @@ private fun CommandPill(command: AvailableCommand, enabled: Boolean = true, onCl
 private fun ChatStatusDot(isBusy: Boolean, connectionState: ConnectionState) {
     val strings = LocalAppStrings.current
     val (color, label) = when {
+        connectionState != ConnectionState.Online -> Color(0xFF9CA3AF) to strings.chatStatusOffline
         isBusy -> Color(0xFFDC2626) to strings.chatStatusBusy
         connectionState == ConnectionState.Online -> Color(0xFF16A34A) to strings.chatStatusReady
         else -> Color(0xFF9CA3AF) to strings.chatStatusOffline
@@ -2938,30 +3156,52 @@ private fun CompactPromptField(value: String, onValueChange: (String) -> Unit, m
 }
 
 @Composable
-private fun ModelDialog(state: ModelDialogState, onDismiss: () -> Unit, onSelect: (ConfigOptionValue) -> Unit) {
+internal fun ConfigurationOptionsDialog(options: List<ConfigOption>, onDismiss: () -> Unit, onSelect: (ConfigOption) -> Unit) {
     val strings = LocalAppStrings.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(strings.reliability("Agent settings", "Agent 设置")) },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (options.isEmpty()) item { Text(strings.configOptionsNotLoaded) }
+                items(options, key = { it.id }) { option ->
+                    OutlinedButton(onClick = { onSelect(option) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("${option.name}: ${option.currentValue.orEmpty()}")
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(strings.close) } },
+    )
+}
+
+@Composable
+internal fun ModelDialog(state: ModelDialogState, onDismiss: () -> Unit, onSelect: (ConfigOptionValue) -> Unit) {
+    val strings = LocalAppStrings.current
+    var selectedValue by remember(state.chat.id, state.option.id) { mutableStateOf(state.option.currentValue) }
+    val choice = state.option.options.firstOrNull { it.value == selectedValue }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(state.option.name) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (state.option.options.isEmpty()) {
                     Text(strings.configOptionsNotLoaded, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
                     state.option.options.forEach { option ->
-                        val selected = option.value == state.option.currentValue
+                        val selected = option.value == selectedValue
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onSelect(option) },
+                                .selectable(selected = selected, role = Role.RadioButton) { selectedValue = option.value },
                             shape = RoundedCornerShape(14.dp),
                             color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f),
                             border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
                         ) {
                             Column(Modifier.padding(12.dp)) {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    Text(option.name, fontWeight = FontWeight.SemiBold)
-                                    if (selected) Text(strings.current, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                    Text(option.name, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                                    if (option.value == state.option.currentValue) Text(strings.current, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                                 }
                                 option.description?.let {
                                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2970,24 +3210,33 @@ private fun ModelDialog(state: ModelDialogState, onDismiss: () -> Unit, onSelect
                         }
                     }
                 }
+                if (state.option.id.normalizedKey() in ALLOW_ALL_KEYS || state.option.category == "mode") {
+                    Text(strings.reliability(
+                        "Review permission changes carefully. Automatic approval can let tools run without asking again.",
+                        "请核对权限变化。自动批准可能允许工具执行而不再询问。",
+                    ), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
             }
         },
         confirmButton = {
-            OutlinedButton(onClick = onDismiss) {
-                Text(strings.close)
+            Button(enabled = choice != null && choice.value != state.option.currentValue, onClick = { choice?.let(onSelect) }) {
+                Text(strings.reliability("Apply", "应用"))
             }
         },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(strings.close) } },
     )
 }
 
 @Composable
-private fun ResumeDialog(state: ResumeDialogState, onDismiss: () -> Unit, onSelect: (AgentSessionInfo) -> Unit) {
+internal fun ResumeDialog(state: ResumeDialogState, onDismiss: () -> Unit, onSelect: (AgentSessionInfo) -> Unit, onRetry: () -> Unit) {
     val strings = LocalAppStrings.current
+    var selectedId by remember(state.chat.id) { mutableStateOf<String?>(null) }
+    val selected = state.sessions?.firstOrNull { it.sessionId == selectedId }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(strings.resumeSession) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 state.error?.let {
                     Text(strings.couldNotLoadSessions(it), color = MaterialTheme.colorScheme.error)
                 }
@@ -2997,30 +3246,46 @@ private fun ResumeDialog(state: ResumeDialogState, onDismiss: () -> Unit, onSele
                         if (sessions.isEmpty() && state.error == null) {
                             Text(strings.noResumableSessionsWorkspace)
                         }
-                        sessions.take(8).forEach { session ->
+                        LazyColumn(Modifier.heightIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(sessions, key = { it.sessionId }) { session ->
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { onSelect(session) },
+                                    .selectable(selected = selectedId == session.sessionId, role = Role.RadioButton) { selectedId = session.sessionId },
                                 shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f),
+                                color = if (selectedId == session.sessionId) MaterialTheme.colorScheme.primaryContainer
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.70f),
                             ) {
                                 Column(Modifier.padding(12.dp)) {
                                     Text(session.title ?: session.sessionId, fontWeight = FontWeight.SemiBold)
                                     session.cwd?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                                     session.updatedAt?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                                    if (!session.historyReplaySupported) Text(
+                                        strings.reliability("Context only; no history replay", "仅恢复上下文，不回放历史"),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
                                 }
+                            }
                             }
                         }
                     }
                 }
+                if (selected != null) Text(if (!selected.historyReplaySupported) strings.contextOnlyNotice(
+                    selected.sessionId != state.chat.acpSessionId,
+                ) else strings.reliability(
+                    "This switches the chat to the selected session and displays its recent history.",
+                    "将此聊天切换到所选会话，并显示该会话的近期历史。",
+                ), style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = {
-            OutlinedButton(onClick = onDismiss) {
-                Text(strings.close)
+            if (state.error != null) {
+                TextButton(onClick = onRetry) { Text(strings.reliability("Retry", "重试")) }
+            } else Button(enabled = selected != null, onClick = { selected?.let(onSelect) }) {
+                Text(strings.reliability("Resume", "恢复"))
             }
         },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(strings.close) } },
     )
 }
 
@@ -3500,7 +3765,7 @@ private fun AgentPlanItem(item: ChatMessage) {
 private fun ApprovalsScreen(
     padding: PaddingValues,
     approvals: List<Approval>,
-    onDecision: (Approval, ApprovalStatus) -> Unit,
+    onDecision: (Approval, ApprovalAnswer) -> Unit,
     onDeleteApproval: (Approval) -> Unit,
 ) {
     val strings = LocalAppStrings.current
@@ -3525,7 +3790,7 @@ private fun ApprovalsScreen(
 }
 
 @Composable
-private fun ApprovalCard(approval: Approval, onDecision: (Approval, ApprovalStatus) -> Unit) {
+internal fun ApprovalCard(approval: Approval, onDecision: (Approval, ApprovalAnswer) -> Unit) {
     val strings = LocalAppStrings.current
     var now by remember(approval.id) { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(approval.id, approval.status) {
@@ -3535,6 +3800,8 @@ private fun ApprovalCard(approval: Approval, onDecision: (Approval, ApprovalStat
         }
     }
     val expired = approval.expiresAtMillis?.let { now >= it } == true
+    val enabled = approval.status == ApprovalStatus.Pending && !expired
+    val question = approval.interaction == "question"
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(approval.summary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -3542,11 +3809,21 @@ private fun ApprovalCard(approval: Approval, onDecision: (Approval, ApprovalStat
             Text(approval.chatTitle, fontWeight = FontWeight.SemiBold)
             Text("${approval.machineName} · ${approval.workspacePath}", style = MaterialTheme.typography.bodySmall)
             Text(strings.reliability("Action: ", "操作：") + approval.action)
-            Text(strings.reliability(
+            if (!question) Text(strings.reliability(
                 "Review the exact target below. Risk is not independently verified.",
                 "请核对下方具体操作目标，风险未经独立验证。",
             ), style = MaterialTheme.typography.bodySmall)
-            approval.details?.let {
+            if (question) {
+                Text(strings.reliability("Your answer is sent to the agent, not an execution approval.", "回答将发送给 Agent，不代表授权执行操作。"))
+                approval.requestedSchema?.let { schema ->
+                    QuestionForm(
+                        schema = schema, enabled = enabled,
+                        submitLabel = strings.reliability("Send answer", "发送回答"),
+                        invalidLabel = strings.reliability("Check required fields and numeric values.", "请检查必填项和数字格式。"),
+                        onSubmit = { onDecision(approval, ApprovalAnswer(ApprovalStatus.Approved, content = it)) },
+                    )
+                } ?: Text(strings.reliability("Question form is unavailable.", "提问表单不可用。"), color = MaterialTheme.colorScheme.error)
+            } else approval.details?.let {
                 androidx.compose.foundation.text.selection.SelectionContainer {
                     Text(
                         it,
@@ -3562,16 +3839,31 @@ private fun ApprovalCard(approval: Approval, onDecision: (Approval, ApprovalStat
                     style = MaterialTheme.typography.labelSmall)
             }
             approval.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(enabled = approval.status == ApprovalStatus.Pending && !expired, onClick = { onDecision(approval, ApprovalStatus.Approved) }) { Text(strings.approve) }
-                OutlinedButton(enabled = approval.status == ApprovalStatus.Pending && !expired, onClick = { onDecision(approval, ApprovalStatus.Denied) }) { Text(strings.deny) }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (!question && approval.options.isNotEmpty()) {
+                    approval.options.filter { it.kind in setOf("allow_once", "allow_always", "reject_once", "reject_always") }.forEach { option ->
+                        OutlinedButton(enabled = enabled, onClick = {
+                            onDecision(approval, ApprovalAnswer(
+                                if (option.kind.startsWith("allow")) ApprovalStatus.Approved else ApprovalStatus.Denied,
+                                optionId = option.optionId,
+                            ))
+                        }) {
+                            Text(option.name + if (option.kind == "allow_always") strings.reliability(" · persistent permission", " · 持续授权") else "")
+                        }
+                    }
+                } else if (!question) {
+                    Button(enabled = enabled, onClick = { onDecision(approval, ApprovalAnswer(ApprovalStatus.Approved)) }) { Text(strings.approve) }
+                }
+                OutlinedButton(enabled = enabled, onClick = { onDecision(approval, ApprovalAnswer(ApprovalStatus.Denied)) }) {
+                    Text(if (question) strings.reliability("Cancel question", "取消回答") else strings.deny)
+                }
             }
         }
     }
 }
 
 @Composable
-private fun MachinesScreen(
+internal fun MachinesScreen(
     padding: PaddingValues,
     machines: List<Machine>,
     statusMessage: String?,
@@ -3585,7 +3877,6 @@ private fun MachinesScreen(
     var pairingLink by remember { mutableStateOf("") }
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item(key = "account-discovery") { accountPanel() }
         item {
             ElevatedCard(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)) {
                 Column(Modifier.padding(18.dp)) {
@@ -3617,6 +3908,7 @@ private fun MachinesScreen(
                 }
             }
         }
+        item(key = "account-discovery") { accountPanel() }
     }
 }
 
@@ -3779,7 +4071,7 @@ private fun SelectableOptionCard(selected: Boolean, title: String, subtitle: Str
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
         shape = RoundedCornerShape(16.dp),
         color = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
         border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
@@ -4068,17 +4360,23 @@ private fun Chat.configOptions(): List<ConfigOption> {
             category = category,
             type = type,
             currentValue = option.optString("currentValue").ifBlank { null },
-            options = List(values.length()) { index ->
-                val item = values.getJSONObject(index)
-                ConfigOptionValue(
-                    value = item.getString("value"),
-                    name = item.optString("name").ifBlank { item.getString("value") },
-                    description = item.optString("description").ifBlank { null },
-                )
-            }
+            options = configOptionValues(values),
         )
     }
 }
+
+internal fun configOptionValues(values: JSONArray): List<ConfigOptionValue> =
+    List(values.length()) { values.getJSONObject(it) }.flatMap { entry ->
+        val group = entry.optJSONArray("options")
+        val items = if (group == null) listOf(entry) else List(group.length()) { group.getJSONObject(it) }
+        items.map { item ->
+            ConfigOptionValue(
+                value = item.getString("value"),
+                name = item.optString("name").ifBlank { item.getString("value") },
+                description = item.optString("description").ifBlank { null },
+            )
+        }
+    }
 
 private fun fallbackModelConfigOption(): ConfigOption {
     return ConfigOption(
@@ -4107,6 +4405,11 @@ private fun fallbackAllowAllConfigOption(strings: AppStrings): ConfigOption {
 
 private val ALLOW_ALL_KEYS = setOf("allowall", "allowallpermissions", "autoapprove", "autoapproval")
 
+private fun AppStrings.contextOnlyNotice(switched: Boolean = false): String =
+    (if (switched) reliability("Context changed; earlier messages belong to the previous session. ", "已切换上下文，此前消息属于原会话。") else "") +
+        reliability("This agent cannot replay history. Saved messages are retained; external session messages are unavailable.",
+            "此 Agent 不支持历史回放。已保存消息保留，但无法获取外部会话的旧消息。")
+
 private fun String.normalizedKey(): String = lowercase().filter { it.isLetterOrDigit() }
 
 private val BUILT_IN_RESUME_COMMAND = AvailableCommand(
@@ -4117,6 +4420,11 @@ private val BUILT_IN_RESUME_COMMAND = AvailableCommand(
 private val BUILT_IN_MODEL_COMMAND = AvailableCommand(
     name = "model",
     description = "Select the model for this ACP session.",
+)
+
+private val BUILT_IN_CONFIG_COMMAND = AvailableCommand(
+    name = "config",
+    description = "Choose an advertised agent setting, such as mode or reasoning.",
 )
 
 private val BUILT_IN_ALLOW_ALL_COMMAND = AvailableCommand(
@@ -4134,13 +4442,13 @@ private val COMMON_COMMAND_ORDER = listOf(
     "context",
 )
 
-private data class ResumeDialogState(
+internal data class ResumeDialogState(
     val chat: Chat,
     val sessions: List<AgentSessionInfo>?,
     val error: String?,
 )
 
-private data class ModelDialogState(
+internal data class ModelDialogState(
     val chat: Chat,
     val option: ConfigOption,
 )

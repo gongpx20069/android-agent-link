@@ -78,6 +78,15 @@ class CopilotAgentSession(AcpAgentSession):
 
     HEARTBEAT_SECONDS = 5
 
+    @property
+    def history_replay_supported(self) -> bool:
+        return True
+
+    def ensure_replaceable(self) -> None:
+        with self._condition:
+            if self._active:
+                raise AcpAgentError("Copilot is still active; this session cannot be changed.")
+
     def __init__(self, workspace_path: str) -> None:
         self._workspace = str(_resolve_workspace(workspace_path))
         self._session_id = ""

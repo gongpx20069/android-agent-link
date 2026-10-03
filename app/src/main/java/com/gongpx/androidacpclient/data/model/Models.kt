@@ -38,6 +38,7 @@ data class Agent(
     val id: String,
     val displayName: String,
     val status: String,
+    val statusMessage: String? = null,
 )
 
 enum class ConnectionState {
@@ -74,6 +75,7 @@ data class Chat(
     val lastNotifiedOperationId: String? = null,
     val timelineId: String = id,
     val localHistoryBefore: Long? = null,
+    val historyReplaySupported: Boolean = true,
 )
 
 data class QueuedPrompt(
@@ -109,6 +111,7 @@ data class AgentSessionInfo(
     val title: String?,
     val cwd: String?,
     val updatedAt: String?,
+    val historyReplaySupported: Boolean = true,
 )
 
 data class BridgeApprovalRequest(
@@ -118,6 +121,17 @@ data class BridgeApprovalRequest(
     val details: String?,
     val createdAtMillis: Long = 0,
     val expiresAtMillis: Long? = null,
+    val options: List<ApprovalOption> = emptyList(),
+    val interaction: String = "permission",
+    val requestedSchema: String? = null,
+)
+
+data class ApprovalOption(val optionId: String, val name: String, val kind: String)
+
+data class ApprovalAnswer(
+    val status: ApprovalStatus,
+    val optionId: String? = null,
+    val content: String? = null,
 )
 
 data class ChatMessage(
@@ -162,6 +176,9 @@ data class Approval(
     val expiresAtMillis: Long? = null,
     val decidedAtMillis: Long? = null,
     val error: String? = null,
+    val options: List<ApprovalOption> = emptyList(),
+    val interaction: String = "permission",
+    val requestedSchema: String? = null,
 )
 
 enum class ApprovalStatus {

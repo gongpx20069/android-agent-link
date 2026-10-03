@@ -4,6 +4,8 @@ import android.os.Handler
 import android.os.Looper
 import com.gongpx.androidacpclient.data.model.Agent
 import com.gongpx.androidacpclient.data.model.AgentSessionInfo
+import com.gongpx.androidacpclient.data.model.ContextResumeResult
+import com.gongpx.androidacpclient.data.model.toContextResumeResult
 import com.gongpx.androidacpclient.data.model.ApprovalDecisionResult
 import com.gongpx.androidacpclient.data.model.BridgeApprovalRequest
 import com.gongpx.androidacpclient.data.model.ChatMessage
@@ -87,6 +89,17 @@ class BridgeClient(
             events.firstOrNull { it.optString("type") == "control.result" && it.optString("requestId") == requestId }
                 ?: throw IOException("Bridge did not return a control result.")
         }
+
+    suspend fun cancelTask(machine: Machine, chatId: String, operationId: String): String {
+        val response = controlRequest(machine, "task.cancel", JSONObject().put("chatId", chatId).put("operationId", operationId))
+        if (response.optString("status") != "ok") throw IOException(response.optString("message", "Task cancellation was rejected."))
+        val data = response.optJSONObject("data")
+        val state = data?.optString("state")
+        if (data?.optString("taskId") != operationId || state !in setOf("cancellation_requested", "cancelled", "already_started")) {
+            throw IOException("Bridge did not confirm cancellation for this task. Check its status before retrying.")
+        }
+        return requireNotNull(state)
+    }
 
     suspend fun redeemPairing(payload: PairingPayload): Result<Machine> = withContext(Dispatchers.IO) {
         runCatching {
@@ -216,6 +229,8 @@ class BridgeClient(
         machine: Machine,
         approvalId: String,
         decision: String,
+        optionId: String? = null,
+        answers: String? = null,
     ): Result<ApprovalDecisionResult> {
         if (decision !in setOf("approved", "denied")) {
             return Result.failure(IllegalArgumentException("Decision must be approved or denied."))
@@ -225,9 +240,11 @@ class BridgeClient(
             JSONObject()
                 .put("type", "approval.decide")
                 .put("approvalId", approvalId)
-                .put("decision", decision),
+                .put("decision", decision)
+                .put("optionId", optionId)
+                .put("answers", answers?.let { JSONObject(it) }),
         ).map { events ->
-            requireBridgeResult(events, "approval.decide.result").toApprovalDecisionResult(approvalId, decision)
+            requireBridgeResult(events, "approval.decide.result").toApprovalDecisionResult(approvalId, decision, optionId)
         }.result
     }
 
@@ -259,6 +276,16 @@ class BridgeClient(
                 ?: throw IOException("Bridge returned an invalid session list.")
             sessions.toSessionInfos()
         }.result
+    }
+
+    suspend fun resumeSessionContext(
+        machine: Machine, chatId: String, agentId: String, workspacePath: String, sessionId: String,
+    ): BridgeSendResult<ContextResumeResult> = sendRawBridgeMessage(
+        machine,
+        JSONObject().put("type", "session.resume").put("chatId", chatId).put("agentId", agentId)
+            .put("workspacePath", workspacePath).put("sessionId", sessionId),
+    ).map { events ->
+        requireBridgeResult(events, "session.resume.result").toContextResumeResult(chatId, sessionId)
     }
 
     suspend fun loadSession(
@@ -431,6 +458,7 @@ class BridgeClient(
         onApprovalResolved: (String, String, Long) -> Unit = { _, _, _ -> },
         chatTitle: String? = null,
         initialMessages: List<ChatMessage> = emptyList(),
+        onHistoryCapability: (Boolean) -> Unit = {},
     ): ChatConnection {
         val requestBuilder = Request.Builder().url(toWebSocketUrl(machine.endpoint, machine.deviceToken))
         machine.connectionHeaders.forEach { (name, value) ->
@@ -628,6 +656,7 @@ class BridgeClient(
                         }
                         "chat.session" -> postApplied {
                             onSession(event.optString("sessionId"), event.optBoolean("resumable"), isReplay)
+                            (event.opt("historyReplaySupported") as? Boolean)?.let(onHistoryCapability)
                         }
                         "chat.resyncRequired" -> postApplied { onResyncRequired() }
                         "approval.requested" -> {
@@ -929,6 +958,15 @@ class BridgeClient(
         val sessionUpdate = optString("sessionUpdate")
         return when (sessionUpdate) {
             "usage_update" -> null
+            "agentlink_background_tasks" -> ChatMessage(
+                role = MessageRole.System,
+                text = "Background tasks: ${optJSONArray("tasks")?.length() ?: 0}",
+                timestampMillis = System.currentTimeMillis(),
+                kind = ChatMessageKind.Activity,
+                title = "Background tasks",
+                details = toString(),
+                activityId = "agentlink_background_tasks",
+            )
             "config_option_update" -> {
                 ChatMessage(
                     role = MessageRole.System,
@@ -1049,6 +1087,7 @@ class BridgeClient(
                 id = item.getString("id"),
                 displayName = item.getString("displayName"),
                 status = item.getString("status"),
+                statusMessage = item.optString("statusMessage").ifBlank { null },
             )
         }
     }
@@ -1072,6 +1111,7 @@ class BridgeClient(
                 title = item.optString("title").ifBlank { null },
                 cwd = item.optString("cwd").ifBlank { null },
                 updatedAt = item.optString("updatedAt").ifBlank { null },
+                historyReplaySupported = item.optBoolean("historyReplaySupported", true),
             )
         }
     }

@@ -94,6 +94,7 @@ class MachineStore(context: Context) {
             .put("id", id)
             .put("displayName", displayName)
             .put("status", status)
+            .put("statusMessage", statusMessage)
     }
 
     private fun JSONObject.toAgent(): Agent {
@@ -101,6 +102,7 @@ class MachineStore(context: Context) {
             id = getString("id"),
             displayName = getString("displayName"),
             status = getString("status"),
+            statusMessage = optString("statusMessage").ifBlank { null },
         )
     }
 

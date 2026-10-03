@@ -1,5 +1,41 @@
 # Product Requirements
 
+## Claude ACP integration
+
+- Launch a separately installed, validated Claude ACP adapter, not `claude --acp`.
+  Distinguish adapter installation from successful provider authentication.
+- Keep existing Android navigation and shared Bridge-owned sessions. Show exact
+  permission options, independent question forms, and collapsible background work.
+- Gate history/session operations on negotiated capabilities and paginate session
+  lists. Never replace a process that owns active work to fetch its transcript.
+- Keep delivering output and interactions between RPCs; announced background tasks
+  delay completion and remain cancellable. Unsupported features and provider
+  failures are explicit, not empty successful history or invented idle.
+- Kimi Code, Qwen Code and DeepSeek Harness also use the shared ACP transport.
+
+## DeepSeek Harness context recovery
+
+- Support the pinned native `dsh --profile acp` preview through common streaming,
+  permissions, cancellation and advertised model/reasoning settings.
+- Label no-replay sessions; restore context without erasing saved messages or
+  representing unavailable external history as an empty recovered transcript.
+- Show a boundary when switching sessions and a persisted warning for missing
+  journal events. Continue after gaps only following an authoritative idle state.
+- Keep provider credentials on the computer. Do not inspect private session
+  databases, negotiate unsupported client surfaces or install agents implicitly.
+
+## Kimi and Qwen native ACP integration
+
+- Support current JavaScript Kimi Code (`kimi acp`) and Qwen Code (`qwen --acp`)
+  in Android, terminal and the shared controller catalog.
+- Keep credentials on the computer. Installation discovery is not authentication.
+- Reuse negotiated list/load/resume, exact permissions and cancellation.
+  Translate Qwen questions into answer forms, never generic allow/deny prompts.
+- Expose advertised mode/thinking/reasoning settings via `/config`, preserve
+  grouped model value IDs, and never enable permission bypass at startup.
+- Do not claim attachment to native vendor terminals or integration with
+  Qwen's separate daemon, nor unreported background-work completion.
+
 ## Mochi shared control
 
 - Expose only three grouped Mochi tools: workspace list/create, chat list/create/read,
@@ -57,6 +93,19 @@ Chat
 - Users should always know where an agent action will run before approving it.
 
 ## MVP Features
+
+### Predictable mobile interaction
+
+- Preserve selected computer/agent during background refresh and scope asynchronous
+  lists to the selection that requested them.
+- Keep every returned session reachable; confirm context switches and configuration
+  changes before applying them, and never reopen dismissed dialogs on late replies.
+- Preserve drafts across chats/tabs and unsuccessful submissions. Block sending
+  during context changes rather than silently targeting a different session.
+- Keep identity and task status prominent; make verbose connection diagnostics
+  expandable and present QR pairing before optional account discovery.
+- Offer explicit cancellation of the current task without sending the draft,
+  clearing unrelated queued messages or claiming that a cancellation request is completion.
 
 ### Optional computer terminal
 

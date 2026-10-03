@@ -64,8 +64,17 @@ fun JSONObject.toBridgeApprovalRequest(): BridgeApprovalRequest? {
         details = jsonDetails("details"),
         createdAtMillis = longOrNull("createdAt") ?: 0,
         expiresAtMillis = longOrNull("expiresAt"),
+        options = optJSONArray("options").toApprovalOptions(),
+        interaction = stringOrNull("interaction") ?: "permission",
+        requestedSchema = optJSONObject("requestedSchema")?.toString(),
     )
 }
+
+fun JSONArray?.toApprovalOptions(): List<ApprovalOption> =
+    if (this == null) emptyList() else List(length()) { index ->
+        val item = getJSONObject(index)
+        ApprovalOption(item.getString("optionId"), item.getString("name"), item.getString("kind"))
+    }
 
 fun JSONObject.toApprovalSnapshot(): List<BridgeApprovalRequest> {
     val approvals = optJSONArray("approvals")
@@ -88,12 +97,13 @@ fun requireBridgeResult(events: List<JSONObject>, resultType: String): JSONObjec
     return result
 }
 
-fun JSONObject.toApprovalDecisionResult(approvalId: String, decision: String): ApprovalDecisionResult {
+fun JSONObject.toApprovalDecisionResult(approvalId: String, decision: String, optionId: String? = null): ApprovalDecisionResult {
     if (hasBridgeError() || stringOrNull("approvalId") != approvalId || opt("resolved") != true) {
         throw IOException("The bridge did not confirm this approval decision. Refresh approvals and retry.")
     }
     val status = stringOrNull("status")
-    if (decision !in setOf("approved", "denied") || status != decision) {
+    if (decision !in setOf("approved", "denied") || status != decision ||
+        (optionId != null && stringOrNull("optionId") != optionId)) {
         throw IOException("This approval is no longer available or the decision was not applied. Refresh approvals.")
     }
     return ApprovalDecisionResult(

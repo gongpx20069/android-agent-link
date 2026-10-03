@@ -33,6 +33,12 @@ token store. Protect the disk and backups. Bounded history/truncation and interr
 restart states must remain visible; they are not evidence that an external action
 never ran. No automatic write retries are permitted after uncertain acceptance.
 
+DeepSeek Harness uses a fixed native ACP launch profile with no permission-bypass
+flags. Provider credentials remain local and one-shot approvals retain exact
+offered option IDs. Context resume checks chat scope, busy state and session
+ownership; it neither resends old prompts nor reads DSH's private storage to
+reconstruct history. Missing-history notices must remain visible after recovery.
+
 Task receipts contain only an exact task identity, source, state/revision/time,
 and a 2,000-character agent-answer excerpt with an explicit truncation flag.
 They omit prompt digests, thoughts and raw tool/error payloads. The same native
@@ -57,6 +63,15 @@ External services
 
 ## Default Deployment
 
+Kimi/Qwen launch without yolo/allow-all flags and keep provider authentication on
+the computer. Provider-selected mode settings can grant automatic execution only
+through explicit human selection of advertised values. Qwen ask-user permissions
+are recognized before permission selection and require validated form answers;
+legacy generic approval cannot silently submit an unanswered question.
+Neither provider is offered client filesystem or terminal capabilities. Windows
+npm shims resolve only JS entry points within the expected installed package;
+workspace paths and shim contents are never interpolated into a command shell.
+
 Use a private authenticated Microsoft Dev Tunnel as the default transport. Anonymous tunnel access is prohibited; pairing payloads carry a short-lived, machine-specific `X-Tunnel-Authorization` connect token.
 
 Tailscale is an explicit alternative transport and requires both Android and the developer machine to install the Tailscale client and join the same tailnet. Localhost mode remains an explicit manual-testing opt-in.
@@ -64,6 +79,15 @@ Tailscale is an explicit alternative transport and requires both Android and the
 The Android MVP permits cleartext HTTP/WebSocket traffic only for private Tailscale or LAN endpoints. Relay endpoints must use HTTPS/WSS and authenticated access.
 
 ## Authentication Requirements
+
+Claude runs a locally installed, pinned ACP adapter without permission bypass.
+The bridge advertises only implemented form and task-reporting capabilities,
+not client filesystem/terminal access, native child sessions or URL elicitation.
+Unknown reverse-RPC methods receive explicit errors. Permission selections must
+match the original option and kind; legacy approval chooses only allow-once.
+Question answers are schema-validated and cannot approve a tool. Answers are
+kept only in bounded in-memory approval state, not echoed into the bridge journal;
+the provider may persist the resulting conversation. Local login remains separate.
 
 The native Copilot adapter uses the installed, authenticated local CLI; it does
 not copy credentials into configuration, download another runtime, or silently

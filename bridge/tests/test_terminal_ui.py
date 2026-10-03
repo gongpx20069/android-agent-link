@@ -830,6 +830,32 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(configs[-1]["update"]["configOptions"][0]["currentValue"], False)
         self.assertFalse(self.runtime._prompt_operations)
 
+    async def test_generic_config_lists_and_confirms_exact_mode_selection(self):
+        manager = PermissionAgentManager({
+            "id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": "default",
+            "options": [{"value": "default", "name": "Default"}, {"value": "plan", "name": "Plan"}],
+        })
+        self.runtime.agent_manager = manager
+        self.ui.submit("/config")
+        await asyncio.sleep(0.2)
+        self.assertIsNone(self.ui.picker)
+        self.assertIn("mode: Mode [default]", self.screen())
+        self.ui.submit("/config mode")
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.ui.picker.config_id, "mode")
+        self.pipe.send_bytes(b"\x1b[B\r")
+        await asyncio.sleep(0.15)
+        self.assertTrue(self.ui.picker.confirming)
+        self.assertFalse(manager.changes)
+        self.pipe.send_text("y")
+        await asyncio.sleep(0.25)
+        self.assertEqual(manager.changes, [("one", "mode", "plan")])
+        self.assertEqual(self.client.chats["one"].config_options[0]["currentValue"], "plan")
+        self.ui.submit("/config mode default")
+        await asyncio.sleep(0.1)
+        self.assertIsNone(self.ui.picker)
+        self.assertEqual(len(manager.changes), 1)
+
     async def test_allow_all_cancel_back_and_inline_values_do_not_apply(self):
         manager = PermissionAgentManager()
         self.runtime.agent_manager = manager

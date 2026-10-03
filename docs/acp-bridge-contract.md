@@ -4,7 +4,67 @@ This document describes the Android-to-bridge contract. It is intentionally sepa
 
 ## Transport
 
+### Context-only session recovery
+
+`deepseek-harness` uses `dsh --profile acp`. It supports context resume but not
+transcript replay. Session-list entries and `chat.session` events expose optional
+`historyReplaySupported`; missing fields retain legacy behavior. The shared
+catalog retains the negotiated value.
+
+`session.resume` accepts `chatId`, `agentId`, `workspacePath`, and `sessionId`.
+It explicitly resumes context without requesting a history snapshot. Success is
+`session.resume.result` with `chatId`, `sessionId`, `resumable: true`,
+`contextOnly: true`, and `historyReplaySupported`, followed by `bridge.done`.
+It never returns a successful empty history page. Errors use the same result
+type with `error`. Busy chats and changes to the chat's agent/workspace reject
+the request; use a new chat for a different workspace. Existing live sessions
+are reused, and failures do not replace a working session.
+
+The operation broadcasts the binding, advertised configuration and a context
+notice through the existing journal. It retains prior journal/local messages;
+when changing session IDs, the notice marks the boundary rather than presenting
+earlier messages as the new session's transcript. Unsupported `session/load*`
+requests still fail. If journal events have expired, a no-replay client may
+continue only after an authoritative idle snapshot and an explicit visible
+history-gap warning; this is not history reconstruction.
+
+### Claude ACP and interaction compatibility
+
+Claude uses the separately installed `@agentclientprotocol/claude-agent-acp`
+adapter (validated baseline: `0.81.2`), not `claude --acp`. Discovery may return
+`missing_adapter` and a `statusMessage`; `available` means the launcher is present,
+not that provider authentication has been verified. Login stays on the machine.
+
+`approval.requested` retains exact `options` (`optionId`, `name`, `kind`) and adds
+`interaction: "permission" | "question"`. Questions include `requestedSchema`.
+`approval.decide` accepts optional `optionId` for a permission or `answers` for a
+question, alongside `decision: approved | denied`. The bridge validates the
+selection/content against the pending request before resolving it. Results echo
+the selected `optionId`; question answers are not echoed into the event journal.
+Legacy approved decisions select only an unambiguous allow-once option, never an
+allow-always escalation or a question answer. Unsupported forms fail explicitly.
+The same pending ID, expiry and first-decision-wins rules apply to every frontend.
+
+ACP initialization capabilities gate session list/load/resume. History replay
+uses the existing process when that process owns the session; restoring context
+never sends the old user messages as new prompts. Unsupported history is an error,
+not an empty successful snapshot. `agentlink_background_tasks` session updates
+carry `tasks` with `id`, `name`, `state`; these are announced provider tasks, not
+an inference from transcript text. Prompt completion waits for announced tasks.
+Session events and permission requests continue to be dispatched between RPCs.
+
 ### Authenticated shared control (version 1)
+
+Discovery and shared `chat.create` / `chat.register` also accept `kimi-cli`
+(current JavaScript Kimi Code, `kimi acp`) and `qwen-code` (`qwen --acp`).
+Kimi negotiates `clientCapabilities.elicitation.form`; neither provider negotiates
+client filesystem/terminal delegation or Claude's async-task extensions.
+Qwen question permissions marked by `toolCall._meta.qwenInteractionKind` are
+translated to the existing question contract. Required string fields use numeric
+question-index keys; suggestions remain in field descriptions. Valid submission
+returns the offered `proceed_once` option plus Qwen's top-level `answers` map.
+There is no generic approve-without-answers path for these questions.
+The bridge does not implement Qwen's separate daemon API.
 
 On the default stdlib `/ws` connection, send
 `{"type":"control.request","requestId":"nonce","action":"chat.read","chatId":"..."}`.
@@ -25,6 +85,12 @@ Errors include `INVALID_ARGS`, `NOT_FOUND`, `PERMISSION_DENIED`, `CONFLICT`,
 | `task.cancel` | chatId, operationId | taskId, state; cancellation_requested is not completed cancellation |
 | `task.read` | chatId, taskId | task, online, observedAt; bounded durable receipt, independent of journal retention |
 | `chat.configure` | chatId; configId/value to set, omitted to refresh | chat |
+
+Android's Stop current task uses `task.cancel` for the observed operation ID.
+It validates the echoed task ID, distinguishes cancellation requested from
+completed cancellation, and does not clear the remaining queue or mark idle
+before authoritative status/events arrive. Timeout is an unknown outcome, not
+proof the task stopped.
 
 Workspace modes are `directory`, `register_existing`, `clone`, `worktree`.
 Mutations require a descendant of a configured `--workspace-root`; existing

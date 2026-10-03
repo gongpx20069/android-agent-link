@@ -12,6 +12,27 @@ replace a process that still owned background work.
 
 Copilot uses its native SDK session event stream (`github-copilot-sdk==1.0.13`).
 Other agents retain ACP.
+Kimi Code and Qwen Code use negotiated list/load/resume and the same continuous
+reader, session ownership guards and cancellation notification. Closing their
+stdio input gives the provider an opportunity to dispose sessions before forced
+termination. Their standard prompt response is not promoted to a guarantee that
+all vendor background jobs have stopped; Qwen's private daemon lifecycle is not
+negotiated. Native vendor-terminal attachment is outside this integration.
+DeepSeek Harness advertises list/resume/close but not load. Successful new
+sessions are persisted and resumable before a model turn. Explicit context
+resume retains the journal, rejects busy/scope/ownership conflicts, and leaves a
+working binding intact on restore failure. Reusing a live session does not
+launch a second process. EOF shutdown lets DSH quiesce and flush its session.
+Saved Android messages remain available; unavailable external history and
+journal gaps are visible limitations, never successful empty history pages.
+Claude uses the pinned `claude-agent-acp` 0.81.2 adapter. Its continuous ACP
+reader remains subscribed between requests; permissions/forms run off the reader.
+The negotiated async-task lifecycle holds the prompt through announced background
+work, with ordered delivery before completion and explicit task stop on cancel.
+The adapter owns foreground/subagent turn settlement; AgentLink does not negotiate
+native child-session UI. These guarantees cover reported work, not arbitrary
+external processes. Transport loss and structured provider errors are failures.
+Do not infer end-to-end model compatibility from a successful initialize alone.
 The Android/terminal/shared-control wire contract and chat/session identifiers
 remain unchanged. An explicit ACP compatibility option is retained; it does not
 claim the native backend's background completion guarantees.

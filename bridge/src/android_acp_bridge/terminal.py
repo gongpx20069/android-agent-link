@@ -439,6 +439,12 @@ class TerminalClient:
                 self.say(f"[{self.chat_label(item['chatId'])}] {item['approvalId']}: {item['summary']}")
                 details = json.dumps(item.get("details", {}), ensure_ascii=False, indent=2)
                 self.say(details[:8192])
+                if item.get("interaction") == "question":
+                    self.say(f"/answer {item['approvalId']} <JSON object matching the question fields>")
+                else:
+                    for option in item.get("options", []):
+                        self.say(f"  {option.get('optionId')}: {option.get('name', option.get('kind'))} ({option.get('kind')})")
+                    self.say(f"/choose {item['approvalId']} <option-id> selects that exact permission")
                 if len(details) <= 8192:
                     self._reviewed.add(item["approvalId"])
                 else:
@@ -468,11 +474,13 @@ class TerminalClient:
             self.say("/chats (choose by number) | /use <number> | /new <agent-id> <absolute workspace>\n"
                      "/model (model picker) | /tools (focus tool group) | /qrcode or /pairing (phone QR/link)\n"
                      "/allow-all (session permissions; choose then y to confirm)\n"
+                     "/config [id] (list agent settings or open a setting; choose then y to confirm)\n"
                      "/copy (latest reply source) | Ctrl+Y (drag-selected text, otherwise focused message/tool)\n"
                      "Left-drag text without Shift, release then Ctrl+Y | Right scrollbar: click/drag\n"
                      "/mouse (toggle app mouse handling for native text selection)\n"
                      "Tab focus | Enter expand | arrows/PgUp/PgDn browse | Left/Right page | Esc input\n"
                      "/approvals | /approve <approval-id> | /deny <approval-id> | /pair y|n\n"
+                     "/choose <approval-id> <option-id> | /answer <approval-id> <JSON answers>\n"
                      "/send <text> (including a leading /) | /quit (stops bridge; /quit! while busy)")
         elif command == "/chats":
             for shared in self.runtime.shared.chats():
@@ -515,6 +523,29 @@ class TerminalClient:
                         self.say("Terminal chat limit reached; cannot create another chat.")
         elif command == "/approvals":
             self._review_approvals()
+        elif command in {"/choose", "/answer"}:
+            identity, _, value = argument.partition(" ")
+            approvals = {item["approvalId"]: item for item in self.runtime.local_approvals()}
+            item = approvals.get(identity)
+            if item is None or identity not in self._reviewed:
+                self.say("Review the current complete request with /approvals first.")
+            elif command == "/answer":
+                try:
+                    answers = json.loads(value)
+                    if not isinstance(answers, dict) or item.get("interaction") != "question":
+                        raise ValueError("Expected a JSON object for a question.")
+                    self._dispatch({"type": "approval.decide", "chatId": item["chatId"],
+                                    "approvalId": identity, "decision": "approved", "answers": answers})
+                except (ValueError, json.JSONDecodeError):
+                    self.say("Use /answer <approval-id> <JSON object matching the displayed question schema>.")
+            else:
+                option = next((option for option in item.get("options", []) if option.get("optionId") == value), None)
+                if option is None or item.get("interaction") == "question":
+                    self.say("Choose an exact option ID from /approvals.")
+                else:
+                    self._dispatch({"type": "approval.decide", "chatId": item["chatId"], "approvalId": identity,
+                                    "decision": "approved" if option.get("kind", "").startswith("allow") else "denied",
+                                    "optionId": value})
         elif command in {"/approve", "/deny"}:
             with self._lock:
                 reviewed = argument in self._reviewed

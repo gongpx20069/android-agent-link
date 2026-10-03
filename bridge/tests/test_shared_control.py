@@ -97,6 +97,16 @@ class SharedControlTests(unittest.TestCase):
         self.assertEqual(len(runtime.workspaces_response()["workspaces"]), 1)
         self.assertEqual(runtime.public_workspaces_response(), {"workspaces": []})
 
+    def test_native_agents_can_register_and_create_shared_chats(self):
+        runtime = self.runtime()
+        for agent in ("kimi-cli", "qwen-code"):
+            registered = self.request(runtime, "chat.register", chatId=agent, workspacePath=str(Path.cwd()), agentId=agent)
+            self.assertEqual(registered["status"], "ok")
+            created = self.request(runtime, "chat.create", workspaceId=registered["data"]["chat"]["workspaceId"], agentId=agent)
+            self.assertEqual(created["status"], "ok")
+            self.assertEqual(created["data"]["chat"]["agentId"], agent)
+        self.assertEqual(self.request(runtime, "chat.register", chatId="invalid", workspacePath=str(Path.cwd()), agentId="unknown")["code"], "INVALID_ARGS")
+
     def test_send_is_async_idempotent_and_detects_human_takeover(self):
         manager = BlockingAgentManager()
         runtime = self.runtime(manager=manager)

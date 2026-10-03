@@ -207,6 +207,8 @@ class SharedState:
             elif kind == "chat.session":
                 chat["sessionId"] = event["sessionId"]
                 chat["sessionResumable"] = event.get("resumable", False)
+                if isinstance(event.get("historyReplaySupported"), bool):
+                    chat["historyReplaySupported"] = event["historyReplaySupported"]
             elif kind == "operation.accepted" and event.get("source") != "mochi":
                 chat["humanRevision"] += 1
             elif kind == "session/update" and event.get("update", {}).get("sessionUpdate") == "config_option_update":

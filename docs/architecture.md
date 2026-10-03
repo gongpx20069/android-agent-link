@@ -71,6 +71,25 @@ Initial choices:
 
 The Python bridge is optimized for MVP speed and cross-platform development. Users explicitly install it with Conda, uv, or Python venv/pip before startup; the bridge never creates a Python environment or installs packages at startup. The `python bridge\run.py` source helper uses the active Python environment and forwards to the package CLI without modifying that environment. Third-party bridge dependencies must be declared in `pyproject.toml` and exposed through requirements files for pip, uv, and conda installation. A later release may package it as a standalone executable so developer machines do not need to install Python manually.
 
+Kimi Code and Qwen Code use the same persistent `AcpAgentSession` transport as
+Claude, selected by a shared agent registry used for discovery and shared-control
+validation. Windows npm launchers resolve the installed manifest's JS bin entry,
+confined to that package, rather than executing command-shell strings. Kimi
+elicitation is native; Qwen's question extension adapts to the common form
+approval flow and translates validated answers back to its wire response.
+Provider settings remain advertised, session-scoped configuration operations:
+Android and terminal `/config` expose settings beyond model/allow-all without
+adding per-provider navigation. Kimi/Qwen do not claim Claude/Copilot's extended
+background-work completion guarantees.
+
+DeepSeek Harness uses the same registry and ACP connection, with a pinned
+developer-preview CLI release check. Its negotiated no-replay capability flows
+through session summaries/bindings and durable shared/Android metadata.
+`session.resume` is separate from history loading: it reserves the chat, restores
+context, broadcasts configuration and a boundary notice, and retains the journal.
+Android preserves saved messages and explicitly acknowledges unrecoverable gaps
+only after synchronized idle, rather than manufacturing a history snapshot.
+
 ## App Modules
 
 ### Android streaming and persistence
@@ -96,6 +115,13 @@ Robolectric and OkHttp MockWebServer are test-only dependencies, added to exerci
 real SQLite transactions, legacy migration, large encrypted records, rollback,
 bounded history growth, and WebSocket durability ordering on hosts without a device.
 These tests do not establish phone frame-time or heap/GC performance.
+
+Compose saveable state holders isolate chat drafts/navigation from reconnects
+and other chats. New-session lists are keyed by computer/agent/mode, and modal
+request identity prevents late responses from reopening dismissed dialogs.
+Configuration/recovery applies against current chat state rather than the dialog's
+old message snapshot. Explicit mobile stop uses the existing exact-task control
+API; authoritative events, not cancellation acknowledgement, settle busy state.
 
 Planned Android modules:
 
@@ -287,7 +313,14 @@ See [session lifecycle design](session-lifecycle.md).
 
 `--copilot-transport acp` explicitly selects the old compatibility path. It lacks
 the native backend's whole-session/background completion guarantees. Claude Code
-continues using ACP. A failed native startup never silently switches transport.
+uses the version-checked Claude ACP adapter. A failed native startup never
+silently switches transport. `acp_connection.py` owns a continuous ordered
+reader, request-ID routing, bounded buffering, and non-blocking reverse-RPC
+workers. The Claude adapter's negotiated async-task extension supplies task
+state; prompt return alone does not release announced background tasks.
+Native child sessions are not negotiated, and child-attributed text is activity
+rather than a root answer. Generic ACP keeps capability-based list/load/resume;
+Copilot's native SDK remains independent of the ACP transport.
 
 Prompt, session load, model changes, and approval decisions are operations inside the chat channel. Each operation has an `operationId`.
 

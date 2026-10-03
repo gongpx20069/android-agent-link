@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from .acp_agent import AcpAgentError
+from .agents import AGENT_SPECS
 from .shared_state import ControlError, required_text
 
 if TYPE_CHECKING:
@@ -69,7 +70,7 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
             payload = {**payload, "workspacePath": workspace["absolutePath"],
                        "chatId": payload.get("chatId") or "chat_" + secrets.token_hex(16)}
         agent = required_text(payload.get("agentId"), "agentId", 128)
-        if agent not in {"copilot-cli", "claude-code"}:
+        if agent not in AGENT_SPECS:
             raise ControlError("INVALID_ARGS", "Unsupported execution agent.")
         with runtime.shared.lock:
             if action == "chat.create":

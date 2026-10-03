@@ -66,15 +66,17 @@ class ConfigPicker:
     command: str = "/model"
     boolean: bool = False
     confirming: bool = False
+    setting_name: str = ""
 
     @property
     def title(self) -> str:
-        return "Allow all" if self.command == "/allow-all" else "Model"
+        return self.setting_name or ("Allow all" if self.command == "/allow-all" else "Model")
 
 
 class SlashCompleter(Completer):
     COMMANDS = {
         "/model": "Choose the model for this chat",
+        "/config": "List agent settings; /config <id> opens a setting",
         "/allow-all": "Change session permissions (explicit confirmation)",
         "/tools": "Focus expandable tools",
         "/chats": "Choose shared phone chat by number",
@@ -82,6 +84,8 @@ class SlashCompleter(Completer):
         "/new": "New terminal-local chat: agent workspace",
         "/approvals": "Review pending approval details",
         "/approve": "Approve a fully reviewed request",
+        "/choose": "Select an exact reviewed permission option",
+        "/answer": "Answer a reviewed question with a JSON object",
         "/deny": "Deny a request",
         "/pair": "Confirm phone pairing: y / n",
         "/pairing": "Show startup phone pairing QR/link",
@@ -615,7 +619,7 @@ class FullScreenTerminal:
         def confirm(event):
             picker = self.picker
             if picker:
-                if picker.command == "/allow-all":
+                if picker.command in {"/allow-all", "/config"}:
                     picker.confirming = True
                     return
                 self.picker = None
@@ -686,9 +690,10 @@ class FullScreenTerminal:
         if command == "/resume":
             self.write("Use Android's session/permission picker for this action. It is not forwarded as an ordinary terminal command.")
             return True
-        if command in {"/model", "/allow-all", "/allow_all"}:
+        if command in {"/model", "/allow-all", "/allow_all", "/config"}:
             normalized = "/allow-all" if command == "/allow_all" else command
-            if line.strip() != command:
+            arguments = line.strip().split()
+            if (command != "/config" and line.strip() != command) or len(arguments) > 2:
                 self.write(f"Use {normalized} and choose an advertised setting; inline values are not accepted.")
             elif self.config_busy:
                 self.write("A configuration request is already in progress.")
@@ -697,7 +702,8 @@ class FullScreenTerminal:
             else:
                 self.config_busy = True
                 self.model_request_id += 1
-                self.start(self.open_config(self.client.selected or "", self.model_request_id, normalized))
+                self.start(self.open_config(self.client.selected or "", self.model_request_id, normalized,
+                                            arguments[1] if command == "/config" and len(arguments) == 2 else None))
             return True
         if command == "/tools":
             rows = [r for r in self.transcript.visible(self.client.selected) if r.kind == "Tools"]
@@ -794,14 +800,21 @@ class FullScreenTerminal:
             raise ValueError("Agent returned an invalid configuration response.")
         return options
 
-    async def open_config(self, chat_id: str, request_id: int, command: str) -> None:
+    async def open_config(self, chat_id: str, request_id: int, command: str, config_id: str | None = None) -> None:
         self.config_busy = True
-        title = "Allow all" if command == "/allow-all" else "Model"
+        title = "Configuration" if command == "/config" else "Allow all" if command == "/allow-all" else "Model"
         try:
             payload = self.config_payload(chat_id)
             options = await self.config_request({**payload, "type": "session.refreshConfigOptions"})
-            option = allow_all_option(options) if command == "/allow-all" else model_option(options)
-            boolean = command == "/allow-all" and option is not None and option.get("type") == "boolean"
+            if command == "/config" and config_id is None:
+                settings = [option for option in options if isinstance(option, dict) and option.get("type") in {"select", "boolean"}]
+                self.write("Use /config <id> to choose an advertised setting:\n" + "\n".join(
+                    display_text(f'{option.get("id")}: {option.get("name")} [{config_value(option)}]')
+                    for option in settings) if settings else "This agent does not advertise configurable settings.")
+                return
+            option = (next((item for item in options if isinstance(item, dict) and item.get("id") == config_id), None)
+                      if command == "/config" else allow_all_option(options) if command == "/allow-all" else model_option(options))
+            boolean = option is not None and option.get("type") == "boolean"
             choices = ([("false", "Off"), ("true", "On")] if boolean else
                        model_choices(option) if option and option.get("type") == "select" else [])
             if not option or not isinstance(option.get("id"), str) or not option["id"] or not choices:
@@ -818,7 +831,7 @@ class FullScreenTerminal:
             current = config_value(option)
             self.picker = ConfigPicker(chat_id, session, option["id"], current, choices,
                                       next((i for i, (value, _) in enumerate(choices) if value == current), 0),
-                                      command, boolean)
+                                      command, boolean, setting_name=display_text(str(option.get("name") or option["id"])) if command == "/config" else "")
             self.app.layout.focus(self.picker_control)
         except Exception as error:
             self.write(title + ": " + display_text(str(error))[:1024])
@@ -829,7 +842,7 @@ class FullScreenTerminal:
     async def set_config(self, picker: ConfigPicker) -> None:
         self.config_busy = True
         try:
-            if picker.command == "/allow-all" and not picker.confirming:
+            if picker.command in {"/allow-all", "/config"} and not picker.confirming:
                 raise ValueError("Permission changes require explicit confirmation.")
             payload = self.config_payload(picker.chat_id)
             if self.client.selected != picker.chat_id or payload["sessionId"] != picker.session_id:
@@ -856,7 +869,7 @@ class FullScreenTerminal:
             return []
         if picker.confirming:
             value, label = picker.choices[picker.selected]
-            return [("", " Allow all | " + self.client.chat_label(picker.chat_id) + "\n\n"),
+            return [("", f" {picker.title} | " + self.client.chat_label(picker.chat_id) + "\n\n"),
                     ("", f" Current: {display_text(picker.current)}\n Set to: {label} ({display_text(value)})\n\n"),
                     ("class:notice", " Enabling automatic permission may let the agent run commands\n"
                      " and modify files without asking. Scope: this shared session.\n"
