@@ -11,7 +11,7 @@
   <a href="https://github.com/gongpx20069/android-agent-link/releases"><strong>下载 Android APK</strong></a>
   &nbsp; · &nbsp; <a href="README.md">English</a>
   &nbsp; · &nbsp; <a href="docs/user-guide.zh-CN.md">使用指南</a>
-  &nbsp; · &nbsp; <a href="https://gongpx20069.github.io/hi-mochi/zh-CN/agentlink/">产品介绍</a>
+  &nbsp; · &nbsp; <a href="https://gongpx20069.github.io/hi-mochi/zh-CN/agentlink/"><strong>AgentLink 官网</strong></a>
 </p>
 
 **GitHub Copilot CLI · Claude Code · Kimi Code · Qwen Code · DeepSeek Harness**

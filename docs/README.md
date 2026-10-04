@@ -4,6 +4,7 @@ This folder defines the project memory layer for AgentLink.
 
 ## Using AgentLink
 
+- [Official website](https://gongpx20069.github.io/hi-mochi/agentlink/) / [中文官网](https://gongpx20069.github.io/hi-mochi/zh-CN/agentlink/): product overview, supported agents, setup, and FAQ.
 - [Quick start](../README.md) / [快速开始](../README.zh-CN.md): download, start the server, and chat.
 - [User guide](user-guide.md) / [使用指南](user-guide.zh-CN.md): full setup, terminal controls, account discovery, troubleshooting, and optional Mochi integration.
 - [Bridge guide](../bridge/README.md): installation and server configuration.
