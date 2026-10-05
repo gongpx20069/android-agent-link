@@ -4,6 +4,55 @@ This document describes the Android-to-bridge contract. It is intentionally sepa
 
 ## Transport
 
+### Single-image attachments (version 1)
+
+Images are separate from event JSON. All `/attachments` endpoints require the
+existing device token in `Authorization: Bearer <token>` and the usual tunnel
+headers. Query parameter `chatId` selects an existing registered chat.
+`GET /attachments/capabilities` returns `version: 1`, `imageSupported` (the live
+session's declared capability), `maxBytes: 5242880`, and `mimeTypes`.
+Unknown/unrestored sessions do not claim image support.
+
+`POST /attachments?chatId=...` accepts a bounded PNG/JPEG binary body with its
+Content-Type and Content-Length. The server validates decoding and dimensions
+(at most 16 million pixels) and returns `{id, mimeType, size}`. The ID is the
+SHA-256 of the exact uploaded bytes. Repeating an upload is idempotent.
+`GET /attachments?chatId=...&id=...` downloads only an attachment associated with
+that chat. Responses are private/no-store and never redirect. MIME types,
+identifiers, sizes, authorization, and chat existence are validated server-side.
+The private shared SQLite database stores bytes outside the journal. On a new
+image upload, both stores first prune unprotected copies saved/uploaded more than
+7 days ago, then evict least-recently-used copies if the new image would exceed
+256 MiB. Text and attachment references remain in history. Bridge uploads have a
+10-minute submission grace period; queued/running operations pin their images until
+completion or cancellation. If only protected images remain, the upload fails
+explicitly rather than deleting in-flight inputs. Missing/evicted downloads return
+404 with an unavailable/automatically-cleared explanation; clients show that notice.
+These checks run only on incoming new image writes, including repeat uploads.
+Reads never extend the seven-day age or trigger cleanup; there is no timer or
+startup sweep. Android displays downloaded history images in memory without
+repopulating the disk cache, so history browsing performs no eviction/quota sweep.
+
+`chat.prompt` and bridge `chat.send` accept optional `image: {id, mimeType, size}`.
+The server resolves the ID within the chat and uses authoritative metadata.
+`operation.accepted`/`operation.started` echo this metadata, never Base64.
+Image operations are not combined with another queued prompt. Idempotency includes
+text and image identity; a reused operation ID with different content conflicts.
+Image-only prompts are valid. Old text-only requests retain their existing shape.
+Old bridges reject the capability endpoint; clients must request a bridge update,
+not send image metadata to a server that would silently ignore it.
+
+The live agent is checked again at execution. ACP requires
+`agentCapabilities.promptCapabilities.image == true`; native Copilot uses the
+current model's vision capability and SDK blob attachments. Unsupported/unknown
+capabilities fail explicitly, without sending a text-only substitute. The first
+release does not extend Mochi's Android IPC upload permissions.
+
+Provider history containing known image bytes is projected back to the same
+chat-scoped `image` metadata, including on `session.history` message rows. Unknown
+or unavailable external attachments are visible text markers; their Base64 is not
+published in transport events or history. The terminal displays `[Image attached]`.
+
 ### Context-only session recovery
 
 `deepseek-harness` uses `dsh --profile acp`. It supports context resume but not

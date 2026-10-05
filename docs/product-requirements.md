@@ -1,5 +1,26 @@
 # Product Requirements
 
+## Single-image prompts
+
+- Attach one PNG/JPEG from Android, preview/remove it, and send with optional text.
+- Preserve attachment references in saved messages and queued prompts across reconnect
+  and foreground/background ownership changes. Keep drafts after upload failure.
+- Bound normalization, uploads, downloads and storage; keep image work off the UI thread.
+- Compress Android-selected images to at most 1 MiB before upload; preserve PNG alpha
+  and show the final compressed preview. Keep the 5 MiB transport limit for older clients.
+- Automatically reclaim oldest-unused image copies on both phone and Bridge at quota
+  pressure, protecting drafts and queued/running work. Preserve chat text and show an
+  unavailable/cleared marker when both image copies are gone.
+- Only on incoming image uploads, first expire copies saved/uploaded over seven days
+  ago, then enforce 256 MiB. Viewing does not renew age; no scheduled/startup/browsing
+  cleanup. Protected in-flight copies remain exempt until their work finishes.
+- Require real ACP image capability or native Copilot model vision support. Reject
+  unsupported/unknown capabilities explicitly without dropping the image.
+- Reuse private pairing/tunnel credentials; keep image bytes out of the event journal.
+- Keep image operations separate from text batches and include image identity in deduplication.
+- Require updates on both App and Bridge; real provider/model compatibility and physical
+  device acceptance remain distinct from mocked protocol and UI regressions.
+
 ## Claude ACP integration
 
 - Launch a separately installed, validated Claude ACP adapter, not `claude --acp`.

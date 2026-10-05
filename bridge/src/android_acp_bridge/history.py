@@ -7,6 +7,7 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
+from .attachments import without_inline_images
 
 
 class HistoryError(RuntimeError):
@@ -33,7 +34,7 @@ class HistoryStore:
 
     def create(self, chat_id: str, session_id: str, updates: list[Any], scanned_events: int, limit: int) -> dict[str, Any]:
         history_id = "history_" + secrets.token_urlsafe(16)
-        rows = _history_rows(updates, history_id)
+        rows = _history_rows(without_inline_images(updates), history_id)
         with self._lock:
             self._purge()
             for key, snapshot in list(self._snapshots.items()):
@@ -98,17 +99,22 @@ def _history_rows(updates: list[Any], history_id: str) -> list[dict[str, Any]]:
         timestamp = timestamp if isinstance(timestamp, (int, float)) else 0
         if role:
             content = update.get("content")
-            text = update.get("text") or (content.get("text") if isinstance(content, dict) else "")
-            if not isinstance(text, str) or not text:
+            text = update.get("text") or (content.get("text", "") if isinstance(content, dict) else "")
+            image = update.get("image")
+            if not isinstance(text, str) or (not text and image is None):
                 continue
             message_id = update.get("messageId", "")
             if rows and rows[-1]["kind"] == "text" and rows[-1]["role"] == role and (
                 not message_id or message_ids.get(len(rows) - 1) == message_id
-            ):
+            ) and not (image and rows[-1].get("image")):
                 rows[-1]["text"] += text
+                if image is not None:
+                    rows[-1]["image"] = image
                 continue
             message_ids[len(rows)] = message_id
             row = {"role": role, "text": text, "kind": "text", "title": "", "details": "", "activityId": ""}
+            if image is not None:
+                row["image"] = image
         else:
             kind = "activity" if update_type in {"tool_call", "tool_call_update"} else "plan" if update_type == "plan" else "control"
             row = {

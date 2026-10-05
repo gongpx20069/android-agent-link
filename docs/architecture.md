@@ -13,6 +13,42 @@ ACP Agent CLI
 
 The Android app is the control surface. Remote machines run the bridge, agent process, shell commands, Git operations, and repository workspaces.
 
+### Image input
+
+The composer copies one system-picked PNG/JPEG into encrypted private image storage.
+Decode, orientation correction, downsampling (maximum 2048-pixel edge), encoding and
+AES-GCM run on IO workers; thumbnails decode to at most 512 pixels. The encoder
+enforces a 1 MiB upload target, reducing JPEG quality and then dimensions, or
+reducing PNG dimensions while preserving alpha.
+The existing 5 MiB transport/read limit still accepts older clients and history.
+Only metadata enters saveable draft state, encrypted chat JSON, WebSocket events
+and queued prompts.
+The SQLite chat schema does not change. Foreground and background receivers apply
+the same attachment reducer before accepting/starting a prompt.
+
+Authenticated bounded HTTP uploads use the existing device and tunnel credentials,
+reject redirects and verify the returned SHA-256 metadata. The bridge validates
+actual PNG/JPEG decoding with Pillow (a required dependency) and stores bytes in a
+separate shared-state SQLite table. Queue dispatch constructs ACP image blocks or
+native Copilot SDK blob attachments only after capability checks. Image-bearing
+operations run individually, while neighboring text-only operations retain batching.
+Provider replay maps known image bytes back to chat-scoped metadata; unknown external
+attachments are explicitly represented as unavailable, not inlined into history.
+
+Both image stores are bounded LRU caches, not permanent archives. Android protects
+encrypted draft references and durable queued/running image references, independently
+of the hot message window. Bridge in-memory reference counts protect accepted inputs
+until every using operation completes/cancels; restart interrupts tasks and releases
+those process-local pins. New uploads have a ten-minute submission grace period.
+Only incoming new image writes run retention/capacity maintenance: expire copies
+older than seven days, then apply LRU eviction to fit 256 MiB. Reads update recency
+without changing image age or running cleanup. Android keeps an independent age
+marker beside each encrypted image, with legacy age initialized from its file time.
+Downloaded history stays in memory; it neither grows disk cache nor triggers scans.
+Eviction preserves text, task receipts and attachment metadata; task deduplication
+still works after its image bytes have been evicted. SQLite free pages are reused;
+the database file need not immediately shrink when cache rows are removed.
+
 ### Shared controller model
 
 Mochi is an optional primary controller, AgentLink Android is the credential owner

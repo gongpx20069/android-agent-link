@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from .acp_connection import AcpConnection
 from .agents import AGENT_SPECS
+from .attachments import ImageInput
 
 
 class AcpAgentError(RuntimeError):
@@ -33,6 +34,7 @@ class AcpPromptRequest:
     prompt: str
     session_id: str | None = None
     session_resumable: bool = False
+    image: ImageInput | None = None
 
 
 @dataclass(frozen=True)
@@ -104,7 +106,10 @@ class AcpAgentManager:
                 for update in startup_updates:
                     update_callback(update)
                 startup_updates = []
-            updates = session.prompt(request.prompt, update_callback=update_callback)
+            if request.image is not None:
+                updates = session.prompt(request.prompt, update_callback=update_callback, image=request.image)
+            else:
+                updates = session.prompt(request.prompt, update_callback=update_callback)
             if session_callback is not None:
                 session_callback(session.binding())
             return startup_updates + updates
@@ -116,6 +121,10 @@ class AcpAgentManager:
                     for item in session.list_sessions(workspace_path)]
         finally:
             session.stop()
+
+    def supports_images(self, chat_id: str) -> bool:
+        session = self._get_session(chat_id)
+        return session is not None and session.image_input_supported
 
     def resume_session(self, chat_id: str, agent_id: str, workspace_path: str, session_id: str) -> tuple[AcpSessionBinding, list[dict[str, Any]]]:
         _resolve_workspace(workspace_path)
@@ -555,13 +564,20 @@ class AcpAgentSession:
         session._capture_config_options(result)
         return session, updates + session.config_option_updates(), scanned_events, truncated
 
-    def prompt(self, prompt: str, update_callback: UpdateCallback | None = None) -> list[dict[str, Any]]:
+    @property
+    def image_input_supported(self) -> bool:
+        return (self._capabilities or {}).get("promptCapabilities", {}).get("image") is True
+
+    def prompt(self, prompt: str, update_callback: UpdateCallback | None = None,
+               image: ImageInput | None = None) -> list[dict[str, Any]]:
+        if image is not None and not self.image_input_supported:
+            raise AcpAgentError("This agent did not advertise image input. The image was not sent.")
         self._wait_for_background()
         result, updates = self._request(
             "session/prompt",
             {
                 "sessionId": self._session_id,
-                "prompt": [{"type": "text", "text": prompt}],
+                "prompt": [{"type": "text", "text": prompt}] + ([image.acp_block()] if image is not None else []),
             },
             timeout_seconds=300,
             update_callback=update_callback,

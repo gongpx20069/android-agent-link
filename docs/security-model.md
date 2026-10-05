@@ -6,6 +6,39 @@ The Android app must let users control powerful remote coding agents without acc
 
 ## Trust Boundaries
 
+### Image attachments
+
+Image upload, download and capability endpoints require the paired device bearer
+token and the existing private transport. Hashes are not authorization: an image is
+resolved only within the requested existing chat. Android refuses redirects, bounds
+response reads and verifies exact bytes against MIME/size/SHA-256 metadata. Selection
+uses system-granted per-file access, never a gallery-wide permission or a remotely
+interpreted `content://` URI. Normalization strips original metadata.
+
+Android bytes are AES-GCM encrypted with identity-bound AAD and excluded from backup.
+Bridge bytes inherit the owner-private but **unencrypted** shared SQLite disk policy;
+protect that disk and backups. Images are sent to the chosen coding agent/provider
+only when the user sends the prompt, under that provider's data policy. No independent
+public image-hosting service is used. Event journals, logs and task queues contain
+metadata rather than Base64. Unknown provider replay images become explicit markers.
+
+Uploads are limited to 5 MiB/16 million pixels; both stores have 256 MiB quotas.
+Both stores automatically evict least-recently-used image copies under quota pressure.
+The phone protects draft/queue/running references; Bridge pins accepted inputs until
+completion/cancellation and gives new uploads a ten-minute submission grace period.
+At each new image upload both sides first prune unprotected copies saved/uploaded
+more than seven days ago, even below quota, then apply the capacity policy. Reads
+do not extend retention. There is no timer, startup scan or history-download sweep;
+Android displays downloaded history in memory rather than repopulating disk cache.
+If all space is
+protected, the new write fails rather than discarding in-flight inputs. Cleanup affects
+only app-owned image bytes, never original phone gallery files, chat text or task receipts.
+History may no longer display an evicted image if neither cache retains it; the UI
+explains this rather than treating it as complete restored image history.
+Deleting a local chat or removing a draft preview does not securely erase all image
+copies on the bridge or provider. This version adds no image-upload permission to
+the Mochi IPC service and does not broaden execution approvals.
+
 ### Same-device Mochi controller
 
 AgentLink retains device/tunnel/account credentials. The exported authorization

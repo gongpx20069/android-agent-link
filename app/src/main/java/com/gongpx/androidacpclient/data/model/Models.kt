@@ -76,6 +76,7 @@ data class Chat(
     val timelineId: String = id,
     val localHistoryBefore: Long? = null,
     val historyReplaySupported: Boolean = true,
+    val activePromptImages: Map<String, ImageAttachment> = emptyMap(),
 )
 
 data class QueuedPrompt(
@@ -83,6 +84,7 @@ data class QueuedPrompt(
     val text: String,
     val createdAtMillis: Long,
     val removing: Boolean = false,
+    val image: ImageAttachment? = null,
 )
 
 data class AvailableCommand(
@@ -145,6 +147,7 @@ data class ChatMessage(
     val operationId: String? = null,
     val localId: String = java.util.UUID.randomUUID().toString(),
     val isToolSnapshot: Boolean = false,
+    val image: ImageAttachment? = null,
 )
 
 enum class MessageRole {

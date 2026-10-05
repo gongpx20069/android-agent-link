@@ -3,7 +3,6 @@ from __future__ import annotations
 import secrets
 import threading
 import time
-import hashlib
 import sqlite3
 from copy import deepcopy
 from collections import deque
@@ -20,7 +19,8 @@ from .history import HistoryError, HistoryStore
 from .pairing import PairingStore
 from .account_pairing import AccountPairing, AccountPairingError
 from .console_log import ConsoleLog
-from .shared_state import ControlError, SharedState
+from .shared_state import ControlError, SharedState, prompt_digest
+from .attachments import AttachmentStore, MAX_IMAGE_BYTES, IMAGE_MIME_TYPES, image_metadata
 from .elicitation import validate_form, validate_answers
 
 
@@ -66,6 +66,8 @@ class PromptOperation:
     waiters: list[Callable[[dict[str, Any]], None]] | None = None
     batch_members: list["PromptOperation"] | None = None
     source: str = "human"
+    image: dict[str, Any] | None = None
+    digest: str = ""
 
 
 class AgentManager(Protocol):
@@ -175,6 +177,7 @@ class BridgeRuntime:
         self._history_loading_chats: set[str] = set()
         self._configuring_chats: set[str] = set()
         self.shared = SharedState(config.shared_state_store)
+        self.attachments = AttachmentStore(self.shared)
         self._event_generation = self.shared.generation
         for workspace in config.workspaces:
             self.shared.workspace(workspace.absolute_path, workspace.id, workspace.display_name)
@@ -236,6 +239,12 @@ class BridgeRuntime:
 
     def agents_response(self) -> dict[str, Any]:
         return {"agents": [agent.to_wire() for agent in discover_agents()]}
+
+    def image_capabilities(self, chat_id: str) -> dict[str, Any]:
+        self.shared.chat(chat_id)
+        supports = getattr(self.agent_manager, "supports_images", None)
+        return {"version": 1, "imageSupported": supports is not None and supports(chat_id),
+                "maxBytes": MAX_IMAGE_BYTES, "mimeTypes": list(IMAGE_MIME_TYPES)}
 
     def workspaces_response(self) -> dict[str, Any]:
         return {"workspaces": self.shared.workspaces()}
@@ -361,6 +370,16 @@ class BridgeRuntime:
         chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
         operation_id = _string_or_default(payload.get("operationId"), "op_" + secrets.token_urlsafe(8))
         prompt = _string_or_default(payload.get("content"), "")
+        try:
+            if payload.get("image") is not None and (
+                not isinstance(payload.get("content", ""), str) or len(prompt) > 64000 or "\x00" in prompt
+            ):
+                raise ControlError("INVALID_ARGS", "Image prompt content must be text no longer than 64000 characters.")
+            image = image_metadata(payload.get("image"))
+        except ControlError as exc:
+            return [{"type": "operation.done", "operationType": "chat.prompt", "chatId": chat_id,
+                     "operationId": operation_id, "status": "failed", "error": str(exc)},
+                    {"type": "bridge.done", "chatId": chat_id}]
         agent_id = _string_or_default(payload.get("agentId"), "copilot-cli")
         workspace_path = _string_or_default(payload.get("workspacePath"), "")
         session_id = _optional_string(payload.get("sessionId"))
@@ -380,15 +399,19 @@ class BridgeRuntime:
             waiters=[],
             source="mochi" if payload.get("source") == "mochi" else
                    "cli" if operation_id.startswith("terminal_") else "human",
+            image=image,
+            digest=prompt_digest(prompt, image),
         )
         with self._prompt_lock:
             persisted = self.shared.task(chat_id, operation_id)
             if persisted is not None and (chat_id, operation_id) not in self._prompt_operations:
-                if persisted.get("contentDigest") is not None and persisted["contentDigest"] != hashlib.sha256(prompt.encode()).hexdigest():
+                if persisted.get("contentDigest") is not None and persisted["contentDigest"] != operation.digest:
                     return [{"type": "operation.done", "chatId": chat_id, "operationId": operation_id,
                              "status": "failed", "error": "Operation ID already used with different content."},
                             {"type": "bridge.done", "chatId": chat_id}]
                 return [{"type": "operation.accepted", "chatId": chat_id, "operationId": operation_id,
+                         "operationType": "chat.prompt", "content": prompt,
+                         **({"image": image} if image is not None else {}),
                          "state": persisted["state"], "duplicate": True},
                         {"type": "bridge.done", "chatId": chat_id}]
             if chat_id in self._history_loading_chats or chat_id in self._configuring_chats:
@@ -421,12 +444,19 @@ class BridgeRuntime:
                 return responses
             existing = self._prompt_operations.get(operation_key)
             if existing is not None:
+                if existing.digest != operation.digest:
+                    return [{"type": "operation.done", "operationType": "chat.prompt", "chatId": chat_id,
+                             "operationId": operation_id, "status": "failed",
+                             "error": "Operation ID already used with different content."},
+                            {"type": "bridge.done", "chatId": chat_id}]
                 duplicate = {
                     "type": "operation.accepted",
                     "chatId": chat_id,
                     "operationId": operation_id,
                     "operationType": "chat.prompt",
                     "state": existing.state,
+                    "content": prompt,
+                    **({"image": image} if image is not None else {}),
                     "duplicate": True,
                 }
                 if emit is None:
@@ -443,6 +473,13 @@ class BridgeRuntime:
                         emit({"type": "bridge.done", "chatId": chat_id})
                 return responses
 
+            try:
+                self.attachments.resolve(chat_id, image)
+                self.attachments.retain(chat_id, image)
+            except ControlError as exc:
+                return [{"type": "operation.done", "operationType": "chat.prompt", "chatId": chat_id,
+                         "operationId": operation_id, "status": "failed", "error": str(exc)},
+                        {"type": "bridge.done", "chatId": chat_id}]
             queue_for_chat = self._prompt_queues.setdefault(chat_id, deque())
             if operation.source != "mochi":
                 for queued in list(queue_for_chat):
@@ -468,6 +505,7 @@ class BridgeRuntime:
                         "queuePosition": queue_position,
                         "content": prompt,
                         "source": operation.source,
+                        **({"image": image} if image is not None else {}),
                     },
                 )
                 active_operation_id = self._active_prompts[chat_id].operation_id
@@ -476,6 +514,7 @@ class BridgeRuntime:
                     self._chat_status_event(chat_id, "busy", active_operation_id, queued_count=queue_position),
                 )
             except sqlite3.Error:
+                self.attachments.release(chat_id, image)
                 self._prompt_operations.pop((chat_id, operation_id), None)
                 if starts_immediately:
                     self._active_prompts.pop(chat_id, None)
@@ -509,6 +548,7 @@ class BridgeRuntime:
                             "content": member.content,
                             "batchSize": len(batch),
                             "source": member.source,
+                            **({"image": member.image} if member.image is not None else {}),
                         },
                     )
 
@@ -538,6 +578,7 @@ class BridgeRuntime:
                         prompt="\n\n".join(member.content for member in batch),
                         session_id=operation.session_id,
                         session_resumable=operation.session_resumable,
+                        image=self.attachments.get(chat_id, operation.image["id"]) if operation.image else None,
                     ),
                     permission_callback=lambda message, operation=operation: self._request_permission(
                         chat_id,
@@ -548,7 +589,7 @@ class BridgeRuntime:
                     session_callback=emit_session,
                 )
                 operation_status = "completed"
-            except AcpAgentError as exc:
+            except (AcpAgentError, ControlError) as exc:
                 updates = [
                     {
                         "type": "session/update",
@@ -575,8 +616,12 @@ class BridgeRuntime:
 
             with self._prompt_lock:
                 queue_for_chat = self._prompt_queues.setdefault(chat_id, deque())
-                next_batch = list(queue_for_chat)
-                queue_for_chat.clear()
+                next_batch: list[PromptOperation] = []
+                while queue_for_chat:
+                    candidate = queue_for_chat[0]
+                    if next_batch and (next_batch[0].image is not None or candidate.image is not None):
+                        break
+                    next_batch.append(queue_for_chat.popleft())
                 next_operation = next_batch[0] if next_batch else None
                 if next_operation is None:
                     self._active_prompts.pop(chat_id, None)
@@ -587,7 +632,7 @@ class BridgeRuntime:
                         member.state = "starting"
                 for index, member in enumerate(batch):
                     member.state = operation_status
-                    queue_remaining = len(batch) - index - 1 + len(next_batch)
+                    queue_remaining = len(batch) - index - 1 + len(next_batch) + len(queue_for_chat)
                     self._publish_prompt_event(
                         member,
                         {
@@ -610,10 +655,11 @@ class BridgeRuntime:
                             chat_id,
                             "busy",
                             next_operation.operation_id,
-                            queued_count=max(0, len(next_batch) - 1),
+                            queued_count=max(0, len(next_batch) - 1) + len(queue_for_chat),
                         ),
                     )
                 for member in batch:
+                    self.attachments.release(chat_id, member.image)
                     self._finish_prompt_transport(member)
                     member.completed.set()
                     member.emit = None
@@ -704,6 +750,7 @@ class BridgeRuntime:
                 if emit is not None and (removed is None or not _same_emitter(emit, [removed.emit] if removed.emit is not None else [])):
                     emit({"type": "bridge.done", "chatId": chat_id})
                 if removed is not None:
+                    self.attachments.release(chat_id, removed.image)
                     removed.completed.set()
                     removed.emit = None
                     removed.content = ""
@@ -908,7 +955,7 @@ class BridgeRuntime:
                     self._history_loading_chats.discard(chat_id)
         for update in updates:
             update.setdefault("chatId", chat_id)
-        return updates + [{"type": "bridge.done", "chatId": chat_id}]
+        return [self.attachments.project_update(chat_id, update) for update in updates] + [{"type": "bridge.done", "chatId": chat_id}]
 
     def _session_load_recent_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
@@ -931,6 +978,8 @@ class BridgeRuntime:
                     claimed = True
             result = self.agent_manager.load_recent_session(chat_id, agent_id, workspace_path, session_id, limit)
             updates = result.get("updates", [])
+            if isinstance(updates, list):
+                updates = [self.attachments.project_update(chat_id, update) if isinstance(update, dict) else update for update in updates]
             if result.get("truncated"):
                 raise AcpAgentError("Session history replay was incomplete; no history snapshot was created.")
             page = self._history.create(
@@ -1230,7 +1279,7 @@ class BridgeRuntime:
     def _append_event(self, chat_id: str, event: dict[str, Any], log_operation_id: str | None = None) -> dict[str, Any]:
         with self._event_lock:
             event_id = self._next_event_ids.get(chat_id, 1)
-            enriched = event.copy()
+            enriched = self.attachments.project_update(chat_id, event)
             enriched.setdefault("chatId", chat_id)
             enriched["eventId"] = event_id
             enriched.setdefault("timestamp", int(time.time() * 1000))

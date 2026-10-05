@@ -5,6 +5,7 @@ import com.gongpx.androidacpclient.data.model.ChatMessage
 import com.gongpx.androidacpclient.data.model.ChatMessageKind
 import com.gongpx.androidacpclient.data.model.MessageRole
 import com.gongpx.androidacpclient.data.model.QueuedPrompt
+import com.gongpx.androidacpclient.data.model.ImageAttachment
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -26,6 +27,7 @@ internal object ChatJsonCodec {
             .put("historyReplaySupported", historyReplaySupported)
             .put("messages", JSONArray(messages.map { it.toJson() }))
             .put("queuedPrompts", JSONArray(queuedPrompts.map { it.toJson() }))
+            .put("activePromptImages", JSONObject().apply { activePromptImages.forEach { (id, image) -> put(id, image.toJson()) } })
             .put("lastBridgeEventId", lastBridgeEventId)
             .put("bridgeEventGeneration", bridgeEventGeneration)
             .put("bridgeResyncRequired", bridgeResyncRequired)
@@ -58,6 +60,9 @@ internal object ChatJsonCodec {
             historyReplaySupported = optBoolean("historyReplaySupported", true),
             messages = optJSONArray("messages").orEmpty().mapJsonObjects { it.toChatMessage() },
             queuedPrompts = optJSONArray("queuedPrompts").orEmpty().mapJsonObjects { it.toQueuedPrompt() },
+            activePromptImages = optJSONObject("activePromptImages")?.let { images ->
+                images.keys().asSequence().associateWith { ImageAttachment.fromJson(images.getJSONObject(it)) }
+            }.orEmpty(),
             lastBridgeEventId = optInt("lastBridgeEventId", 0),
             bridgeEventGeneration = optString("bridgeEventGeneration").ifBlank { null },
             bridgeResyncRequired = optBoolean("bridgeResyncRequired", false),
@@ -79,6 +84,7 @@ internal object ChatJsonCodec {
             .put("text", text)
             .put("createdAtMillis", createdAtMillis)
             .put("removing", removing)
+            .put("image", image?.toJson())
     }
 
     private fun JSONObject.toQueuedPrompt(): QueuedPrompt {
@@ -87,6 +93,7 @@ internal object ChatJsonCodec {
             text = getString("text"),
             createdAtMillis = getLong("createdAtMillis"),
             removing = optBoolean("removing", false),
+            image = optJSONObject("image")?.let(ImageAttachment::fromJson),
         )
     }
 
@@ -101,6 +108,7 @@ internal object ChatJsonCodec {
             .put("details", details)
             .put("activityId", activityId)
             .put("operationId", operationId)
+            .put("image", image?.toJson())
     }
 
     fun JSONObject.toChatMessage(): ChatMessage {
@@ -114,6 +122,7 @@ internal object ChatJsonCodec {
             activityId = optString("activityId").ifBlank { null },
             operationId = optString("operationId").ifBlank { null },
             localId = optString("localId").ifBlank { java.util.UUID.randomUUID().toString() },
+            image = optJSONObject("image")?.let(ImageAttachment::fromJson),
         )
     }
 

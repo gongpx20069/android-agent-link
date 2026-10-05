@@ -129,6 +129,8 @@ import com.gongpx.androidacpclient.data.bridge.ChatConnection
 import com.gongpx.androidacpclient.data.model.BridgeConnectionException
 import com.gongpx.androidacpclient.data.model.HistoryPage
 import com.gongpx.androidacpclient.data.model.Agent
+import com.gongpx.androidacpclient.data.model.ImageAttachment
+import com.gongpx.androidacpclient.data.model.withPromptImage
 import com.gongpx.androidacpclient.data.model.AgentPlanEntryPriority
 import com.gongpx.androidacpclient.data.model.AgentPlanEntryStatus
 import com.gongpx.androidacpclient.data.model.AgentSessionInfo
@@ -204,20 +206,20 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
-private enum class AppTab(val icon: String) {
+internal enum class AppTab(val icon: String) {
     Chats("✦"),
     Approvals("✓"),
     Machines("▣"),
     Settings("⚙"),
 }
 
-private enum class NewChatMode {
+internal enum class NewChatMode {
     NewSession,
     ExistingSession,
 }
 
-private val LocalAppStrings = staticCompositionLocalOf { AppStrings.English }
-private fun AppStrings.reliability(english: String, chinese: String): String =
+internal val LocalAppStrings = staticCompositionLocalOf { AppStrings.English }
+internal fun AppStrings.reliability(english: String, chinese: String): String =
     if (this == AppStrings.Chinese) chinese else english
 
 private fun approvalStatusLabel(status: ApprovalStatus, strings: AppStrings): String = when (status) {
@@ -239,7 +241,7 @@ private fun agentStatusLabel(status: String, strings: AppStrings): String = when
 private const val FEEDBACK_ISSUES_URL = "https://github.com/gongpx20069/android-agent-link/issues/new"
 private const val DEVELOPER_EMAIL = "gongpx20069@vip.qq.com"
 
-private data class AppStrings(
+internal data class AppStrings(
     val mobileControlSubtitle: String,
     val settings: String,
     val updates: String,
@@ -1092,7 +1094,7 @@ fun AgentLinkApp(
         val wasActivePrompt = activePromptOperationIds[chatId] == operationId
         when (state) {
             "", "starting", "running" -> activePromptOperationIds[chatId] = operationId
-            "completed", "failed", "cancelled" -> {
+            "completed", "failed", "cancelled", "interrupted" -> {
                 if (activePromptOperationIds[chatId] == operationId) {
                     activePromptOperationIds.remove(chatId)
                 }
@@ -1657,6 +1659,11 @@ fun AgentLinkApp(
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
                 handlePromptAccepted(chat.id, operationId, state, content)
             },
+            onPromptImage = { operationId, content, image ->
+                if (chatConnections[chat.id] !== connection) return@openChatConnection
+                val current = chats.firstOrNull { it.id == chat.id } ?: return@openChatConnection
+                upsertChat(current.withPromptImage(operationId, content, image))
+            },
             onPromptStarted = { operationId, content, _ ->
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
                 handlePromptStarted(chat.id, operationId, content)
@@ -1953,6 +1960,48 @@ fun AgentLinkApp(
         }
     }
 
+    fun submitPrompt(chat: Chat, message: String, image: ImageAttachment? = null): Boolean {
+        if (storageError != null) return false
+        if (image != null && (!appInForeground.value || !uiOwnsConnections)) return false
+        val current = chats.firstOrNull { it.id == chat.id } ?: return false
+        if (current.bridgeResyncRequired || chat.id in sessionLoadingChatIds || chat.id in configuringChatIds) return false
+        if (image != null && (current.machineId != chat.machineId || current.agentId != chat.agentId ||
+                current.workspacePath != chat.workspacePath || current.acpSessionId != chat.acpSessionId)) return false
+        val machine = machines.firstOrNull { it.id == current.machineId }
+        if (machine == null) {
+            upsertChat(current.withMessage(MessageRole.System, strings.machineUnavailable))
+            return false
+        }
+        val operationId = "op_" + UUID.randomUUID()
+        pendingLocalPromptStartEventIds[chat.id] = current.lastBridgeEventId
+        if (chat.id !in activePromptOperationIds) activePromptOperationIds[chat.id] = operationId
+        if (chat.id !in busyChatIds) busyChatIds.add(chat.id)
+        val updated = current.copy(
+            agentStatus = "busy",
+            queuedPrompts = current.queuedPrompts + QueuedPrompt(
+                operationId = operationId, text = message,
+                createdAtMillis = System.currentTimeMillis(), image = image,
+            ),
+        )
+        upsertChat(updated)
+        if (storageError != null) return false
+        latestAgentPreviews.remove(chat.id)
+        val activeConnection = chatConnections[chat.id]
+        val sent = activeConnection?.sendPrompt(
+            operationId, current.agentId, current.workspacePath, message,
+            current.acpSessionId, current.acpSessionResumable, image,
+        ) == true
+        if (!sent) {
+            if (activeConnection != null) {
+                chatConnections.remove(chat.id)
+                statusSynchronizedChatIds.remove(chat.id)
+                activeConnection.close()
+            }
+            ensureChatConnection(updated)
+        }
+        return true
+    }
+
     val queuedPromptRemovalKeys = chats.flatMap { chat ->
         chat.queuedPrompts
             .filter { it.removing }
@@ -2005,6 +2054,9 @@ fun AgentLinkApp(
             )
         }
         historyDialogChat?.let { page ->
+            val imageSource = machines.firstOrNull { it.id == page.machineId }?.let {
+                ImagePromptContext(it, page.id, bridgeClient) { _, _ -> false }
+            }
             AlertDialog(
                 onDismissRequest = { historyDialogChat = null },
                 title = { Text(strings.reliability("Saved history", "已保存的历史")) },
@@ -2013,7 +2065,12 @@ fun AgentLinkApp(
                         if (page.messages.isEmpty()) item {
                             Text(strings.reliability("Beginning of saved history.", "已到本地历史开头。"))
                         }
-                        items(page.messages, key = { it.localId }, contentType = { it.kind }) { ChatTimelineItem(it) }
+                        items(page.messages, key = { it.localId }, contentType = { it.kind }) { item ->
+                            Column {
+                                if (item.image == null || item.text.isNotBlank()) ChatTimelineItem(item)
+                                item.image?.let { AttachmentPreview(it, imageSource) }
+                            }
+                        }
                     }
                 },
                 confirmButton = {
@@ -2161,54 +2218,9 @@ fun AgentLinkApp(
                                     chatConnections.remove(chat.id)?.close()
                                 }
                             },
-                            onSendMessage = { chat, message ->
-                                if (storageError != null) return@ChatsScreen false
-                                val current = chats.firstOrNull { it.id == chat.id } ?: return@ChatsScreen false
-                                if (current.bridgeResyncRequired || chat.id in sessionLoadingChatIds || chat.id in configuringChatIds) {
-                                    return@ChatsScreen false
-                                }
-                                val machine = machines.firstOrNull { it.id == current.machineId }
-                                if (machine == null) {
-                                    upsertChat(current.withMessage(MessageRole.System, strings.machineUnavailable))
-                                    false
-                                } else {
-                                    val operationId = "op_" + UUID.randomUUID()
-                                    pendingLocalPromptStartEventIds[chat.id] = current.lastBridgeEventId
-                                    if (chat.id !in activePromptOperationIds) {
-                                        activePromptOperationIds[chat.id] = operationId
-                                    }
-                                    if (chat.id !in busyChatIds) busyChatIds.add(chat.id)
-                                    val updated = current.copy(
-                                        agentStatus = "busy",
-                                        queuedPrompts = current.queuedPrompts + QueuedPrompt(
-                                            operationId = operationId,
-                                            text = message,
-                                            createdAtMillis = System.currentTimeMillis(),
-                                        ),
-                                    )
-                                    upsertChat(updated)
-                                    if (storageError != null) return@ChatsScreen false
-                                    latestAgentPreviews.remove(chat.id)
-                                    val activeConnection = chatConnections[chat.id]
-                                    val sent = activeConnection?.sendPrompt(
-                                        operationId,
-                                        current.agentId,
-                                        current.workspacePath,
-                                        message,
-                                        current.acpSessionId,
-                                        current.acpSessionResumable,
-                                    ) == true
-                                    if (!sent) {
-                                        if (activeConnection != null) {
-                                            chatConnections.remove(chat.id)
-                                            statusSynchronizedChatIds.remove(chat.id)
-                                            activeConnection.close()
-                                        }
-                                        ensureChatConnection(updated)
-                                    }
-                                    true
-                                }
-                            },
+                            onSendMessage = { chat, message -> submitPrompt(chat, message) },
+                            imageClient = bridgeClient,
+                            onSendImage = { chat, message, image -> submitPrompt(chat, message, image) },
                         ) }
                         AppTab.Approvals -> ApprovalsScreen(padding, approvals, ::updateApproval, ::deleteApproval)
                         AppTab.Machines -> MachinesScreen(
@@ -2491,6 +2503,8 @@ internal fun ChatsScreen(
     onSendMessage: (Chat, String) -> Boolean,
     cancellingChatIds: Set<String> = emptySet(),
     onCancelTask: (Chat) -> Unit = {},
+    imageClient: BridgeClient? = null,
+    onSendImage: (Chat, String, ImageAttachment) -> Boolean = { _, _, _ -> false },
 ) {
     val strings = LocalAppStrings.current
     val detailStateHolder = rememberSaveableStateHolder()
@@ -2523,6 +2537,11 @@ internal fun ChatsScreen(
             onRetryConnection = { onRetryConnection(selectedChat) },
             onBack = onBackToList,
             onSendMessage = { onSendMessage(selectedChat, it) },
+            imageContext = machines.firstOrNull { it.id == selectedChat.machineId }?.let { machine ->
+                imageClient?.let { client ->
+                    ImagePromptContext(machine, selectedChat.id, client) { text, image -> onSendImage(selectedChat, text, image) }
+                }
+            },
             onRemoveQueuedPrompt = { onRemoveQueuedPrompt(selectedChat, it) },
             onCommand = { command ->
                 when (command.name) {
@@ -2770,6 +2789,7 @@ internal fun ChatDetailScreen(
     onCommand: (AvailableCommand) -> Unit,
     cancelling: Boolean = false,
     onCancelTask: () -> Unit = {},
+    imageContext: ImagePromptContext? = null,
 ) {
     val strings = LocalAppStrings.current
     var showConnectionDetails by rememberSaveable(chat.id) { mutableStateOf(false) }
@@ -2924,7 +2944,10 @@ internal fun ChatDetailScreen(
                     ApprovalCard(approval, onApprovalDecision)
                 }
                 items(visibleMessages, key = { it.localId }, contentType = { it.kind }) { item ->
-                    ChatTimelineItem(item)
+                    Column {
+                        if (item.image == null || item.text.isNotBlank()) ChatTimelineItem(item)
+                        item.image?.let { AttachmentPreview(it, imageContext) }
+                    }
                 }
             }
 
@@ -2968,7 +2991,7 @@ internal fun ChatDetailScreen(
                         strings.reliability("Updating session…", "正在更新会话…"),
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    ChatPromptComposer(chat.id, isBusy, onSendMessage, enabled = !sessionOperationInProgress && !chat.bridgeResyncRequired)
+                    ChatPromptComposer(chat.id, isBusy, onSendMessage, enabled = !sessionOperationInProgress && !chat.bridgeResyncRequired, imageContext = imageContext)
                     if (isBusy) TextButton(
                         enabled = !cancelling && connectionState == ConnectionState.Online,
                         onClick = onCancelTask,
@@ -3001,7 +3024,9 @@ internal fun QueuedPromptList(chatId: String, prompts: List<QueuedPrompt>, onRem
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = 180.dp)) {
             items(prompts, key = { it.operationId }) { queued ->
                 var expanded by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
-                val preview = remember(queued.text) { queuedPromptPreview(queued.text) }
+                val preview = remember(queued.text, queued.image) {
+                    queuedPromptPreview((if (queued.image != null) "[Image] " else "") + queued.text)
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -3053,7 +3078,11 @@ internal fun QueuedPromptList(chatId: String, prompts: List<QueuedPrompt>, onRem
 }
 
 @Composable
-internal fun ChatPromptComposer(chatId: String, isBusy: Boolean, onSend: (String) -> Boolean, enabled: Boolean = true) {
+internal fun ChatPromptComposer(chatId: String, isBusy: Boolean, onSend: (String) -> Boolean, enabled: Boolean = true, imageContext: ImagePromptContext? = null) {
+    if (imageContext != null) {
+        ImagePromptComposer(chatId, isBusy, onSend, enabled, imageContext)
+        return
+    }
     val strings = LocalAppStrings.current
     var message by androidx.compose.runtime.saveable.rememberSaveable(chatId) { mutableStateOf("") }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3122,7 +3151,7 @@ private fun ChatStatusDot(isBusy: Boolean, connectionState: ConnectionState) {
 }
 
 @Composable
-private fun CompactPromptField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
+internal fun CompactPromptField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val strings = LocalAppStrings.current
     Surface(
         modifier = modifier.defaultMinSize(minHeight = 42.dp),
@@ -3146,6 +3175,7 @@ private fun CompactPromptField(value: String, onValueChange: (String) -> Unit, m
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
+                enabled = enabled,
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                 singleLine = false,

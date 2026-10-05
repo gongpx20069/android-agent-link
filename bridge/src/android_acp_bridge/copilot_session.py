@@ -12,6 +12,7 @@ from typing import Any
 from .acp_agent import (
     SESSION_RESTORE_MAX_EVENTS, AcpAgentError, AcpAgentSession, AcpSessionNotFoundError, UpdateCallback, _resolve_workspace,
 )
+from .attachments import ImageInput
 
 
 class CopilotEventProjection:
@@ -42,6 +43,14 @@ class CopilotEventProjection:
         elif kind == "user.message" and history and not parent and data.get("source", "user") == "user":
             update = {"sessionUpdate": "user_message_chunk", "messageId": str(event["id"]),
                       "content": {"type": "text", "text": data.get("content", "")}}
+            updates = [{"type": "session/update", "update": update}]
+            for attachment in data.get("attachments") or []:
+                if attachment.get("type") == "blob" and attachment.get("mimeType") in {"image/png", "image/jpeg"} and attachment.get("data"):
+                    content = {"type": "image", "mimeType": attachment["mimeType"], "data": attachment["data"]}
+                else:
+                    content = {"type": "text", "text": "[External attachment unavailable in AgentLink history.]"}
+                updates.append({"type": "session/update", "update": {**update, "content": content}})
+            return updates
         elif kind == "tool.execution_start":
             update = {"sessionUpdate": "tool_call", "toolCallId": data["toolCallId"],
                       "title": data["toolName"], "kind": "other", "status": "in_progress",
@@ -81,6 +90,10 @@ class CopilotAgentSession(AcpAgentSession):
     @property
     def history_replay_supported(self) -> bool:
         return True
+
+    @property
+    def image_input_supported(self) -> bool:
+        return getattr(self, "_image_input_supported", False)
 
     def ensure_replaceable(self) -> None:
         with self._condition:
@@ -257,7 +270,16 @@ class CopilotAgentSession(AcpAgentSession):
                     self._fault = AcpAgentError("Copilot event delivery failed; completion is not confirmed.")
                     self._condition.notify_all()
 
-    def prompt(self, prompt: str, update_callback: UpdateCallback | None = None) -> list[dict[str, Any]]:
+    def prompt(self, prompt: str, update_callback: UpdateCallback | None = None,
+               image: ImageInput | None = None) -> list[dict[str, Any]]:
+        if image is not None:
+            self._run(self._refresh_options())
+            if not self.image_input_supported:
+                raise AcpAgentError("The selected Copilot model does not declare vision support. Select a vision model.")
+            if self._image_max_bytes is not None and len(image.data) > self._image_max_bytes:
+                raise AcpAgentError("The image exceeds the selected Copilot model's size limit.")
+            if self._image_mime_types is not None and image.mime_type not in self._image_mime_types:
+                raise AcpAgentError("The selected Copilot model does not support this image format.")
         with self._condition:
             if self._closed or self._fault:
                 raise self._fault or AcpAgentError("Copilot session is closed.")
@@ -274,7 +296,10 @@ class CopilotAgentSession(AcpAgentSession):
             with self._condition:
                 if self._fault or self._closed:
                     raise self._fault or AcpAgentError("Copilot session closed before sending the prompt.")
-            self._run(self._native.send(prompt))
+            if image is None:
+                self._run(self._native.send(prompt))
+            else:
+                self._run(self._native.send(prompt, attachments=[image.copilot_blob()]))
             while True:
                 with self._condition:
                     self._condition.wait_for(
@@ -305,6 +330,14 @@ class CopilotAgentSession(AcpAgentSession):
         models = await self._client.list_models()
         current = await self._native.rpc.model.get_current()
         mode = await self._native.rpc.permissions.get_mode()
+        model = next((item for item in models if item.id == current.model_id), None)
+        capabilities = getattr(model, "capabilities", None)
+        self._image_input_supported = getattr(getattr(capabilities, "supports", None), "vision", False) is True
+        vision = getattr(getattr(capabilities, "limits", None), "vision", None)
+        self._image_max_bytes = getattr(vision, "max_prompt_image_size", None)
+        self._image_mime_types = getattr(vision, "supported_media_types", None)
+        if getattr(vision, "max_prompt_images", None) == 0:
+            self._image_input_supported = False
         self._latest_config_options = [
             {"id": "model", "name": "Model", "category": "model", "type": "select",
              "currentValue": current.model_id or "auto",

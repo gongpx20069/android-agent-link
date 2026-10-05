@@ -161,6 +161,7 @@ private fun JSONObject.toHistoryMessage(nowMillis: Long): ChatMessage {
         details = details,
         activityId = stringOrNull("activityId") ?: stringOrNull("messageId") ?: stringOrNull("historyItemId"),
         operationId = stringOrNull("operationId"),
+        image = optJSONObject("image")?.let(ImageAttachment::fromJson),
     )
 }
 

@@ -267,6 +267,8 @@ class TerminalClient:
             }
             if kind == "operation.accepted":
                 item["content"] = str(event.get("content", ""))[:8192]
+                if event.get("image"):
+                    item["content"] = "[Image attached]\n" + item["content"]
                 item["state"] = event.get("state")
                 if not chat.preview:
                     chat.preview = " ".join(display_text(item["content"]).split())[:64]

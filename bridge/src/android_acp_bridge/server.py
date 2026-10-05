@@ -1,14 +1,20 @@
 from __future__ import annotations
+import asyncio
+import sqlite3
 
 from typing import Any, Awaitable, Callable
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import JSONResponse
 
 from . import __version__
 from .device_tokens import DeviceTokenStoreError
 from .account_pairing import AccountPairingError
 from .runtime import BridgeRuntime, DeviceInfo as RuntimeDeviceInfo, InvalidPairingTokenError, PairingDeniedError
+from .attachments import MAX_IMAGE_BYTES, error_status
+from .shared_state import ControlError
 
 
 class DeviceInfo(BaseModel):
@@ -30,7 +36,15 @@ def create_app(runtime: BridgeRuntime) -> FastAPI:
     async def log_http(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         status = 500
         try:
-            response = await call_next(request)
+            try:
+                response = await call_next(request)
+            except (DeviceTokenStoreError, sqlite3.Error):
+                if not request.url.path.startswith("/attachments"):
+                    raise
+                runtime.console.message("error", "attachment.storage_failed")
+                response = JSONResponse({"error": "attachment_storage_unavailable"}, status_code=503)
+            if request.url.path.startswith("/attachments"):
+                response.headers["Cache-Control"] = "no-store"
             status = response.status_code
             return response
         finally:
@@ -47,6 +61,54 @@ def create_app(runtime: BridgeRuntime) -> FastAPI:
     @app.get("/workspaces")
     def workspaces() -> dict[str, Any]:
         return runtime.public_workspaces_response()
+
+    def image_auth(request: Request) -> str:
+        token = request.headers.get("Authorization", "")
+        if not token.startswith("Bearer ") or not runtime.is_device_token_valid(token[7:]):
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return request.query_params.get("chatId", "")
+
+    @app.get("/attachments/capabilities")
+    def image_capabilities(request: Request) -> dict[str, Any]:
+        try:
+            return runtime.image_capabilities(image_auth(request))
+        except ControlError as exc:
+            raise HTTPException(status_code=error_status(exc), detail=str(exc)) from None
+
+    @app.get("/attachments")
+    def download_image(request: Request) -> Response:
+        try:
+            image = runtime.attachments.get(image_auth(request), request.query_params.get("id", ""))
+            return Response(image.data, media_type=image.mime_type,
+                            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        except ControlError as exc:
+            raise HTTPException(status_code=error_status(exc), detail=str(exc)) from None
+
+    @app.post("/attachments")
+    async def upload_image(request: Request) -> dict[str, Any]:
+        try:
+            chat_id = image_auth(request)
+            if not runtime.image_capabilities(chat_id)["imageSupported"]:
+                raise ControlError("UNSUPPORTED", "This session does not declare image support.")
+            try:
+                size = int(request.headers.get("Content-Length", "0"))
+            except ValueError:
+                size = 0
+            if not 0 < size <= MAX_IMAGE_BYTES or request.headers.get("Transfer-Encoding"):
+                raise ControlError("LIMIT_EXCEEDED", "Image must be at most 5 MiB.")
+            data = bytearray()
+            async with asyncio.timeout(30):
+                async for chunk in request.stream():
+                    if len(data) + len(chunk) > size:
+                        raise ControlError("LIMIT_EXCEEDED", "Image exceeds declared length.")
+                    data.extend(chunk)
+            if len(data) != size:
+                raise ControlError("INVALID_ARGS", "Incomplete image.")
+            return await run_in_threadpool(runtime.attachments.put, chat_id, request.headers.get("Content-Type", ""), bytes(data))
+        except ControlError as exc:
+            raise HTTPException(status_code=error_status(exc), detail=str(exc)) from None
+        except TimeoutError:
+            raise HTTPException(status_code=408, detail="Image upload timed out.") from None
 
     @app.post("/pairing/redeem")
     def redeem_pairing(request: PairingRedeemRequest) -> dict[str, str]:

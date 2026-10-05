@@ -6,12 +6,15 @@ import json
 import queue
 import struct
 import threading
+import sqlite3
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from .device_tokens import DeviceTokenStoreError
 from .account_pairing import AccountPairingError
+from .attachments import MAX_IMAGE_BYTES, error_status
+from .shared_state import ControlError
 
 from .runtime import BridgeRuntime, InvalidPairingTokenError, PairingDeniedError, parse_device_info
 
@@ -27,6 +30,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path in {"/attachments", "/attachments/capabilities"}:
+            self._attachment_request(parsed)
+            return
 
         if parsed.path == "/health":
             self._send_json(HTTPStatus.OK, self.server.runtime.health_response())
@@ -45,6 +51,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/attachments":
+            self._attachment_request(parsed)
+            return
         if parsed.path in {"/pairing/request", "/pairing/status"}:
             body = self._read_json_body()
             try:
@@ -93,6 +102,52 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         # Never format the raw request, URL, query or header-bearing parser errors.
         self.server.runtime.console.message("debug", "http.diagnostic")
 
+    def _attachment_request(self, parsed: Any) -> None:
+        runtime = self.server.runtime
+        try:
+            authorization = self.headers.get("Authorization", "")
+            if not authorization.startswith("Bearer ") or not runtime.is_device_token_valid(authorization[7:]):
+                self.close_connection = True
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                return
+            query = parse_qs(parsed.query)
+            chat_id = query.get("chatId", [""])[0]
+            if parsed.path == "/attachments/capabilities":
+                self._send_json(HTTPStatus.OK, runtime.image_capabilities(chat_id))
+            elif self.command == "POST":
+                if not runtime.image_capabilities(chat_id)["imageSupported"]:
+                    raise ControlError("UNSUPPORTED", "This session does not currently declare image support. Select a vision model or wait for connection.")
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    size = 0
+                if not 0 < size <= MAX_IMAGE_BYTES or self.headers.get("Transfer-Encoding"):
+                    raise ControlError("LIMIT_EXCEEDED", "A Content-Length between 1 byte and 5 MiB is required.")
+                self.connection.settimeout(30)
+                data = self.rfile.read(size)
+                if len(data) != size:
+                    raise ControlError("INVALID_ARGS", "Incomplete image upload.")
+                self._send_json(HTTPStatus.OK, runtime.attachments.put(chat_id, self.headers.get("Content-Type", ""), data))
+            else:
+                image = runtime.attachments.get(chat_id, query.get("id", [""])[0])
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", image.mime_type)
+                self.send_header("Content-Length", str(len(image.data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(image.data)
+        except ControlError as exc:
+            self.close_connection = True
+            self._send_json(HTTPStatus(error_status(exc)), {"error": exc.code, "message": str(exc)})
+        except (DeviceTokenStoreError, sqlite3.Error):
+            self.close_connection = True
+            runtime.console.message("error", "attachment.storage_failed")
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "attachment_storage_unavailable"})
+        except TimeoutError:
+            self.close_connection = True
+            self._send_json(HTTPStatus.REQUEST_TIMEOUT, {"error": "attachment_upload_timeout"})
+
     def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
         status = int(code) if str(code).isdigit() else 0
         self.server.runtime.console.http(self.command, status)
@@ -115,6 +170,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(raw)
 

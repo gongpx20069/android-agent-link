@@ -39,6 +39,7 @@ fun reconcileRecentSessionMessages(
                 role = recovered.role,
                 text = recovered.text,
                 activityId = recovered.activityId,
+                image = recovered.image ?: reconciledExisting[existingIndex].image,
             )
         }
     }
@@ -78,7 +79,7 @@ private fun ChatMessage.sameRecoveredMessage(other: ChatMessage): Boolean {
     return if (leftId != null && rightId != null) {
         leftId == rightId
     } else {
-        text == other.text
+        text == other.text && image == other.image
     }
 }
 
@@ -90,7 +91,7 @@ fun Chat.startQueuedPrompt(operationId: String, content: String, nowMillis: Long
     val queued = queuedPrompts.firstOrNull { it.operationId == operationId }
     val text = queued?.text ?: content
     val remaining = queuedPrompts.filterNot { it.operationId == operationId }
-    if (text.isBlank() || messages.any { it.operationId == operationId }) {
+    if ((text.isBlank() && queued?.image == null) || messages.any { it.operationId == operationId }) {
         return copy(queuedPrompts = remaining)
     }
     return copy(
@@ -99,13 +100,16 @@ fun Chat.startQueuedPrompt(operationId: String, content: String, nowMillis: Long
             text = text,
             timestampMillis = nowMillis,
             operationId = operationId,
+            image = queued?.image,
         ),
         queuedPrompts = remaining,
+        activePromptImages = queued?.image?.let { activePromptImages + (operationId to it) } ?: activePromptImages,
     )
 }
 
 fun Chat.removeQueuedPrompt(operationId: String): Chat {
-    return copy(queuedPrompts = queuedPrompts.filterNot { it.operationId == operationId })
+    return copy(queuedPrompts = queuedPrompts.filterNot { it.operationId == operationId },
+        activePromptImages = activePromptImages - operationId)
 }
 
 fun Chat.markQueuedPromptRemoving(operationId: String): Chat {
@@ -141,7 +145,10 @@ fun Chat.acceptPrompt(
             }
         }
         "cancelled" -> removeQueuedPrompt(operationId)
-        "completed", "failed", "running", "starting", "" ->
+        "completed", "failed", "interrupted" -> startQueuedPrompt(operationId, content, nowMillis).let {
+            it.copy(activePromptImages = it.activePromptImages - operationId)
+        }
+        "running", "starting", "" ->
             startQueuedPrompt(operationId, content, nowMillis)
         else -> this
     }
@@ -149,7 +156,10 @@ fun Chat.acceptPrompt(
 
 fun Chat.finishPrompt(operationId: String, status: String, nowMillis: Long): Chat {
     return when (status) {
-        "completed", "failed", "already_started" -> startQueuedPrompt(operationId, "", nowMillis)
+        "completed", "failed", "interrupted" -> startQueuedPrompt(operationId, "", nowMillis).let {
+            it.copy(activePromptImages = it.activePromptImages - operationId)
+        }
+        "already_started" -> startQueuedPrompt(operationId, "", nowMillis)
         "cancelled" -> removeQueuedPrompt(operationId)
         else -> this
     }

@@ -7,7 +7,7 @@ fun ChatConnection.restoreQueuedPrompts(chat: Chat): Boolean {
     return (queue.filter { it.removing } + queue.filterNot { it.removing }).all { prompt ->
         if (prompt.removing) removeQueuedPrompt(prompt.operationId) else sendPrompt(
             prompt.operationId, chat.agentId, chat.workspacePath, prompt.text,
-            chat.acpSessionId, chat.acpSessionResumable,
+            chat.acpSessionId, chat.acpSessionResumable, prompt.image,
         )
     }
 }

@@ -14,6 +14,7 @@ from android_acp_bridge.config import BridgeConfig
 from android_acp_bridge.copilot_session import CopilotAgentSession, CopilotEventProjection
 from android_acp_bridge.pairing import PairingStore
 from android_acp_bridge.runtime import BridgeRuntime
+from android_acp_bridge.attachments import ImageInput
 
 
 def event(kind, **data):
@@ -45,7 +46,7 @@ class FakeNative:
             ),
         )
 
-    async def _send(self, prompt):
+    async def _send(self, prompt, attachments=None):
         self.emit("user.message", content=prompt)
         self.emit("assistant.turn_start", turnId="1")
         self.sent.set()
@@ -98,6 +99,40 @@ class NativeSessionTests(unittest.TestCase):
         thread.start()
         self.assertTrue(self.native.sent.wait(3))
         return thread, result
+
+    def test_vision_model_receives_native_blob_attachment(self):
+        self.client.list_models.return_value[0].capabilities = SimpleNamespace(
+            supports=SimpleNamespace(vision=True),
+            limits=SimpleNamespace(vision=SimpleNamespace(
+                max_prompt_image_size=1024, supported_media_types=["image/png"], max_prompt_images=1)),
+        )
+        image = ImageInput(b"synthetic-image", "image/png")
+        result = {}
+        def run():
+            result["updates"] = self.session.prompt("describe", image=image)
+        thread = threading.Thread(target=run)
+        self.threads.append(thread)
+        thread.start()
+        self.assertTrue(self.native.sent.wait(3))
+        self.native.emit("session.idle")
+        thread.join(3)
+        self.assertIn("updates", result)
+        self.native.send.assert_awaited_once_with("describe", attachments=[image.copilot_blob()])
+
+    def test_unknown_model_and_model_image_limits_reject_before_native_send(self):
+        image = ImageInput(b"synthetic-image", "image/png")
+        with self.assertRaisesRegex(AcpAgentError, "vision"):
+            self.session.prompt("describe", image=image)
+        for vision in [
+            SimpleNamespace(max_prompt_image_size=1, supported_media_types=["image/png"], max_prompt_images=1),
+            SimpleNamespace(max_prompt_image_size=1024, supported_media_types=["image/jpeg"], max_prompt_images=1),
+            SimpleNamespace(max_prompt_image_size=1024, supported_media_types=["image/png"], max_prompt_images=0),
+        ]:
+            self.client.list_models.return_value[0].capabilities = SimpleNamespace(
+                supports=SimpleNamespace(vision=True), limits=SimpleNamespace(vision=vision))
+            with self.assertRaises(AcpAgentError):
+                self.session.prompt("describe", image=image)
+        self.native.send.assert_not_awaited()
 
     def test_reply_and_tool_launch_completion_do_not_end_background_work(self):
         delivered = []

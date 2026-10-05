@@ -18,6 +18,10 @@
 
 One Android app for multiple agents, projects and computers.
 
+**Image input (0.0.39+):** attach one screenshot/photo with optional text, preview
+it and send it to an image-capable agent/model. Requires updated App **and** Bridge;
+see [image input](docs/user-guide.md#send-an-image) for limits.
+
 ## Quick start
 
 ### 1. Download the app

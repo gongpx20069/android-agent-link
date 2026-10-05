@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from .acp_agent import AcpAgentError
+from .attachments import image_metadata
 from .agents import AGENT_SPECS
-from .shared_state import ControlError, required_text
+from .shared_state import ControlError, required_text, prompt_digest
 
 if TYPE_CHECKING:
     from .runtime import BridgeRuntime
@@ -104,14 +105,19 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
                     "approvals": approvals,
                     "online": True, "observedAt": int(time.time() * 1000)}
     if action == "chat.send":
-        content = required_text(payload.get("content"), "content", 64000)
+        image = image_metadata(payload.get("image"))
+        content = payload.get("content", "")
+        if not isinstance(content, str) or len(content) > 64000:
+            raise ControlError("INVALID_ARGS", "content must be text no longer than 64000 characters.")
+        if image is None or content:
+            content = required_text(content, "content", 64000)
         operation = required_text(payload.get("operationId"), "operationId", 256)
         source = "mochi" if payload.get("source") == "mochi" else "human"
         with runtime._prompt_lock:
             chat = runtime.shared.chat(chat_id)
             existing = runtime.shared.task(chat_id, operation)
             if existing is not None:
-                if existing.get("contentDigest") != hashlib.sha256(content.encode()).hexdigest():
+                if existing.get("contentDigest") != prompt_digest(content, image):
                     raise ControlError("CONFLICT", "Operation ID already used with different content.")
                 return {**existing, "duplicate": True}
             if source == "mochi" and (type(payload.get("expectedHumanRevision")) is not int
@@ -131,7 +137,8 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
                 if event.get("type") in {"operation.accepted", "operation.done"} and len(immediate) < 4:
                     immediate.append(event)
             direct = runtime.websocket_responses({"type": "chat.prompt", **chat, "content": content,
-                                                  "operationId": operation, "source": source}, emit=receive)
+                                                  "operationId": operation, "source": source,
+                                                  **({"image": image} if image else {})}, emit=receive)
             immediate.extend(direct[:4])
             failed = next((event for event in immediate if event.get("error")), None)
             if failed:

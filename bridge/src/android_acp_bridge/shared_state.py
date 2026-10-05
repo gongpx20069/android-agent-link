@@ -27,6 +27,12 @@ def required_text(value: Any, name: str, limit: int = 1024) -> str:
     return value
 
 
+def prompt_digest(text: str, image: dict[str, Any] | None = None) -> str:
+    if image is None:
+        return hashlib.sha256(text.encode()).hexdigest()
+    return hashlib.sha256(json.dumps([text, image["id"]], separators=(",", ":")).encode()).hexdigest()
+
+
 class SharedState:
     EVENT_LIMIT = 10000
     EVENT_BYTES = 128 * 1024
@@ -226,7 +232,7 @@ class SharedState:
                     if "source" in event:
                         task["source"] = event["source"]
                     if kind == "operation.accepted":
-                        task["contentDigest"] = hashlib.sha256(str(event.get("content", "")).encode()).hexdigest()
+                        task["contentDigest"] = prompt_digest(str(event.get("content", "")), event.get("image"))
                     self.db.execute("INSERT OR REPLACE INTO tasks VALUES(?,?,?)", (chat_id, identity, json.dumps(task)))
                     active = self._active_receipts.setdefault(chat_id, set())
                     if task["state"] in {"starting", "running", "waitingApproval"}:

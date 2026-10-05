@@ -3,6 +3,8 @@ package com.gongpx.androidacpclient.data.bridge
 import android.os.Handler
 import android.os.Looper
 import com.gongpx.androidacpclient.data.model.Agent
+import com.gongpx.androidacpclient.data.model.ImageAttachment
+import com.gongpx.androidacpclient.data.store.ImageStore
 import com.gongpx.androidacpclient.data.model.AgentSessionInfo
 import com.gongpx.androidacpclient.data.model.ContextResumeResult
 import com.gongpx.androidacpclient.data.model.toContextResumeResult
@@ -45,8 +47,13 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+
+internal class ImageUnavailableException : IOException("Image is unavailable or was automatically cleared.")
 
 class BridgeClient(
     private val accountHeaders: ((String, Map<String, String>) -> Map<String, String>)? = null,
@@ -77,6 +84,79 @@ class BridgeClient(
         .pingInterval(5, TimeUnit.SECONDS)
         .build()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val imageHttpClient by lazy {
+        webSocketClient.newBuilder().callTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS).writeTimeout(20, TimeUnit.SECONDS).build()
+    }
+
+    private fun imageRequest(machine: Machine, chatId: String, capabilities: Boolean = false, id: String? = null): Request.Builder {
+        val url = (toHttpBase(machine.endpoint) + "/attachments" + if (capabilities) "/capabilities" else "")
+            .toHttpUrl().newBuilder().addQueryParameter("chatId", chatId).apply {
+                if (id != null) addQueryParameter("id", id)
+            }.build()
+        return Request.Builder().url(url).apply {
+            machine.connectionHeaders.forEach { (name, value) -> header(name, value) }
+            header("Authorization", "Bearer ${machine.deviceToken}")
+        }
+    }
+
+    private fun Response.requireImageSuccess() {
+        if (!isSuccessful) {
+            if (code == 404 && request.url.encodedPath.endsWith("/capabilities")) {
+                throw IOException("Image service unavailable. Update the computer Bridge and reconnect the chat.")
+            }
+            if (code == 404) throw ImageUnavailableException()
+            if (code == 401 || code == 403) throw IOException("Image access denied. Check the machine connection and sign-in.")
+            val detail = body?.byteStream()?.use { ImageStore.readBounded(it, 4096).toString(Charsets.UTF_8) }
+            val message = if (header("Content-Type")?.startsWith("application/json") == true) {
+                detail?.let { JSONObject(it).let { data -> data.optString("message").ifBlank { data.optString("detail") } }.ifBlank { null } }
+            } else null
+            throw IOException(message ?: "Image request failed (HTTP $code).")
+        }
+    }
+
+    private suspend fun imageResponse(request: Request): Response = suspendCancellableCoroutine { continuation ->
+        val call = imageHttpClient.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, error: IOException) {
+                if (continuation.isActive) continuation.resumeWith(Result.failure(error))
+            }
+            override fun onResponse(call: okhttp3.Call, response: Response) {
+                continuation.resume(response, onCancellation = { _, value, _ -> value.close() })
+            }
+        })
+    }
+
+    suspend fun uploadImage(machine: Machine, chatId: String, image: ImageAttachment, bytes: ByteArray): ImageAttachment =
+        withContext(Dispatchers.IO) {
+            ImageStore.verify(image, bytes)
+            imageResponse(imageRequest(machine, chatId, capabilities = true).build()).use { response ->
+                response.requireImageSuccess()
+                val data = JSONObject(requireNotNull(response.body).byteStream().use {
+                    ImageStore.readBounded(it, 4096).toString(Charsets.UTF_8)
+                })
+                check(data.optInt("version") == 1) { "Update the Bridge to use image attachments." }
+                check(data.optBoolean("imageSupported")) { "This session does not declare image support. Connect the chat and select a vision model." }
+            }
+            imageResponse(imageRequest(machine, chatId).post(bytes.toRequestBody(image.mimeType.toMediaType())).build()).use { response ->
+                response.requireImageSuccess()
+                val uploaded = ImageAttachment.fromJson(JSONObject(requireNotNull(response.body).byteStream().use {
+                    ImageStore.readBounded(it, 4096).toString(Charsets.UTF_8)
+                }))
+                check(uploaded == image) { "Bridge did not confirm the uploaded image." }
+                uploaded
+            }
+        }
+
+    suspend fun downloadImage(machine: Machine, chatId: String, image: ImageAttachment): ByteArray = withContext(Dispatchers.IO) {
+        imageResponse(imageRequest(machine, chatId, id = image.id).build()).use { response ->
+            response.requireImageSuccess()
+            check(response.header("Content-Type")?.substringBefore(';') == image.mimeType) { "Unexpected image format" }
+            requireNotNull(response.body).byteStream().use { ImageStore.readBounded(it, ImageAttachment.MAX_BYTES) }
+                .also { ImageStore.verify(image, it) }
+        }
+    }
 
     /** Control replies acknowledge submission, not completion of the remote agent turn. */
     suspend fun controlRequest(machine: Machine, action: String, arguments: JSONObject = JSONObject()): JSONObject =
@@ -161,6 +241,8 @@ class BridgeClient(
         onOperationDone: (String, String, String, Int) -> Unit = { _, _, _, _ -> },
         onStatus: (String, Int?, Int, String, Boolean) -> Unit = { _, _, _, _, _ -> },
         onSession: (String, Boolean) -> Unit = { _, _ -> },
+        image: ImageAttachment? = null,
+        onPromptImage: (String, String, ImageAttachment) -> Unit = { _, _, _ -> },
     ): BridgeSendResult<List<ChatMessage>> {
         return sendBridgeMessage(
             machine,
@@ -171,13 +253,16 @@ class BridgeClient(
                 .put("agentId", agentId)
                 .put("workspacePath", workspacePath)
                 .put("content", text)
+                .put("image", image?.toJson())
                 .putSessionBinding(sessionId, sessionResumable),
             onMessage = onMessage,
             onApproval = onApproval,
             onEvent = { event ->
                 when (event.optString("type")) {
                     "operation.accepted" -> if (event.optString("operationType") == "chat.prompt") {
+                        val attachment = event.optJSONObject("image")?.let(ImageAttachment::fromJson)
                         mainHandler.post {
+                            if (attachment != null) onPromptImage(event.optString("operationId"), event.optString("content"), attachment)
                             onPromptAccepted(
                                 event.optString("operationId"),
                                 event.optString("state"),
@@ -185,8 +270,12 @@ class BridgeClient(
                             )
                         }
                     }
-                    "operation.started" -> mainHandler.post {
-                        onPromptStarted(event.optString("operationId"), event.optString("content"))
+                    "operation.started" -> {
+                        val attachment = event.optJSONObject("image")?.let(ImageAttachment::fromJson)
+                        mainHandler.post {
+                            if (attachment != null) onPromptImage(event.optString("operationId"), event.optString("content"), attachment)
+                            onPromptStarted(event.optString("operationId"), event.optString("content"))
+                        }
                     }
                     "operation.done" -> mainHandler.post {
                         onOperationDone(
@@ -459,6 +548,7 @@ class BridgeClient(
         chatTitle: String? = null,
         initialMessages: List<ChatMessage> = emptyList(),
         onHistoryCapability: (Boolean) -> Unit = {},
+        onPromptImage: (String, String, ImageAttachment) -> Unit = { _, _, _ -> },
     ): ChatConnection {
         val requestBuilder = Request.Builder().url(toWebSocketUrl(machine.endpoint, machine.deviceToken))
         machine.connectionHeaders.forEach { (name, value) ->
@@ -573,6 +663,7 @@ class BridgeClient(
                                     .put("agentId", agentId)
                                     .put("workspacePath", workspacePath)
                                     .put("content", queued.text)
+                                    .put("image", queued.image?.toJson())
                                     .putSessionBinding(sessionId, sessionResumable)
                                     .toString(),
                             )
@@ -586,6 +677,18 @@ class BridgeClient(
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     if (intentionallyClosed.get()) return
                     val event = runCatching { JSONObject(text) }.getOrNull() ?: return
+                    val image = try {
+                        val source = if (event.optString("type") == "session/update") event.optJSONObject("update") ?: event else event
+                        if (source.has("image") && !source.isNull("image")) ImageAttachment.fromJson(source.getJSONObject("image")) else null
+                    } catch (_: IllegalArgumentException) {
+                        notifyConnectionFailure(bridgeConnectionFailure())
+                        webSocket.cancel()
+                        return
+                    } catch (_: org.json.JSONException) {
+                        notifyConnectionFailure(bridgeConnectionFailure())
+                        webSocket.cancel()
+                        return
+                    }
                     val eventId = event.optInt("eventId", -1)
                     val replayBoundary = attachReplayBoundary
                     val isReplay = replayBoundary != null && eventId in 0..replayBoundary
@@ -611,6 +714,7 @@ class BridgeClient(
                         }
                         "operation.accepted" -> if (event.optString("operationType") == "chat.prompt") {
                             postApplied {
+                                if (image != null) onPromptImage(event.optString("operationId"), event.optString("content"), image)
                                 onPromptAccepted(
                                     event.optString("operationId"),
                                     event.optString("state"),
@@ -621,8 +725,11 @@ class BridgeClient(
                         } else {
                             postApplied()
                         }
-                        "operation.started" -> postApplied {
-                            onPromptStarted(event.optString("operationId"), event.optString("content"), isReplay)
+                        "operation.started" -> {
+                            postApplied {
+                                if (image != null) onPromptImage(event.optString("operationId"), event.optString("content"), image)
+                                onPromptStarted(event.optString("operationId"), event.optString("content"), isReplay)
+                            }
                         }
                         "operation.done" -> {
                             if (event.optString("operationType") == "chat.prompt" &&
@@ -992,10 +1099,12 @@ class BridgeClient(
             "user_message_chunk" -> {
                 val content = optJSONObject("content")
                 val text = content?.optString("text").orEmpty().ifBlank { optString("text") }
-                if (text.isBlank()) return null
+                val image = optJSONObject("image")?.let(ImageAttachment::fromJson)
+                if (text.isBlank() && image == null) return null
                 ChatMessage(
                     role = MessageRole.User,
                     text = text,
+                    image = image,
                     timestampMillis = System.currentTimeMillis(),
                     activityId = optString("messageId").ifBlank { "user_message" },
                 )
@@ -1142,6 +1251,7 @@ class ChatConnection internal constructor(
         text: String,
         sessionId: String?,
         sessionResumable: Boolean,
+        image: ImageAttachment? = null,
     ): Boolean {
         return sendJson(
             JSONObject()
@@ -1151,6 +1261,7 @@ class ChatConnection internal constructor(
                 .put("agentId", agentId)
                 .put("workspacePath", workspacePath)
                 .put("content", text)
+                .put("image", image?.toJson())
                 .putSessionBinding(sessionId, sessionResumable),
         )
     }

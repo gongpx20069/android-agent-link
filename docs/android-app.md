@@ -2,6 +2,48 @@
 
 This document describes the current AgentLink Android client implementation.
 
+## Single-image input
+
+The image-enabled composer supports one PNG/JPEG, with or without text, using the
+system Photo Picker and its document-picker fallback; no broad gallery permission
+is requested. A selected image is copied immediately, oriented and downsampled off
+the main thread. Source files are limited to 20 MiB and 16 million pixels; normalized
+uploads are automatically compressed to at most 1 MiB. JPEG encoding tries quality
+90/80/70/60 before reducing dimensions; PNG retains transparency and reduces dimensions
+when needed. Each pass checks the actual byte count. Processing is cancellable between
+passes, and the preview shows the final compressed image. Re-encoding removes source
+EXIF metadata. The Bridge's 5 MiB transport limit remains for compatibility.
+
+Preview/removal, a progress indicator and explicit retryable errors accompany the
+draft. Per-chat saveable state retains metadata across chat/tab navigation and normal
+activity recreation; bytes remain encrypted under a dedicated Android Keystore key
+in `noBackupFilesDir`. Upload failures keep the draft, and submission validates the
+original chat/machine/workspace/session binding. History thumbnails load from the
+encrypted cache or authenticated download; tapping opens a larger preview.
+
+Queue persistence and both connection owners preserve image metadata on reconnect.
+Copies are immutable and hash-verified. Each phone automatically makes room below
+its 256 MiB image quota when a new image is prepared for upload: first remove copies
+saved more than seven days ago, then evict least-recently-used copies as needed.
+Reads refresh recency, not the independent saved-age marker. These checks run once
+per incoming image write (also for duplicates), never on a timer, startup or browsing.
+Encrypted per-chat draft references survive recreation; removing/replacing
+or submitting a draft releases its old protection. Queue references and a separately
+persisted operation-to-image map protect running inputs even after timeline windowing.
+Completed/cancelled operations release those references through both connection owners.
+Only cache files with validated image filenames are eviction candidates.
+
+History falls back to authenticated Bridge download if its local copy was evicted.
+Downloaded history is displayed in memory without repopulating disk cache or sweeping it.
+If neither side retains a copy, the UI explicitly says the image was cleared or is
+unavailable; chat text and metadata are not deleted. Large previews also retry the
+Bridge if the local copy was evicted since thumbnail display. Quotas occupied entirely
+by protected drafts/tasks still fail explicitly. An upload not accepted within the
+Bridge's ten-minute submission grace period may be reclaimed under pressure.
+
+The App and Bridge both need image-capable builds. Unsupported agents/models and old
+bridges fail explicitly before image submission; there is no silent text-only fallback.
+
 ## Native coding agents
 
 Kimi Code and Qwen Code appear through the bridge's existing dynamic agent catalog.

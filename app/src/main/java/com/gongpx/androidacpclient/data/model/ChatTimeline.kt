@@ -1,6 +1,12 @@
 package com.gongpx.androidacpclient.data.model
 
 fun List<ChatMessage>.mergeTimelineMessage(message: ChatMessage): List<ChatMessage> {
+    if (message.role == MessageRole.User && message.operationId != null) {
+        val original = indexOfLast { it.role == MessageRole.User && it.operationId == message.operationId && it.image != null }
+        if (original >= 0) return mapIndexed { index, item ->
+            if (index == original) item.copy(activityId = message.activityId ?: item.activityId) else item
+        }
+    }
     val streamId = message.activityId ?: return this + message
     val existingIndex = indexOfLast {
         it.activityId == streamId && it.kind == message.kind &&

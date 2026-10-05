@@ -1,4 +1,5 @@
 package com.gongpx.androidacpclient.data.notification
+import com.gongpx.androidacpclient.data.model.withPromptImage
 
 import android.app.Service
 import android.content.Context
@@ -220,6 +221,9 @@ class ChatMonitorService : Service() {
                         }
                         persist(state, next)
                     }
+                },
+                onPromptImage = { id, content, image ->
+                    apply { persist(state, state.chat.withPromptImage(id, content, image)) }
                 },
                 onPromptStarted = { id, content, _ ->
                     apply {

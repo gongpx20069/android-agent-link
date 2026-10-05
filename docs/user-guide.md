@@ -22,6 +22,43 @@ from your phone. Your projects and agent processes stay on your computer.
 AgentLink is a remote control, not an on-phone agent runtime. Your computer must
 stay awake, online, and running the bridge while you use it.
 
+## Send an image
+
+On version 0.0.39 or newer, open a connected chat and choose **Attach image**. Select
+one PNG/JPEG in the system picker, check the preview, optionally add text, then
+tap **Send** (or append it to the current task's queue). **Remove image** keeps the
+text draft. Upload failures retain the draft; tap Send again to retry. Tap an image
+in the conversation to open a larger preview.
+
+Images are oriented, metadata-stripped and downsampled to at most 2048 pixels on the
+long edge. Source limits are 20 MiB/16 megapixels; the app automatically compresses
+the result to at most 1 MiB (1,048,576 bytes). JPEG quality is reduced first, then
+dimensions if needed; PNG keeps transparency and reduces dimensions as needed.
+Fine text or photo detail may be lost, so check the final preview before sending.
+The original phone file is not changed. One image per prompt is supported, not files,
+video or multiple selections.
+
+Update both the Android App and the computer Bridge (including Python dependencies),
+then restart the Bridge **after active tasks finish**. Merely installing a new APK
+does not add this API to an old server. This is not available in release 0.0.38.
+ACP agents must advertise image input; native Copilot additionally checks the selected
+model's vision and MIME/size limits. An installed agent is not proof that its current
+model supports images. Select a vision model if capability is unknown/unsupported.
+
+Images travel through the existing authenticated connection to your computer and the
+selected agent/provider, not a public image host. Local copies are encrypted; Bridge
+copies follow its private disk policy. On each new image upload, both sides first
+clear copies saved/uploaded more than seven days ago, then clear the oldest-unused
+copies if needed to fit the 256 MiB cache quota. Reading does not extend those seven
+days; no checks run on a timer, startup, or while browsing history. Drafts and
+queued/running inputs are protected; writes fail only if no sufficient safe space can
+be reclaimed. The phone can download cleared copies for in-memory viewing when the
+Bridge still has them, without refilling disk cache.
+If both copies are gone, history shows an image-cleared/unavailable notice and keeps
+the chat text. Cache images are not a permanent photo archive; originals in your phone's
+gallery are not deleted. External provider history may show an unavailable-image marker when no
+matching attachment exists in that chat.
+
 ## What you need
 
 | On your phone | On your computer |
