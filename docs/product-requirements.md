@@ -1,5 +1,16 @@
 # Product Requirements
 
+## Compact chat input
+
+- Keep the normal input area to one row, including attachment/actions, text,
+  send/queue, and stop when a task is running; retain 48dp touch targets.
+- Replace persistent image/cache explanations and command chips with an actions
+  menu. Use a small inline thumbnail, with preview and removal available there.
+- Preserve multiline text and offer an expanded editor without sending; keep
+  errors, pending queues and important transient state explicit.
+- Preserve command gates, failed-submission drafts, image-only input and exact
+  current-task cancellation. Stopping must never submit the composed draft.
+
 ## Single-image prompts
 
 - Attach one PNG/JPEG from Android, preview/remove it, and send with optional text.

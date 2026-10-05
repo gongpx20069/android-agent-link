@@ -5,23 +5,35 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.gongpx.androidacpclient.data.bridge.BridgeClient
 import com.gongpx.androidacpclient.data.bridge.ImageUnavailableException
 import com.gongpx.androidacpclient.data.model.ImageAttachment
 import com.gongpx.androidacpclient.data.model.Machine
+import com.gongpx.androidacpclient.data.model.AvailableCommand
 import com.gongpx.androidacpclient.data.store.ImageStore
 import java.io.IOException
 import java.security.GeneralSecurityException
@@ -79,8 +91,12 @@ internal fun ImagePromptComposer(
     onSend: (String) -> Boolean,
     enabled: Boolean,
     imageContext: ImagePromptContext,
+    cancelling: Boolean,
+    canStop: Boolean,
+    onCancelTask: () -> Unit,
+    commands: List<PromptCommand>,
+    onCommand: (AvailableCommand) -> Unit,
 ) {
-    val strings = LocalAppStrings.current
     val context = LocalContext.current.applicationContext
     val store = remember(context) { ImageStore(context) }
     val scope = rememberCoroutineScope()
@@ -90,6 +106,14 @@ internal fun ImagePromptComposer(
     var working by remember(chatId) { mutableStateOf(false) }
     var restoring by remember(chatId) { mutableStateOf(true) }
     var error by remember(chatId) { mutableStateOf<String?>(null) }
+    var thumbnail by remember(chatId, image?.id) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(chatId, image) {
+        image?.let { selected ->
+            imageAction({ error = it }) {
+                thumbnail = imageBitmap(store.read(selected) ?: throw IOException("Selected image is unavailable; select it again."), 128)
+            }
+        }
+    }
     LaunchedEffect(chatId) {
         try {
             imageAction({ error = it }) {
@@ -111,10 +135,19 @@ internal fun ImagePromptComposer(
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        image?.let { selected ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { AttachmentPreview(selected, null) }
-                TextButton(enabled = !working && !restoring, onClick = {
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        CompactComposerRow(
+            message = message, onMessageChange = { message = it }, isBusy = isBusy,
+            editingEnabled = !working && !restoring,
+            sendEnabled = enabled && !working && !restoring && (message.isNotBlank() || image != null),
+            working = working || restoring,
+            cancelling = cancelling, canStop = canStop, onCancelTask = onCancelTask,
+            commands = commands, onCommand = onCommand,
+            image = image, thumbnail = thumbnail,
+            attachEnabled = enabled && !working && !restoring,
+            onAttach = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+            onRemoveImage = {
+                image?.let { selected ->
                     working = true
                     scope.launch {
                         try {
@@ -125,16 +158,9 @@ internal fun ImagePromptComposer(
                             }
                         } finally { working = false }
                     }
-                }) {
-                    Text(strings.reliability("Remove image", "移除图片"))
                 }
-            }
-        }
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-        if (working) LinearProgressIndicator(Modifier.fillMaxWidth())
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            CompactPromptField(message, { message = it }, Modifier.weight(1f), enabled = !working && !restoring)
-            Button(enabled = enabled && !working && !restoring && (message.isNotBlank() || image != null), onClick = {
+            },
+            onSend = {
                 if (image == null) {
                     if (onSend(message)) message = ""
                 } else {
@@ -158,22 +184,145 @@ internal fun ImagePromptComposer(
                         }
                     }
                 }
-            }) { Text(if (isBusy) strings.appendPrompt else strings.send) }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(enabled = enabled && !working && !restoring, onClick = {
-                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            }) { Text(strings.reliability("Attach image", "添加图片")) }
-            Text(
-                strings.reliability("One PNG/JPEG · ≤1 MiB · ≤2048 px", "单张 PNG/JPEG · ≤1 MiB · ≤2048 像素"),
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
-        Text(strings.reliability(
-            "New images trigger cleanup: 7-day retention and a 256 MiB cache limit.",
-            "新增图片时清理：保留 7 天，缓存上限 256 MiB。",
-        ), style = MaterialTheme.typography.labelSmall)
+            },
+        )
     }
+}
+
+internal data class PromptCommand(val command: AvailableCommand, val enabled: Boolean)
+
+private enum class ComposerSymbol { Add, Send, Stop }
+
+@Composable
+private fun ComposerIcon(symbol: ComposerSymbol, label: String) {
+    val color = LocalContentColor.current
+    Canvas(Modifier.size(22.dp).semantics { contentDescription = label }) {
+        val stroke = 2.dp.toPx()
+        when (symbol) {
+            ComposerSymbol.Add -> {
+                drawLine(color, Offset(size.width * .2f, center.y), Offset(size.width * .8f, center.y), stroke, StrokeCap.Round)
+                drawLine(color, Offset(center.x, size.height * .2f), Offset(center.x, size.height * .8f), stroke, StrokeCap.Round)
+            }
+            ComposerSymbol.Send -> {
+                drawLine(color, Offset(center.x, size.height * .8f), Offset(center.x, size.height * .2f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(size.width * .25f, size.height * .45f), Offset(center.x, size.height * .2f), stroke, StrokeCap.Round)
+                drawLine(color, Offset(size.width * .75f, size.height * .45f), Offset(center.x, size.height * .2f), stroke, StrokeCap.Round)
+            }
+            ComposerSymbol.Stop -> drawRoundRect(color, Offset(size.width * .2f, size.height * .2f),
+                Size(size.width * .6f, size.height * .6f), CornerRadius(3.dp.toPx()))
+        }
+    }
+}
+
+@Composable
+internal fun CompactComposerRow(
+    message: String,
+    onMessageChange: (String) -> Unit,
+    isBusy: Boolean,
+    sendEnabled: Boolean,
+    onSend: () -> Unit,
+    cancelling: Boolean = false,
+    canStop: Boolean = true,
+    onCancelTask: () -> Unit = {},
+    editingEnabled: Boolean = true,
+    working: Boolean = false,
+    commands: List<PromptCommand> = emptyList(),
+    onCommand: (AvailableCommand) -> Unit = {},
+    image: ImageAttachment? = null,
+    thumbnail: ImageBitmap? = null,
+    attachEnabled: Boolean = false,
+    onAttach: (() -> Unit)? = null,
+    onRemoveImage: () -> Unit = {},
+) {
+    val strings = LocalAppStrings.current
+    var menu by remember { mutableStateOf(false) }
+    var preview by remember { mutableStateOf(false) }
+    var expandedEditor by remember { mutableStateOf(false) }
+    var imageHelp by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth().testTag("prompt-composer-row"),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box {
+            IconButton(onClick = { menu = true }, modifier = Modifier.size(48.dp)) {
+                val label = strings.reliability(
+                    if (image != null) "Image and chat actions" else "Chat actions",
+                    if (image != null) "图片与聊天操作" else "聊天操作",
+                )
+                if (thumbnail != null) Image(thumbnail, label, Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop)
+                else ComposerIcon(ComposerSymbol.Add, label)
+            }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                if (onAttach != null) DropdownMenuItem(
+                    text = { Text(strings.reliability("Attach image", "添加图片")) },
+                    enabled = attachEnabled,
+                    onClick = { menu = false; onAttach() },
+                )
+                if (image != null) {
+                    DropdownMenuItem(text = { Text(strings.reliability("Preview image", "预览图片")) },
+                        onClick = { menu = false; preview = true })
+                    DropdownMenuItem(text = { Text(strings.reliability("Remove image", "移除图片")) },
+                        enabled = editingEnabled, onClick = { menu = false; onRemoveImage() })
+                }
+                DropdownMenuItem(text = { Text(strings.reliability("Expand editor", "展开编辑")) },
+                    enabled = editingEnabled, onClick = { menu = false; expandedEditor = true })
+                if (onAttach != null) DropdownMenuItem(text = { Text(strings.reliability("Image limits & storage", "图片限制与存储")) },
+                    onClick = { menu = false; imageHelp = true })
+                if (commands.isNotEmpty()) HorizontalDivider()
+                commands.forEach { item ->
+                    DropdownMenuItem(text = { Text(item.command.name) }, enabled = item.enabled && editingEnabled,
+                        onClick = { menu = false; onCommand(item.command) })
+                }
+            }
+        }
+        CompactPromptField(message, onMessageChange, Modifier.weight(1f), enabled = editingEnabled)
+        val stopLabel = strings.reliability(if (cancelling) "Requesting stop…" else "Stop current task",
+            if (cancelling) "正在请求停止…" else "停止当前任务")
+        if (isBusy) IconButton(
+            onClick = onCancelTask, enabled = canStop && !cancelling,
+            modifier = Modifier.size(48.dp).semantics { contentDescription = stopLabel },
+            colors = IconButtonDefaults.iconButtonColors(contentColor = MaterialTheme.colorScheme.error),
+        ) {
+            Box(Modifier.clearAndSetSemantics {}) {
+                if (cancelling) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else ComposerIcon(ComposerSymbol.Stop, stopLabel)
+            }
+        }
+        val sendLabel = if (working) strings.reliability("Preparing image…", "正在处理图片…")
+            else if (isBusy) strings.appendPrompt else strings.send
+        FilledIconButton(onClick = onSend, enabled = sendEnabled,
+            modifier = Modifier.size(48.dp).semantics { contentDescription = sendLabel }) {
+            Box(Modifier.clearAndSetSemantics {}) {
+                if (working) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else ComposerIcon(ComposerSymbol.Send, sendLabel)
+            }
+        }
+    }
+    if (preview && image != null) AlertDialog(
+        onDismissRequest = { preview = false },
+        title = { Text(strings.reliability("Selected image", "已选图片")) },
+        text = { AttachmentPreview(image, null) },
+        confirmButton = { TextButton(onClick = { preview = false }) { Text(strings.reliability("Close", "关闭")) } },
+        dismissButton = { TextButton(enabled = editingEnabled, onClick = { preview = false; onRemoveImage() }) {
+            Text(strings.reliability("Remove image", "移除图片"))
+        } },
+    )
+    if (expandedEditor) AlertDialog(
+        onDismissRequest = { expandedEditor = false },
+        title = { Text(strings.reliability("Edit message", "编辑消息")) },
+        text = { CompactPromptField(message, onMessageChange, Modifier.fillMaxWidth(), enabled = editingEnabled, maxLines = 10) },
+        confirmButton = { TextButton(onClick = { expandedEditor = false }) { Text(strings.reliability("Done", "完成")) } },
+    )
+    if (imageHelp) AlertDialog(
+        onDismissRequest = { imageHelp = false },
+        title = { Text(strings.reliability("Image limits & storage", "图片限制与存储")) },
+        text = { Text(strings.reliability(
+            "One PNG/JPEG, compressed to at most 1 MiB and 2048 px. New images trigger cleanup: 7-day retention and a 256 MiB cache limit. Drafts and queued/running images are protected.",
+            "单张 PNG/JPEG，自动压缩至不超过 1 MiB、2048 像素。新增图片时检查 7 天保留期与 256 MiB 缓存上限；草稿和排队、执行中的图片受保护。",
+        )) },
+        confirmButton = { TextButton(onClick = { imageHelp = false }) { Text(strings.reliability("Close", "关闭")) } },
+    )
 }
 
 @Composable

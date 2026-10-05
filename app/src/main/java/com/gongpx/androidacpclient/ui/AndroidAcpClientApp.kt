@@ -2963,42 +2963,27 @@ internal fun ChatDetailScreen(
                         QueuedPromptList(chat.id, visibleQueuedPrompts, onRemoveQueuedPrompt)
                         Spacer(Modifier.height(5.dp))
                     }
-                    if (commands.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            commands.forEach { command ->
-                                val sessionOperation = command.name in setOf(
-                                    BUILT_IN_MODEL_COMMAND.name,
-                                    BUILT_IN_RESUME_COMMAND.name,
-                                    BUILT_IN_ALLOW_ALL_COMMAND.name,
-                                    BUILT_IN_CONFIG_COMMAND.name,
-                                )
-                                CommandPill(
-                                    command = command,
-                                    enabled = !sessionOperation || (!isBusy && !sessionOperationInProgress &&
-                                        !chat.bridgeResyncRequired && connectionState == ConnectionState.Online && approvals.isEmpty()),
-                                    onClick = { onCommand(command) },
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(5.dp))
-                    }
                     if (sessionOperationInProgress) Text(
                         strings.reliability("Updating session…", "正在更新会话…"),
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    ChatPromptComposer(chat.id, isBusy, onSendMessage, enabled = !sessionOperationInProgress && !chat.bridgeResyncRequired, imageContext = imageContext)
-                    if (isBusy) TextButton(
-                        enabled = !cancelling && connectionState == ConnectionState.Online,
-                        onClick = onCancelTask,
-                    ) {
-                        Text(strings.reliability(if (cancelling) "Requesting stop…" else "Stop current task",
-                            if (cancelling) "正在请求停止…" else "停止当前任务"))
-                    }
+                    ChatPromptComposer(
+                        chat.id, isBusy, onSendMessage,
+                        enabled = !sessionOperationInProgress && !chat.bridgeResyncRequired,
+                        imageContext = imageContext,
+                        cancelling = cancelling,
+                        canStop = connectionState == ConnectionState.Online,
+                        onCancelTask = onCancelTask,
+                        commands = commands.map { command ->
+                            val sessionOperation = command.name in setOf(
+                                BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name,
+                                BUILT_IN_ALLOW_ALL_COMMAND.name, BUILT_IN_CONFIG_COMMAND.name,
+                            )
+                            PromptCommand(command, !sessionOperation || (!isBusy && !sessionOperationInProgress &&
+                                !chat.bridgeResyncRequired && connectionState == ConnectionState.Online && approvals.isEmpty()))
+                        },
+                        onCommand = onCommand,
+                    )
                 }
             }
         }
@@ -3078,41 +3063,30 @@ internal fun QueuedPromptList(chatId: String, prompts: List<QueuedPrompt>, onRem
 }
 
 @Composable
-internal fun ChatPromptComposer(chatId: String, isBusy: Boolean, onSend: (String) -> Boolean, enabled: Boolean = true, imageContext: ImagePromptContext? = null) {
+internal fun ChatPromptComposer(
+    chatId: String,
+    isBusy: Boolean,
+    onSend: (String) -> Boolean,
+    enabled: Boolean = true,
+    imageContext: ImagePromptContext? = null,
+    cancelling: Boolean = false,
+    canStop: Boolean = true,
+    onCancelTask: () -> Unit = {},
+    commands: List<PromptCommand> = emptyList(),
+    onCommand: (AvailableCommand) -> Unit = {},
+) {
     if (imageContext != null) {
-        ImagePromptComposer(chatId, isBusy, onSend, enabled, imageContext)
+        ImagePromptComposer(chatId, isBusy, onSend, enabled, imageContext, cancelling, canStop, onCancelTask, commands, onCommand)
         return
     }
-    val strings = LocalAppStrings.current
     var message by androidx.compose.runtime.saveable.rememberSaveable(chatId) { mutableStateOf("") }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        CompactPromptField(message, { message = it }, modifier = Modifier.weight(1f))
-        Button(
-            enabled = enabled && message.isNotBlank(),
-            onClick = {
-                val submitted = message
-                if (onSend(submitted)) message = ""
-            },
-            modifier = Modifier.defaultMinSize(minWidth = 68.dp, minHeight = 42.dp),
-        ) { Text(if (isBusy) strings.appendPrompt else strings.send) }
-    }
-}
-
-@Composable
-private fun CommandPill(command: AvailableCommand, enabled: Boolean = true, onClick: () -> Unit) {
-    Surface(
-        modifier = Modifier.clickable(enabled = enabled, onClick = onClick),
-        shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (enabled) 0.76f else 0.35f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Text(
-            command.name,
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+    CompactComposerRow(
+        message = message, onMessageChange = { message = it }, isBusy = isBusy,
+        sendEnabled = enabled && message.isNotBlank(),
+        onSend = { if (onSend(message)) message = "" },
+        cancelling = cancelling, canStop = canStop, onCancelTask = onCancelTask,
+        commands = commands, onCommand = onCommand,
+    )
 }
 
 @Composable
@@ -3151,10 +3125,10 @@ private fun ChatStatusDot(isBusy: Boolean, connectionState: ConnectionState) {
 }
 
 @Composable
-internal fun CompactPromptField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+internal fun CompactPromptField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, maxLines: Int = 1) {
     val strings = LocalAppStrings.current
     Surface(
-        modifier = modifier.defaultMinSize(minHeight = 42.dp),
+        modifier = modifier.defaultMinSize(minHeight = 48.dp),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -3170,6 +3144,8 @@ internal fun CompactPromptField(value: String, onValueChange: (String) -> Unit, 
                     strings.prompt,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             BasicTextField(
@@ -3179,7 +3155,7 @@ internal fun CompactPromptField(value: String, onValueChange: (String) -> Unit, 
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                 singleLine = false,
-                maxLines = 6,
+                maxLines = maxLines,
             )
         }
     }

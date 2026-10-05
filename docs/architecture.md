@@ -13,6 +13,16 @@ ACP Agent CLI
 
 The Android app is the control surface. Remote machines run the bridge, agent process, shell commands, Git operations, and repository workspaces.
 
+### Compact composer
+
+Text-only and image-enabled composers use the same `CompactComposerRow` for
+actions, single-visible-line editing, send/queue and current-task stop controls.
+ChatDetailScreen supplies command availability and cancellation state; the row
+does not infer task completion. ImagePromptComposer retains encrypted attachment
+ownership and upload logic, decoding a small inline thumbnail off the main thread.
+Expanded editing and attachment/help dialogs use the existing draft rather than
+introducing a second queued message or protocol surface.
+
 ### Image input
 
 The composer copies one system-picked PNG/JPEG into encrypted private image storage.

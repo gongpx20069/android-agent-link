@@ -129,17 +129,17 @@ class InteractionReviewTest {
         compose.onNode(hasSetTextAction()).performTextInput("draft B")
         compose.runOnIdle { selected.value = "A" }
         compose.onNode(hasSetTextAction()).assertTextEquals("draft A")
-        compose.onNodeWithText("Send").performClick()
+        compose.onNodeWithContentDescription("Send").performClick()
         compose.onNode(hasSetTextAction()).assertTextEquals("draft A")
         compose.runOnIdle { accepted.value = true }
-        compose.onNodeWithText("Send").performClick()
+        compose.onNodeWithContentDescription("Send").performClick()
         compose.onNode(hasSetTextAction()).assertTextEquals("")
     }
 
     @Test fun sessionChangeBlocksSendingAndKeepsDraft() {
         compose.setContent { Screen(chats = listOf(chat("A")), selected = "A", operations = setOf("A")) }
         compose.onNode(hasSetTextAction()).performTextInput("keep this")
-        compose.onNodeWithText("Send").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Send").assertIsNotEnabled()
         compose.onNodeWithText("Updating session…").assertExists()
         compose.onNode(hasSetTextAction()).assertTextEquals("keep this")
     }
@@ -150,7 +150,7 @@ class InteractionReviewTest {
         compose.setContent { Screen(chats = listOf(chat("A")), selected = "A", busy = setOf("A"),
             onCancel = { stopped = it.id }, onSend = { _, _ -> sends++; true }) }
         compose.onNode(hasSetTextAction()).performTextInput("not sent")
-        compose.onNodeWithText("Stop current task").performClick()
+        compose.onNodeWithContentDescription("Stop current task").performClick()
         assertEquals("A", stopped)
         assertEquals(0, sends)
         compose.onNode(hasSetTextAction()).assertTextEquals("not sent")

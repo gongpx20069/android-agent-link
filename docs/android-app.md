@@ -2,6 +2,25 @@
 
 This document describes the current AgentLink Android client implementation.
 
+## Compact chat composer
+
+The default composer is one 48dp-high row (it accommodates larger accessibility
+fonts): actions/attachment thumbnail, one visible line of text, an optional stop
+icon while busy, and an arrow send/queue button. Every icon has a localized
+accessibility label and a 48dp touch target. Text and image flows share this row.
+Newlines are preserved in the draft; Actions > Expand editor opens a multiline
+dialog without sending or clearing it.
+
+Actions contains Attach image, preview/removal for a selected image, image/storage
+help, and the existing agent commands. Commands retain their original session,
+busy, connection and approval gates and are disabled during image processing.
+There is no permanent command strip, image-limit text, cache notice or second
+stop row. A selected thumbnail replaces the actions glyph, not the input row.
+Image processing and cancellation progress occupy their respective buttons;
+explicit errors, session updates and real queued tasks remain visible when needed.
+Stopping still targets only the current task and never submits or erases a draft;
+sending a follow-up remains available while the task is busy.
+
 ## Single-image input
 
 The image-enabled composer supports one PNG/JPEG, with or without text, using the

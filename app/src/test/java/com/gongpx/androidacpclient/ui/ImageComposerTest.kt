@@ -22,10 +22,13 @@ class ImageComposerTest {
         compose.setContent { MaterialTheme {
             ChatPromptComposer("chat", false, { sent = it; false }, imageContext = source)
         } }
+        compose.onNodeWithContentDescription("Chat actions").performClick()
         compose.onNodeWithText("Attach image").assertIsEnabled()
-        compose.onNodeWithText("Send").assertIsNotEnabled()
+        compose.onNodeWithText("Expand editor").performClick()
+        compose.onNodeWithText("Done").performClick()
+        compose.onNodeWithContentDescription("Send").assertIsNotEnabled()
         compose.onNode(hasSetTextAction()).performTextInput("Keep this draft")
-        compose.onNodeWithText("Send").performClick()
+        compose.onNodeWithContentDescription("Send").performClick()
         assertEquals("Keep this draft", sent)
         compose.onNode(hasSetTextAction()).assertTextEquals("Keep this draft")
     }

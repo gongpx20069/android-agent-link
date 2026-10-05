@@ -24,6 +24,13 @@ stay awake, online, and running the bridge while you use it.
 
 ## Send an image
 
+In the compact composer, open the **+** actions menu and choose **Attach image**.
+The selected thumbnail replaces **+**; tap it for **Preview image** or **Remove
+image**. The arrow sends (or queues) your draft; the square stops only the active
+task. Agent commands and image/storage help are also in the actions menu.
+**Expand editor** lets you edit multiple lines without growing the chat input bar.
+This compact layout is available in 0.0.40+; 0.0.39 uses visible text buttons.
+
 On version 0.0.39 or newer, open a connected chat and choose **Attach image**. Select
 one PNG/JPEG in the system picker, check the preview, optionally add text, then
 tap **Send** (or append it to the current task's queue). **Remove image** keeps the
