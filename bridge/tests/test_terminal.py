@@ -26,6 +26,15 @@ HAS_INTERACTIVE = all(importlib.util.find_spec(module) for module in ("prompt_to
 
 
 class TerminalTests(unittest.TestCase):
+    def test_absolute_workspace_input_is_not_interpreted_as_a_slash_command(self):
+        self.client._creation = {"stage": "workspace", "agent": "copilot-cli", "workspaces": [], "page": 0}
+        with patch("android_acp_bridge.terminal.os.path.isabs", return_value=True), \
+                patch("android_acp_bridge.terminal.os.path.isdir", return_value=True), \
+                patch.object(self.client, "_creation_input") as choose:
+            self.client.command("/tmp/project with spaces")
+        choose.assert_called_once_with("/tmp/project with spaces")
+        self.assertIsNotNone(self.client._creation)
+
     def test_resume_pages_keep_every_session_reachable_without_accepting_unseen_choices(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(self.runtime, "agents_response", return_value={
             "agents": [{"id": "copilot-cli", "status": "available"}],

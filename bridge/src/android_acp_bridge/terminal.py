@@ -492,7 +492,9 @@ class TerminalClient:
         assert self.runtime is not None
         line = line.strip()
         if self._creation is not None:
-            if line.startswith("/"):
+            workspace_input = (self._creation["stage"] == "workspace"
+                               and os.path.isabs(line.strip('"')) and os.path.isdir(line.strip('"')))
+            if line.startswith("/") and not workspace_input:
                 self._creation = None
                 self.say("Selection cancelled. No message was sent.")
             else:
