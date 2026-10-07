@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import secrets
+import sqlite3
 import sys
 import threading
 import time
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from .runtime import BridgeRuntime
+from .acp_agent import AcpAgentError
+from .shared_state import ControlError
 from .stdlib_server import BridgeHTTPServer
 from .terminal_render import MarkdownStream, display_text
 from .terminal_state import project_tool
@@ -58,6 +61,11 @@ class TerminalClient:
         self.write = write or self._write
         self.runtime: BridgeRuntime | None = None
         self.chats: dict[str, TerminalChat] = {}
+        self._next_chat_number = 1
+        self._deleted_chats: set[str] = set()
+        self._undelivered_deletions: set[str] = set()
+        self._pending_chats: set[str] = set()
+        self._creation: dict[str, Any] | None = None
         self.selected: str | None = None
         self._lock = threading.RLock()
         self._events: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=256)
@@ -101,12 +109,15 @@ class TerminalClient:
         self._markdown_key = None
 
     def _chat(self, chat_id: str) -> TerminalChat | None:
+        if chat_id in self._deleted_chats or chat_id in self._pending_chats:
+            return None
         chat = self.chats.get(chat_id)
         if chat is None:
             if len(self.chats) >= 256:
                 self._dropped += 1
                 return None
-            chat = TerminalChat(chat_id, number=len(self.chats) + 1)
+            chat = TerminalChat(chat_id, number=self._next_chat_number)
+            self._next_chat_number += 1
             self.chats[chat_id] = chat
         return chat
 
@@ -147,7 +158,7 @@ class TerminalClient:
 
     def prompt_label(self) -> str:
         with self._lock:
-            if self._choosing_chat:
+            if self._choosing_chat or self._creation is not None:
                 return "Choice > "
             return "You > " if self.selected else "> "
 
@@ -176,6 +187,8 @@ class TerminalClient:
                 hint_style = "class:attention"
             elif self._choosing_chat:
                 hint = "Enter a listed number; Enter cancels. No chat message will be sent."
+            elif self._creation is not None:
+                hint = "Follow the choices above; Enter cancels. No prompt is sent."
             elif chat and chat.status == "waitingApproval":
                 hint = "Approval needed: /approvals to review, or decide on your phone"
                 hint_style = "class:attention"
@@ -204,7 +217,7 @@ class TerminalClient:
         with self._lock:
             ready = [chat for chat in self.chats.values() if chat.agent_id and chat.workspace]
             if not ready:
-                self.say("No chats yet. Open a chat on your phone; it will appear here automatically.")
+                self.say("No chats yet. Use /new or /resume, or open a chat on your phone.")
                 return
             self.say("Chats (* = current):")
             for chat in ready:
@@ -222,7 +235,8 @@ class TerminalClient:
             ready = [chat for chat in self.chats.values() if chat.agent_id and chat.workspace]
             new = [chat for chat in ready if chat.chat_id not in self._announced_chats]
             self._announced_chats.update(chat.chat_id for chat in ready)
-            if self.selected is None and len(ready) == 1 and allow_auto_select and not self._choosing_chat:
+            if (self.selected is None and len(ready) == 1 and allow_auto_select
+                    and not self._choosing_chat and self._creation is None):
                 self._select_chat(ready[0].chat_id)
             elif new:
                 if self.selected is None:
@@ -238,6 +252,16 @@ class TerminalClient:
             return
         with self._lock:
             if self._closed:
+                return
+            if event.get("type") == "chat.deleted":
+                self._deleted_chats.add(chat_id)
+                self._undelivered_deletions.add(chat_id)
+                self.chats.pop(chat_id, None)
+                self._announced_chats.discard(chat_id)
+                self._chat_choices = {key: value for key, value in self._chat_choices.items() if value != chat_id}
+                self._tools = {key: value for key, value in self._tools.items() if key[0] != chat_id}
+                if self.selected == chat_id:
+                    self.selected = None
                 return
             chat = self._chat(chat_id)
             if chat is None:
@@ -295,7 +319,7 @@ class TerminalClient:
                             and c["name"] == display_text(c["name"]) and not any(ch.isspace() for ch in c["name"])
                         ]
                     return
-                if item["kind"] not in {"agent_message_chunk", "tool_call", "tool_call_update"}:
+                if item["kind"] not in {"agent_message_chunk", "user_message_chunk", "tool_call", "tool_call_update"}:
                     return
                 if self.event_sink is None and item["kind"] == "agent_message_chunk" and self.selected is not None and chat_id != self.selected:
                     return
@@ -304,7 +328,7 @@ class TerminalClient:
                 item["title"] = str(update.get("title") or "")[:160]
                 content = update.get("content")
                 text = update.get("text") or (content.get("text", "") if isinstance(content, dict) else "")
-                if item["kind"] == "agent_message_chunk":
+                if item["kind"] in {"agent_message_chunk", "user_message_chunk"}:
                     item["text"] = str(text)[:8192]
                     if len(str(text)) > 8192:
                         self._dropped += 1
@@ -344,6 +368,14 @@ class TerminalClient:
                 self._events.get_nowait()
 
     def drain(self, *, allow_auto_select: bool = True) -> None:
+        with self._lock:
+            deleted = self._undelivered_deletions.copy()
+            self._undelivered_deletions.clear()
+        for chat_id in deleted:
+            self._finish_markdown()
+            if self.event_sink is not None:
+                self.event_sink({"type": "chat.deleted", "chatId": chat_id})
+            self.say("Shared chat removed. The agent's saved session history is unchanged.")
         self._refresh_chats(allow_auto_select)
         with self._lock:
             dropped, self._dropped = self._dropped, 0
@@ -384,6 +416,8 @@ class TerminalClient:
             except queue.Empty:
                 break
             chat_id = item["chatId"]
+            if chat_id in self._deleted_chats:
+                continue
             label = self.chat_label(chat_id)
             selected = chat_id == self.selected
             kind = item["type"]
@@ -457,6 +491,13 @@ class TerminalClient:
     def command(self, line: str) -> bool:
         assert self.runtime is not None
         line = line.strip()
+        if self._creation is not None:
+            if line.startswith("/"):
+                self._creation = None
+                self.say("Selection cancelled. No message was sent.")
+            else:
+                self._creation_input(line)
+                return True
         if self._choosing_chat and not line.startswith("/"):
             with self._lock:
                 if not line:
@@ -473,7 +514,9 @@ class TerminalClient:
         command, _, argument = line.partition(" ")
         argument = argument.strip()
         if command == "/help":
-            self.say("/chats (choose by number) | /use <number> | /new <agent-id> <absolute workspace>\n"
+            self.say("/chats (choose by number) | /use <number>\n"
+                     "/new [agent-id absolute-workspace] (new shared chat, guided when omitted)\n"
+                     "/resume (restore a saved session in the CURRENT shared chat)\n"
                      "/model (model picker) | /tools (focus tool group) | /qrcode or /pairing (phone QR/link)\n"
                      "/allow-all (session permissions; choose then y to confirm)\n"
                      "/config [id] (list agent settings or open a setting; choose then y to confirm)\n"
@@ -500,29 +543,9 @@ class TerminalClient:
                 else:
                     self._select_chat(chat.chat_id)
         elif command == "/new":
-            agent, _, workspace = argument.partition(" ")
-            workspace = workspace.strip().strip('"')
-            available = {a["id"] for a in self.runtime.agents_response()["agents"] if a["status"] == "available"}
-            try:
-                valid_workspace = Path(workspace).is_absolute() and Path(workspace).is_dir()
-            except (OSError, ValueError):
-                valid_workspace = False
-            if agent not in available or not valid_workspace:
-                self.say("Use /new <available agent-id> <existing absolute workspace>. Agents: " + ", ".join(sorted(available)))
-            else:
-                chat_id = "chat_" + secrets.token_hex(16)
-                result = self.runtime.websocket_responses({"type": "control.request", "action": "chat.register",
-                                                          "chatId": chat_id, "agentId": agent, "workspacePath": workspace})
-                if result[0].get("status") != "ok":
-                    self.say("Cannot register shared chat: " + str(result[0].get("message", "unknown error")))
-                    return True
-                with self._lock:
-                    if chat_id in self.chats:
-                        self._announced_chats.add(chat_id)
-                        self._select_chat(chat_id)
-                        self.say("Shared chat created. Refresh chats on Android to open the same conversation.")
-                    else:
-                        self.say("Terminal chat limit reached; cannot create another chat.")
+            self._start_creation(argument)
+        elif command == "/resume":
+            self._start_resume(argument)
         elif command == "/approvals":
             self._review_approvals()
         elif command in {"/choose", "/answer"}:
@@ -598,6 +621,196 @@ class TerminalClient:
             else:
                 self._dispatch(payload)
         return True
+
+    def _start_creation(self, argument: str) -> None:
+        assert self.runtime is not None
+        if len(self.chats) >= 256:
+            self.say("Terminal chat limit reached; remove a shared chat on Android first.")
+            return
+        available = [a["id"] for a in self.runtime.agents_response()["agents"] if a["status"] == "available"]
+        if not available:
+            self.say("No installed agent is available. Install/configure an agent on this computer first.")
+            return
+        self._choosing_chat = False
+        self._chat_choices.clear()
+        self._creation = {"stage": "agent", "agents": available}
+        if argument:
+            agent, _, workspace = argument.partition(" ")
+            if agent not in available:
+                self._creation = None
+                self.say("Choose an installed agent: " + ", ".join(available))
+                return
+            self._creation.update(agent=agent, stage="workspace", workspaces=[], page=0)
+            self._creation_input(workspace)
+        else:
+            self.say("Choose an agent by number (Enter cancels):\n" +
+                     "\n".join(f"{index}. {agent}" for index, agent in enumerate(available, 1)))
+
+    def _start_resume(self, argument: str) -> None:
+        assert self.runtime is not None
+        if argument:
+            self.say("Use /resume without arguments. It restores a session for the current chat's agent and workspace.")
+            return
+        if self.selected is None:
+            self.say("Choose a chat with /chats, or create one with /new before using /resume.")
+            return
+        try:
+            chat = self.runtime.shared.chat(self.selected)
+            if chat["status"] in {"busy", "waitingApproval"}:
+                raise ValueError("Chat is busy. Finish its task or approval before resuming.")
+            state = {"chatId": chat["chatId"], "agent": chat["agentId"], "workspace": chat["workspacePath"],
+                     "expectedHumanRevision": chat["humanRevision"], "expectedSessionId": chat.get("sessionId"),
+                     "stage": "session", "page": 0}
+            result = self.runtime.websocket_responses({"type": "session.list", "agentId": state["agent"],
+                                                      "workspacePath": state["workspace"]})[0]
+            if result.get("error"):
+                raise ValueError(str(result["error"]))
+            sessions = result.get("sessions", [])
+            if not sessions:
+                self.say("No saved sessions in this workspace. Current chat unchanged.")
+                return
+            state["sessions"] = sessions
+            self._choosing_chat = False
+            self._chat_choices.clear()
+            self._creation = state
+            self._show_creation_page()
+        except (ValueError, OSError, sqlite3.Error, ControlError, AcpAgentError) as error:
+            self.say("Cannot list sessions: " + str(error))
+
+    def _creation_input(self, line: str) -> None:
+        assert self.runtime is not None and self._creation is not None
+        state = self._creation
+        if not line:
+            self._creation = None
+            self.say("Selection cancelled. Current chat unchanged.")
+            return
+        if state["stage"] in {"workspace", "session"} and line in {"n", "p"}:
+            values = state["workspaces"] if state["stage"] == "workspace" else state["sessions"]
+            page = state["page"] + (1 if line == "n" else -1)
+            if not 0 <= page * 15 < len(values):
+                self.say("No page in that direction. Choose a displayed number, or Enter to cancel.")
+                return
+            state["page"] = page
+            self._show_creation_page()
+            return
+        if state["stage"] == "agent":
+            agents = state["agents"]
+            if not line.isascii() or not line.isdecimal() or not 1 <= int(line) <= len(agents):
+                self.say("Enter a listed agent number, or Enter to cancel. No message was sent.")
+                return
+            workspaces = self.runtime.shared.workspaces()
+            state.update(agent=agents[int(line) - 1], stage="workspace", workspaces=workspaces, page=0)
+            self._show_creation_page()
+            return
+        if state["stage"] == "workspace":
+            workspaces = state["workspaces"]
+            workspace = (workspaces[int(line) - 1]["absolutePath"]
+                         if line.isascii() and line.isdecimal()
+                         and state["page"] * 15 < int(line) <= min((state["page"] + 1) * 15, len(workspaces))
+                         else line.strip('"'))
+            try:
+                valid = Path(workspace).is_absolute() and Path(workspace).is_dir()
+            except (ValueError, OSError):
+                valid = False
+            if not valid:
+                self.say("Workspace must be an existing absolute directory. Try again, or Enter to cancel.")
+                return
+            state["workspace"] = workspace
+            self._creation = None
+            self._create_shared_chat(state)
+            return
+        if state["stage"] == "session":
+            sessions = state["sessions"]
+            if (not line.isascii() or not line.isdecimal()
+                    or not state["page"] * 15 < int(line) <= min((state["page"] + 1) * 15, len(sessions))):
+                self.say("Enter a listed session number, or Enter to cancel. No message was sent.")
+                return
+            state.update(stage="confirm", session=sessions[int(line) - 1])
+            self.say("Restore this saved session in the CURRENT shared chat? Type y to confirm; Enter cancels.\n"
+                     + self.chat_label(state["chatId"]) + "\n"
+                     + f"{state['agent']} | {state['workspace']}\n"
+                     + str(state["session"].get("title") or "")[:160] + "\n"
+                     + str(state["session"].get("sessionId")))
+            return
+        if line.lower() != "y":
+            self.say("Type y to confirm, or Enter to cancel. No message was sent.")
+            return
+        self._creation = None
+        self._resume_shared_chat(state)
+
+    def _show_creation_page(self) -> None:
+        assert self._creation is not None
+        state = self._creation
+        workspace = state["stage"] == "workspace"
+        values = state["workspaces"] if workspace else state["sessions"]
+        start = state["page"] * 15
+        lines = ["Choose a workspace number or enter an existing absolute directory:" if workspace else
+                 "Choose a saved session for the CURRENT shared chat:"]
+        for index, value in enumerate(values[start:start + 15], start + 1):
+            label = value["absolutePath"] if workspace else (
+                str(value.get("title") or value.get("sessionId"))[:160] + " | " + str(value.get("updatedAt", ""))[:64]
+                + (" [context only; no history replay]" if value.get("historyReplaySupported") is False else ""))
+            lines.append(f"{index}. {label}")
+        lines.append(f"Page {state['page'] + 1}/{max(1, (len(values) + 14) // 15)}. n = next, p = previous; Enter cancels.")
+        self.say("\n".join(lines))
+
+    def _create_shared_chat(self, state: dict[str, Any]) -> None:
+        assert self.runtime is not None
+        chat_id = "chat_" + secrets.token_hex(16)
+        payload = {"chatId": chat_id, "agentId": state["agent"], "workspacePath": state["workspace"]}
+        with self._lock:
+            if len(self.chats) >= 256:
+                self.say("Terminal chat limit reached. No chat was created.")
+                return
+            self._pending_chats.add(chat_id)
+        published = False
+        try:
+            self.runtime.shared.register(payload, pending=True)
+            with self.runtime._event_lock, self._lock:
+                chat = self.runtime.shared.publish_chat(chat_id)
+                published = True
+                self._pending_chats.discard(chat_id)
+                self.observe_request({"type": "chat.attach", **chat})
+                self._announced_chats.add(chat_id)
+                self._select_chat(chat_id)
+                offset = 0
+                while True:
+                    page = self.runtime.shared.events(chat_id, after=offset)
+                    for event in page["events"]:
+                        self.observe_event(event)
+                    if not page["hasMore"]:
+                        break
+                    offset = page["nextEventId"]
+            self.say("Shared chat ready. Android synchronizes it automatically while open. No prompt was sent.")
+        except (ValueError, OSError, sqlite3.Error, ControlError, AcpAgentError) as error:
+            self.say("Cannot create shared chat: " + str(error))
+        finally:
+            with self._lock:
+                self._pending_chats.discard(chat_id)
+            if not published:
+                self.runtime.delete_shared_chat(chat_id)
+
+    def _resume_shared_chat(self, state: dict[str, Any]) -> None:
+        assert self.runtime is not None
+        if self.selected != state["chatId"]:
+            self.say("Selected chat changed. Run /resume again; no session was changed.")
+            return
+        session = state["session"]
+        replay = session.get("historyReplaySupported") is not False
+        responses = self.runtime.websocket_responses({
+            "type": "session.loadRecent" if replay else "session.resume",
+            "chatId": state["chatId"], "agentId": state["agent"], "workspacePath": state["workspace"],
+            "sessionId": session["sessionId"], "expectedHumanRevision": state["expectedHumanRevision"],
+            "expectedSessionId": state["expectedSessionId"],
+            "publishHistory": True, "limit": 5,
+        })
+        failure = next((r for r in responses if r.get("error")), None)
+        if failure:
+            self.say("Cannot resume session: " + str(failure["error"]))
+            return
+        self.say("Session restored in the current shared chat; Android uses the same chat. No prompt was sent."
+                 + (" Latest five available message bubbles imported; older history remains with the agent." if replay else
+                    " Context only: transcript replay is unavailable."))
 
     def _dispatch(self, payload: dict[str, Any]) -> None:
         assert self.runtime is not None

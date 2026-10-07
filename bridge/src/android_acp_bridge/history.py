@@ -64,6 +64,12 @@ class HistoryStore:
             if now >= snapshot.expires_at:
                 del self._snapshots[key]
 
+    def remove_chat(self, chat_id: str) -> None:
+        with self._lock:
+            for key, snapshot in list(self._snapshots.items()):
+                if snapshot.chat_id == chat_id:
+                    del self._snapshots[key]
+
     @staticmethod
     def _page(history_id: str, snapshot: HistorySnapshot, before: int, limit: int) -> dict[str, Any]:
         text_indices = [index for index, row in enumerate(snapshot.rows[:before]) if row["kind"] == "text"]

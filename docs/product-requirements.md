@@ -1,5 +1,18 @@
 # Product Requirements
 
+## Shared chat lifecycle
+
+- Android deletion must remove the shared Server Chat after explicit confirmation,
+  and synchronize removal to other clients. Keep the Chat on unconfirmed failure.
+- Never implicitly stop active/queued work or delete agent-native history/project
+  files. Require idle state and persist deletion markers against stale registrations.
+- Interactive `/new` offers installed-agent and existing-workspace selection;
+  `/resume` selects and confirms a saved native session for the current Chat's
+  agent/workspace, preserving that Chat ID and synchronizing its binding to Android.
+  To restore history in another Chat, use `/new` first, then `/resume`.
+- Synchronize terminal-created chats automatically while Android is foreground.
+  Do not send a model prompt merely to create/resume or publish failed partial chats.
+
 ## Compact chat input
 
 - Keep the normal input area to one row, including attachment/actions, text,
@@ -193,7 +206,7 @@ Chat
 
 - Show all chats across all machines.
 - Persist the ACP session ID behind each chat so app or bridge restarts continue the same agent conversation instead of creating a replacement.
-- Sessions with completed prompt history must remain discoverable through the agent after the local Android Chat is deleted.
+- Sessions with completed prompt history must remain discoverable through the agent after the shared Chat is deleted.
 - Display chat title, machine, workspace, agent, status, and pending approval count.
 - Show an unread indicator for chats with completed Agent responses that the user has not opened.
 - Support creating a new chat.

@@ -37,6 +37,24 @@ class ChatStoreTest {
 
     private fun message(index: Int) = ChatMessage(MessageRole.Agent, "message $index", index.toLong())
 
+    @Test fun sharedDeletionRejectsLateWritesAndPersistsAcrossRestart() {
+        store.load()
+        val stale = chat(messages = listOf(message(1)))
+        store.upsert(stale)
+        store.remove(stale.id)
+        assertTrue(store.isRemoved(stale.id))
+        assertThrows(IllegalStateException::class.java) { store.upsert(stale) }
+        store.awaitDurable()
+        store.closeForTest()
+        database = ChatDatabase(context, cipher) { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
+        store = ChatStore(database)
+        assertTrue(store.load().isEmpty())
+        assertTrue(store.isRemoved(stale.id))
+        assertThrows(IllegalStateException::class.java) { store.upsert(stale) }
+        store.upsert(chat("new-session-chat"))
+        assertEquals("new-session-chat", store.snapshot().single().id)
+    }
+
     private fun blob(table: String, id: String): ByteArray =
         database.readableDatabase.rawQuery("SELECT data FROM $table WHERE id=?", arrayOf(id)).use {
             assertTrue(it.moveToFirst())

@@ -598,7 +598,21 @@ and replaces the loading placeholder with recent text plus associated tool, plan
 and control rows. Older rows are fetched from that immutable snapshot without
 reloading the agent. Failed session switches leave the prior local history intact.
 
-Deleting an Android Chat removes only the local Chat record. A session with completed prompt history remains in the agent's session store and can be selected again through Existing Session. A config-only empty session has no recoverable conversation and may not be listed by the agent.
+Deleting an Android Chat now requires confirmation to remove it from both the
+phone and Server. The row remains visible with pending feedback until the Bridge
+confirms the exact identity; offline, unsupported and busy failures keep it and
+show an error. Stop/finish running and queued work first. Connected clients handle
+`chat.deleted`/`DELETED`; foreground catalog synchronization also applies explicit
+deletion rows, including after reconnect. Encrypted local tombstones persist with
+record deletion and reject late writes/imports after restart. Mere catalog absence
+still triggers legacy registration, never deletion.
+
+A session with completed prompt history remains in the agent's native store and
+can be selected again through Existing Session, or terminal `/new` followed by
+`/resume`. Terminal `/resume` alone changes the current Chat's session and keeps its
+ID; a deleted Chat ID is never revived. Project files are untouched. A config-only empty session may not
+be listed by the agent. This behavior requires updated Android and Bridge builds;
+older Bridges do not fall back to a misleading local-only delete.
 
 The workspace does not have to be a Git repository, but Copilot's coding workflows work best inside a repository. If a parent folder such as `D:\peixianws` is selected instead of `D:\peixianws\android-agent-link`, Git-aware commands may report that the current directory is not a Git repository.
 

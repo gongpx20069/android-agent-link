@@ -291,6 +291,14 @@ class AcpAgentManager:
                 raise AcpAgentError("Agent session is not ready for cancellation.")
             session.cancel_prompt()
 
+    def release_chat(self, chat_id: str) -> None:
+        """Release the idle process, not the provider's persisted conversation."""
+        with self._chat_lock(chat_id):
+            session = self._get_session(chat_id)
+            if session is not None:
+                session.stop()
+                self._pop_session(chat_id)
+
     def _chat_lock(self, chat_id: str) -> threading.RLock:
         with self._session_locks_guard:
             return self._session_locks.setdefault(chat_id, threading.RLock())

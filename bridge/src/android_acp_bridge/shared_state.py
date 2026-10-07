@@ -62,6 +62,9 @@ class SharedState:
         """)
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO metadata VALUES('generation',?)", (secrets.token_hex(16),))
+            for identity, raw in self.db.execute("SELECT id,data FROM chats").fetchall():
+                if json.loads(raw).get("pendingCreation"):
+                    self.delete_chat(identity)
             # Process restart cannot prove that an external command stopped or completed.
             for chat in self.chats():
                 if chat["status"] in {"busy", "waitingApproval"}:
@@ -98,7 +101,7 @@ class SharedState:
     def _put_chat(self, chat: dict[str, Any]) -> None:
         self.db.execute("INSERT OR REPLACE INTO chats VALUES(?,?)", (chat["chatId"], json.dumps(chat)))
 
-    def register(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+    def register(self, payload: dict[str, Any], *, pending: bool = False) -> dict[str, Any] | None:
         identity, path = payload.get("chatId"), payload.get("workspacePath")
         if not isinstance(identity, str) or not identity or not isinstance(path, str) or not path:
             return None
@@ -107,6 +110,8 @@ class SharedState:
         with self.lock:
             existing = self.db.execute("SELECT data FROM chats WHERE id=?", (identity,)).fetchone()
             if existing:
+                if json.loads(existing[0]).get("deleted"):
+                    raise ControlError("DELETED", "This shared chat was deleted. Create a new chat to resume its agent session.")
                 # Old client caches may be stale. Never let an attach replace authoritative bindings.
                 return json.loads(existing[0])
             workspace = self.workspace(path)
@@ -118,7 +123,16 @@ class SharedState:
                     "eventGeneration": self.generation,
                     "updatedAt": int(time.time() * 1000)}
             with self.db:
+                if pending:
+                    chat["pendingCreation"] = True
                 self._put_chat(chat)
+            return chat
+
+    def publish_chat(self, identity: str) -> dict[str, Any]:
+        with self.lock, self.db:
+            chat = self.chat(identity)
+            chat.pop("pendingCreation", None)
+            self._put_chat(chat)
             return chat
 
     def chat(self, identity: str) -> dict[str, Any]:
@@ -126,7 +140,24 @@ class SharedState:
             row = self.db.execute("SELECT data FROM chats WHERE id=?", (identity,)).fetchone()
             if not row:
                 raise ControlError("NOT_FOUND", "Shared chat was not found.")
-            return json.loads(row[0])
+            chat = json.loads(row[0])
+            if chat.get("deleted"):
+                raise ControlError("DELETED", "This shared chat was deleted.")
+            return chat
+
+    def is_deleted(self, identity: str) -> bool:
+        with self.lock:
+            row = self.db.execute("SELECT data FROM chats WHERE id=?", (identity,)).fetchone()
+            return bool(row and json.loads(row[0]).get("deleted"))
+
+    def delete_chat(self, identity: str) -> None:
+        with self.lock, self.db:
+            self._put_chat({"chatId": identity, "deleted": True, "updatedAt": int(time.time() * 1000)})
+            for table in ("events", "tasks"):
+                self.db.execute(f"DELETE FROM {table} WHERE chat=?", (identity,))
+            if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='images'").fetchone():
+                self.db.execute("DELETE FROM images WHERE chat=?", (identity,))
+            self._active_receipts.pop(identity, None)
 
     def bind_session(self, identity: str, session: str) -> None:
         with self.lock, self.db:
@@ -135,9 +166,11 @@ class SharedState:
                         humanRevision=chat["humanRevision"] + 1, updatedAt=int(time.time() * 1000))
             self._put_chat(chat)
 
-    def chats(self) -> list[dict[str, Any]]:
+    def chats(self, include_deleted: bool = False) -> list[dict[str, Any]]:
         with self.lock:
-            return [json.loads(row[0]) for row in self.db.execute("SELECT data FROM chats ORDER BY id")]
+            return [chat for row in self.db.execute("SELECT data FROM chats ORDER BY id")
+                    if not (chat := json.loads(row[0])).get("pendingCreation")
+                    and (include_deleted or not chat.get("deleted"))]
 
     def task(self, chat: str, identity: str) -> dict[str, Any] | None:
         with self.lock:
@@ -190,6 +223,8 @@ class SharedState:
 
     def append(self, chat_id: str, event: dict[str, Any]) -> None:
         with self.lock, self.db:
+            if self.is_deleted(chat_id):
+                return
             original = event
             raw = json.dumps(event, ensure_ascii=False)
             if len(raw.encode("utf-8")) > self.EVENT_BYTES:

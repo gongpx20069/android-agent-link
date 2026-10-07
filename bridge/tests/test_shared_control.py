@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from android_acp_bridge.acp_agent import AcpAgentSession
+from android_acp_bridge.acp_agent import AcpAgentError, AcpAgentSession
 from android_acp_bridge.config import BridgeConfig
 from android_acp_bridge.pairing import PairingStore
 from android_acp_bridge.runtime import BridgeRuntime
@@ -22,6 +22,109 @@ from test_runtime import BlockingAgentManager, FakeAgentManager
 
 
 class SharedControlTests(unittest.TestCase):
+    def test_delete_retries_failed_idle_process_release_without_reviving_chat(self):
+        runtime = self.runtime()
+        self.register(runtime)
+        with patch.object(runtime.agent_manager, "release_chat", side_effect=[AcpAgentError("close failed"), None]) as release:
+            self.assertEqual(self.request(runtime, "chat.delete", chatId="chat")["status"], "error")
+            self.assertTrue(runtime.shared.is_deleted("chat"))
+            self.assertEqual(self.request(runtime, "chat.delete", chatId="chat")["status"], "ok")
+            self.assertEqual(release.call_count, 2)
+
+    def test_unpublished_resume_is_hidden_and_tombstoned_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shared.sqlite3"
+            shared = SharedState(path)
+            shared.register({"chatId": "pending", "workspacePath": str(Path.cwd())}, pending=True)
+            self.assertEqual(shared.chats(include_deleted=True), [])
+            shared.close()
+            restored = SharedState(path)
+            try:
+                self.assertTrue(restored.is_deleted("pending"))
+                self.assertEqual(restored.chats(), [])
+            finally:
+                restored.close()
+
+    def test_shared_delete_is_durable_idempotent_and_blocks_late_registration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shared.sqlite3"
+            runtime = self.runtime(shared_state_store=path)
+            self.register(runtime)
+            self.register(runtime, "other")
+            phone = []
+            runtime.websocket_responses({"type": "chat.attach", "chatId": "chat"}, phone.append)
+            runtime._append_event("chat", {"type": "operation.accepted", "operationId": "old", "content": "private"})
+            runtime.agent_manager.release_chat = Mock()
+            result = self.request(runtime, "chat.delete", chatId="chat")
+            self.assertEqual(result["data"], {"chatId": "chat", "deleted": True})
+            runtime.agent_manager.release_chat.assert_called_once_with("chat")
+            self.assertTrue(any(e["type"] == "chat.deleted" for e in phone))
+            self.assertNotIn("chat", runtime._event_logs)
+            self.assertEqual(self.request(runtime, "chat.delete", chatId="chat")["status"], "ok")
+            self.assertEqual([c["chatId"] for c in runtime.shared.chats()], ["other"])
+            tombstones = self.request(runtime, "chat.list", includeDeleted=True)["data"]["chats"]
+            self.assertTrue(next(c for c in tombstones if c["chatId"] == "chat")["deleted"])
+            for table in ("events", "tasks", "images"):
+                self.assertEqual(runtime.shared.db.execute(f"SELECT count(*) FROM {table} WHERE chat='chat'").fetchone()[0], 0)
+            runtime._append_event("chat", {"type": "chat.status", "status": "busy"})
+            self.assertNotIn("chat", runtime._event_logs)
+            runtime.shared.close()
+            restored = self.runtime(shared_state_store=path)
+            for action in ("chat.register", "chat.read", "chat.send", "chat.configure"):
+                self.assertEqual(self.request(restored, action, chatId="chat", agentId="copilot-cli",
+                                              workspacePath=str(Path.cwd()))["code"], "DELETED")
+            for kind in ("chat.attach", "chat.prompt", "session.loadRecent", "session.resume"):
+                response = restored.websocket_responses({"type": kind, "chatId": "chat",
+                                                         "workspacePath": str(Path.cwd()), "content": "late"})
+                self.assertEqual(response[0]["code"], "DELETED")
+            self.assertEqual(restored._active_prompts, {})
+            restored.shared.close()
+
+    def test_delete_during_session_attach_is_rejected_without_cancelling_it(self):
+        runtime = self.runtime()
+        self.register(runtime)
+        entered, release = threading.Event(), threading.Event()
+        def restore(*args):
+            entered.set()
+            self.assertTrue(release.wait(5))
+        with patch.object(runtime.agent_manager, "restore_session", side_effect=restore):
+            thread = threading.Thread(target=lambda: runtime.websocket_responses({
+                "type": "chat.attach", "chatId": "chat", "sessionId": "saved"}, emit=lambda _: None))
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                self.assertEqual(self.request(runtime, "chat.delete", chatId="chat")["code"], "CONFLICT")
+                self.assertFalse(runtime.shared.is_deleted("chat"))
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertEqual(self.request(runtime, "chat.delete", chatId="chat")["status"], "ok")
+
+    def test_delete_storage_failure_rolls_back_and_missing_ids_get_tombstones(self):
+        runtime = self.runtime()
+        self.register(runtime)
+        runtime.shared.db.execute("CREATE TRIGGER deletion_failure BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'test'); END")
+        runtime._append_event("chat", {"type": "chat.status", "status": "idle"})
+        self.assertEqual(self.request(runtime, "chat.delete", chatId="chat")["status"], "error")
+        self.assertFalse(runtime.shared.is_deleted("chat"))
+        self.assertTrue(runtime.shared.events("chat")["events"])
+        runtime.shared.db.execute("DROP TRIGGER deletion_failure")
+        self.assertEqual(self.request(runtime, "chat.delete", chatId="offline-local")["status"], "ok")
+        self.assertTrue(runtime.shared.is_deleted("offline-local"))
+
+    def test_busy_and_queued_tasks_cannot_be_deleted(self):
+        manager = BlockingAgentManager()
+        runtime = self.runtime(manager=manager)
+        self.register(runtime)
+        self.request(runtime, "chat.send", chatId="chat", operationId="one", content="one")
+        self.request(runtime, "chat.send", chatId="chat", operationId="two", content="two")
+        try:
+            self.assertEqual(self.request(runtime, "chat.delete", chatId="chat")["code"], "CONFLICT")
+            self.assertEqual(len(runtime.shared.tasks("chat")), 2)
+        finally:
+            manager.release.set()
+            self.wait_done(runtime, "chat", "two")
+
     def test_durable_receipt_is_exact_bounded_and_survives_journal_reset(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = self.runtime(shared_state_store=Path(directory) / "shared.sqlite3")

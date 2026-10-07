@@ -279,6 +279,8 @@ UTF-16 code units are refused without replacing the clipboard.
 | `/model` | Select an advertised model for the current shared chat. |
 | `/allow-all` | Choose session permission setting, Enter to review, then `y` to apply. |
 | `/new copilot-cli C:\Repos\my-project` | Create a shared chat for an installed agent. |
+| `/new` | Choose an installed agent and existing workspace by number/path. |
+| `/resume` | Choose a saved session for the current Chat; confirm with `y` to restore it in that same Chat. |
 | `/approvals` | Review pending approval details. |
 | `/approve <approval-id>`, `/deny <approval-id>` | Decide a request; approval requires reviewing it first. |
 | `/choose <approval-id> <option-id>`, `/answer <approval-id> <JSON>` | Select the exact permission or answer a question after reviewing `/approvals`. |
@@ -287,15 +289,29 @@ UTF-16 code units are refused without replacing the clipboard.
 | `/send <text>` | Send text that starts with `/`, rather than treating it as a terminal command. |
 | `/help`, `/quit` | Show help, or stop the bridge and disconnect Android. |
 
-Create/open a conversation on Android, or use terminal `/new` and refresh Android's
-shared chats to discover it. The bridge persists the shared catalog and a bounded
+Create/open a conversation on Android, or use terminal `/new`.
+Android discovers new Chats automatically while open (normally within about five seconds).
+Enter cancels a terminal choice without sending text to the agent; `n`/`p` page
+through workspaces and saved sessions. `/resume` takes no arguments: it uses the
+current Chat's agent/workspace, keeps that Chat's ID and title, and imports the
+latest five available message bubbles after a context boundary. Agents without
+replay restore only context. Android's same Chat receives the session change.
+Use `/new` then `/resume` if you want another Chat. No prompt is sent.
+
+Deleting a Chat on Android asks for shared deletion confirmation and removes it
+from the Server/interactive terminal as well. Stop or finish tasks and queued
+messages first. Offline/old-Bridge errors keep the card until deletion is confirmed.
+Native agent history and project files are kept; use Existing Session or `/new` then `/resume`
+to open that history with a fresh Chat ID. Both App and Bridge must be updated.
+
+The bridge persists the shared catalog and a bounded
 journal; terminal selection and its live display are not restored across restarts.
 Interactive mode does not print the QR/link at startup: use `/qrcode` to open
 a dedicated view that incoming chat output cannot replace. Ordinary server modes
 still print it at startup. The original token expiry is unchanged.
 Agent-advertised slash commands also appear in the menu. Unknown commands are
-rejected; terminal input never executes a local shell. `/resume` remains an Android
-picker action. `/allow-all` (also `/allow_all`) refreshes the agent's permission
+rejected; terminal input never executes a local shell.
+`/allow-all` (also `/allow_all`) refreshes the agent's permission
 setting, supports On/Off for boolean options and advertised select choices, and
 requires a separate `y` confirmation after Enter. `n` returns to selection; Esc
 cancels without changing anything. Enabling it may let the agent execute commands

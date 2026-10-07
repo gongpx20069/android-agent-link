@@ -52,10 +52,12 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
     if action == "workspace.create":
         return {"workspace": create_workspace(runtime, payload)}
     if action == "chat.list":
-        chats = runtime.shared.chats()
+        if type(payload.get("includeDeleted", False)) is not bool:
+            raise ControlError("INVALID_ARGS", "includeDeleted must be boolean.")
+        chats = runtime.shared.chats(include_deleted=payload.get("includeDeleted", False))
         workspace = payload.get("workspaceId")
         if workspace is not None:
-            chats = [chat for chat in chats if chat["workspaceId"] == workspace]
+            chats = [chat for chat in chats if chat.get("deleted") or chat["workspaceId"] == workspace]
         offset = integer(payload, "offset", 0, 0, 1000000)
         limit = integer(payload, "limit", 50, 1, 100)
         # Catalog doesn't inline potentially large provider config definitions.
@@ -89,6 +91,8 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
         return {"chat": chat}
 
     chat_id = required_text(payload.get("chatId"), "chatId", 256)
+    if action == "chat.delete":
+        return runtime.delete_shared_chat(chat_id)
     if action == "task.read":
         identity = required_text(payload.get("taskId"), "taskId", 256)
         return {"task": runtime.shared.task_receipt(chat_id, identity),

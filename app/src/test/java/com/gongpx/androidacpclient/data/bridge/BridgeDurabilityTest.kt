@@ -15,10 +15,45 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import android.os.Looper
+import org.robolectric.Shadows.shadowOf
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class BridgeDurabilityTest {
+    @Test fun explicitDeletionAndDeletedAttachErrorsNotifyTheExactChat() {
+        for (kind in listOf("chat.deleted", "bridge.error")) {
+            val server = MockWebServer()
+            val sent = CountDownLatch(1)
+            var deleted = 0
+            server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    webSocket.send(JSONObject().put("type", kind).put("chatId", "other").put("code", "DELETED").toString())
+                    webSocket.send(JSONObject().put("type", kind).put("chatId", "chat").put("code", "DELETED").toString())
+                    sent.countDown()
+                }
+            }))
+            server.start()
+            val connection = BridgeClient().openChatConnection(
+                machine = Machine("m", "M", server.url("/").toString(), "token", "f"),
+                chatId = "chat", agentId = "agent", workspacePath = "workspace", lastEventId = 0,
+                onDeleted = { deleted++ },
+            )
+            try {
+                assertTrue(sent.await(3, TimeUnit.SECONDS))
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                while (deleted == 0 && System.nanoTime() < deadline) {
+                    shadowOf(Looper.getMainLooper()).idle()
+                    Thread.sleep(10)
+                }
+                assertEquals(1, deleted)
+            } finally {
+                connection.close()
+                server.shutdown()
+            }
+        }
+    }
+
     @Test fun neitherAttachNorPromptCanPassTheDurabilityBarrier() {
         val server = MockWebServer()
         val frames = LinkedBlockingQueue<String>()

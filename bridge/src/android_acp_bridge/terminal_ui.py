@@ -81,7 +81,8 @@ class SlashCompleter(Completer):
         "/tools": "Focus expandable tools",
         "/chats": "Choose shared phone chat by number",
         "/use": "Switch to a chat number",
-        "/new": "New terminal-local chat: agent workspace",
+        "/new": "New shared chat: guided agent/workspace picker",
+        "/resume": "Restore a saved session in the CURRENT shared chat",
         "/approvals": "Review pending approval details",
         "/approve": "Approve a fully reviewed request",
         "/choose": "Select an exact reviewed permission option",
@@ -687,9 +688,6 @@ class FullScreenTerminal:
             self.pairing_line = self.pairing_column = 0
             self.app.layout.focus(self.pairing_control)
             return True
-        if command == "/resume":
-            self.write("Use Android's session/permission picker for this action. It is not forwarded as an ordinary terminal command.")
-            return True
         if command in {"/model", "/allow-all", "/allow_all", "/config"}:
             normalized = "/allow-all" if command == "/allow_all" else command
             arguments = line.strip().split()
@@ -697,7 +695,7 @@ class FullScreenTerminal:
                 self.write(f"Use {normalized} and choose an advertised setting; inline values are not accepted.")
             elif self.config_busy:
                 self.write("A configuration request is already in progress.")
-            elif self.client._choosing_chat:
+            elif self.client._choosing_chat or self.client._creation is not None:
                 self.write(f"Finish or cancel /chats selection before opening {normalized}.")
             else:
                 self.config_busy = True

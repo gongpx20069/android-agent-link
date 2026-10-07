@@ -35,13 +35,39 @@ class InteractionReviewTest {
         onCreate: (Machine, String, Agent) -> Unit = { _, _, _ -> },
         onLoad: (Machine, Agent, (Result<List<AgentSessionInfo>>) -> Unit) -> Unit = { _, _, _ -> },
         onSend: (Chat, String) -> Boolean = { _, _ -> true },
+        onDelete: (Chat) -> Unit = {},
+        deleting: Set<String> = emptySet(),
     ) {
         MaterialTheme {
             ChatsScreen(PaddingValues(), machines, chats, busy, emptySet(), selected, emptyList(),
                 chats.map { it.id }.toSet(), emptySet(), operations,
-                { _, _ -> }, {}, {}, onCreate, { _, _, _ -> }, onLoad, {}, {}, {}, {}, { _, _ -> },
-                { _, _ -> }, onSend, onCancelTask = onCancel)
+                { _, _ -> }, {}, {}, onCreate, { _, _, _ -> }, onLoad, {}, onDelete, {}, {}, { _, _ -> },
+                { _, _ -> }, onSend, onCancelTask = onCancel, deletingChatIds = deleting)
         }
+    }
+
+    @Test fun sharedDeletionRequiresConfirmationAndKeepsCardWhilePending() {
+        val deleting = mutableStateOf(emptySet<String>())
+        var requests = 0
+        compose.setContent {
+            Screen(chats = listOf(chat("A")), deleting = deleting.value,
+                onDelete = { requests++; deleting.value = setOf(it.id) })
+        }
+        compose.onNodeWithText("Chat A").performScrollTo().performTouchInput { swipeLeft() }
+        compose.onNodeWithText("Delete").performClick()
+        compose.onNodeWithText("Delete shared chat?").assertIsDisplayed()
+        compose.onNodeWithText("phone and Server", substring = true).assertExists()
+        assertEquals(0, requests)
+        compose.onNodeWithText("Cancel").performClick()
+        assertEquals(0, requests)
+        compose.onNodeWithText("Chat A").assertExists()
+        compose.onNodeWithText("Delete").performClick()
+        compose.onNode(hasText("Delete") and hasAnyAncestor(isDialog())).performClick()
+        assertEquals(1, requests)
+        compose.onNodeWithText("Deleting from Server...").assertExists()
+        compose.onNodeWithText("Chat A").assertIsNotEnabled()
+        compose.runOnIdle { deleting.value = emptySet() }
+        compose.onNodeWithText("Chat A").assertIsEnabled()
     }
 
     @Test fun missingAgentsRemainVisibleInNewSessionAfterCatalogRefresh() {

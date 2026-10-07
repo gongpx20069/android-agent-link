@@ -190,6 +190,13 @@ class ChatMonitorService : Service() {
                 // Do not resend durable queue entries until attach has ruled out a history gap/reset.
                 queuedPrompts = emptyList(),
                 initialMessages = chat.messages,
+                onDeleted = {
+                    apply {
+                        chatStore.remove(chat.id)
+                        notifications.cancel(chat.id)
+                        removeMonitor(state)
+                    }
+                },
                 onMessage = { message, _ ->
                     apply { persist(state, state.chat.copy(messages = state.chat.messages.mergeTimelineMessage(message))) }
                 },
@@ -379,7 +386,7 @@ class ChatMonitorService : Service() {
     }
 
     private fun owns(state: MonitoredChat): Boolean =
-        acceptingCallbacks && monitored[state.chat.id] === state
+        acceptingCallbacks && monitored[state.chat.id] === state && !chatStore.isRemoved(state.chat.id)
 
     private fun removeMonitor(state: MonitoredChat) {
         monitored.remove(state.chat.id)

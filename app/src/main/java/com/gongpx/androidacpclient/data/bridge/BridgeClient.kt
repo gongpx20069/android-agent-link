@@ -549,6 +549,7 @@ class BridgeClient(
         initialMessages: List<ChatMessage> = emptyList(),
         onHistoryCapability: (Boolean) -> Unit = {},
         onPromptImage: (String, String, ImageAttachment) -> Unit = { _, _, _ -> },
+        onDeleted: () -> Unit = {},
     ): ChatConnection {
         val requestBuilder = Request.Builder().url(toWebSocketUrl(machine.endpoint, machine.deviceToken))
         machine.connectionHeaders.forEach { (name, value) ->
@@ -677,6 +678,12 @@ class BridgeClient(
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     if (intentionallyClosed.get()) return
                     val event = runCatching { JSONObject(text) }.getOrNull() ?: return
+                    if (event.optString("chatId") == chatId &&
+                        (event.optString("type") == "chat.deleted" ||
+                            (event.optString("type") == "bridge.error" && event.optString("code") == "DELETED"))) {
+                        mainHandler.post { if (!intentionallyClosed.get()) onDeleted() }
+                        return
+                    }
                     val image = try {
                         val source = if (event.optString("type") == "session/update") event.optJSONObject("update") ?: event else event
                         if (source.has("image") && !source.isNull("image")) ImageAttachment.fromJson(source.getJSONObject("image")) else null

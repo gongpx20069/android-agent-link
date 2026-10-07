@@ -11,6 +11,8 @@ import urllib.request
 from unittest.mock import patch
 
 from android_acp_bridge.config import BridgeConfig
+from android_acp_bridge.acp_agent import AcpAgentError, AcpSessionBinding
+from android_acp_bridge.terminal_state import Transcript
 from android_acp_bridge.console_log import ConsoleLog
 from android_acp_bridge.main import main
 from android_acp_bridge.pairing import PairingStore
@@ -24,6 +26,145 @@ HAS_INTERACTIVE = all(importlib.util.find_spec(module) for module in ("prompt_to
 
 
 class TerminalTests(unittest.TestCase):
+    def test_resume_pages_keep_every_session_reachable_without_accepting_unseen_choices(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.runtime, "agents_response", return_value={
+            "agents": [{"id": "copilot-cli", "status": "available"}],
+        }), patch.object(self.runtime.agent_manager, "list_sessions", return_value=[
+            {"sessionId": f"saved-{index}", "title": f"Session {index}"} for index in range(1, 32)
+        ]):
+            self.client.command(f'/new copilot-cli "{directory}"')
+            original = self.client.selected
+            self.client.command('/resume')
+            self.client.command("31")
+            self.assertEqual(self.client._creation["stage"], "session")
+            self.client.command("n")
+            self.client.command("n")
+            self.assertIn("31. Session 31", "".join(self.output))
+            self.client.command("31")
+            self.assertEqual(self.client._creation["session"]["sessionId"], "saved-31")
+            self.client.command("")
+            self.assertIsNone(self.client._creation)
+            self.assertEqual([c["chatId"] for c in self.runtime.shared.chats()], [original])
+
+    def test_shared_delete_removes_terminal_rows_and_suppresses_queued_events(self):
+        self.attach_phone([])
+        transcript = Transcript()
+        self.client.event_sink = transcript.event
+        transcript.add("chat-a", "", "Agent", "removed")
+        self.client.observe_event({"type": "session/update", "chatId": "chat-a",
+                                   "update": {"sessionUpdate": "agent_message_chunk", "text": "late"}})
+        self.runtime.delete_shared_chat("chat-a")
+        self.client.observe_request({"type": "chat.attach", "chatId": "chat-a"})
+        self.client.observe_event({"type": "chat.status", "chatId": "chat-a", "status": "busy"})
+        self.client.drain()
+        self.assertEqual(self.client.chats, {})
+        self.assertEqual(transcript.entries, [])
+        self.assertIsNone(self.client.selected)
+        self.client.observe_request({"type": "chat.attach", "chatId": "new", "agentId": "copilot-cli", "workspacePath": "C:\\repo"})
+        self.assertEqual(self.client.chats["new"].number, 2)
+
+    def test_resume_updates_current_shared_chat_and_phone_without_creating_or_prompting(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.runtime, "agents_response", return_value={
+            "agents": [{"id": "copilot-cli", "status": "available"}],
+        }):
+            self.client.command("/new")
+            self.client.command("invalid choice")
+            self.assertEqual(self.runtime.shared.chats(), [])
+            self.client.command("1")
+            self.client.command(directory)
+            first = self.client.selected
+            self.assertIsNotNone(first)
+            phone = []
+            self.runtime.websocket_responses({"type": "chat.attach", "chatId": first}, emit=phone.append)
+            self.runtime._record_broadcast(first, {"type": "session/update", "update": {
+                "sessionUpdate": "agent_message_chunk", "text": "previous conversation"}})
+            before = self.runtime.shared.chat(first)
+            old_events = self.runtime.shared.events(first)["events"]
+            phone.clear()
+            self.client.command("/resume")
+            self.client.command("1")
+            self.assertEqual(self.client.selected, first)
+            self.assertIsNone(self.runtime.shared.chat(first)["sessionId"])
+            self.client.command("y")
+            second = self.client.selected
+            self.assertEqual(first, second)
+            self.assertEqual(self.runtime.shared.chat(second)["sessionId"], "sess_1")
+            self.assertEqual(self.client.chats[second].session_id, "sess_1")
+            self.assertEqual(len(self.runtime.shared.chats()), 1)
+            self.assertEqual(self.runtime.shared.chat(second)["chatTitle"], before["chatTitle"])
+            self.assertEqual(self.runtime.shared.chat(second)["eventGeneration"], before["eventGeneration"])
+            self.assertEqual(self.runtime.shared.events(second)["events"][:len(old_events)], old_events)
+            self.assertTrue(any(e["type"] == "chat.session" and e["sessionId"] == "sess_1" for e in phone))
+            self.assertTrue(any(e.get("update", {}).get("content", {}).get("text") == "old answer" for e in phone))
+            self.assertTrue(all(e["chatId"] == first for e in phone))
+            self.assertTrue(any(e.get("update", {}).get("content", {}).get("text") == "old answer"
+                                for e in self.runtime.shared.events(second)["events"]))
+            self.assertFalse(self.runtime._prompt_operations)
+
+    def test_resume_context_only_and_failed_resume_never_leave_phantom_chats(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(self.runtime, "agents_response", return_value={
+            "agents": [{"id": "deepseek-harness", "status": "available"}],
+        }), patch.object(self.runtime.agent_manager, "list_sessions", return_value=[
+            {"sessionId": "native", "title": "Saved", "historyReplaySupported": False},
+        ]):
+            self.runtime.agent_manager.resume_session = lambda *args: (AcpSessionBinding("native", True, history_replay_supported=False), [])
+            self.client.command(f'/new deepseek-harness "{directory}"')
+            self.client.command('/resume')
+            self.client.command("1")
+            self.client.command("y")
+            original = self.client.selected
+            self.assertEqual(self.runtime.shared.chat(original)["sessionId"], "native")
+            self.assertFalse(self.runtime.shared.chat(original)["historyReplaySupported"])
+            with patch.object(self.runtime.agent_manager, "resume_session", side_effect=AcpAgentError("provider offline")):
+                self.client.command('/resume')
+                self.client.command("1")
+                self.client.command("y")
+            self.assertEqual(self.client.selected, original)
+            self.assertEqual(len(self.runtime.shared.chats()), 1)
+            self.assertIn("provider offline", "".join(self.output))
+            self.assertFalse(self.runtime._prompt_operations)
+
+    def test_resume_requires_current_chat_and_rejects_stale_or_busy_confirmation(self):
+        self.client.command("/resume")
+        self.assertIn("Choose a chat", "".join(self.output))
+        self.assertEqual(self.runtime.shared.chats(), [])
+        self.attach_phone([])
+        self.client.command("/resume wrong-agent C:\\other")
+        self.assertIsNone(self.client._creation)
+        self.client.command("/resume")
+        self.client.command("1")
+        self.runtime.shared.bind_session("chat-a", "changed-on-phone")
+        with patch.object(self.runtime.agent_manager, "load_recent_session") as load:
+            self.client.command("y")
+            load.assert_not_called()
+        self.assertEqual(self.runtime.shared.chat("chat-a")["sessionId"], "changed-on-phone")
+        self.assertIn("Chat changed", "".join(self.output))
+        self.client.command("/resume")
+        self.client.command("1")
+        self.runtime._history_loading_chats.add("chat-a")
+        try:
+            with patch.object(self.runtime.agent_manager, "load_recent_session") as load:
+                self.client.command("y")
+                load.assert_not_called()
+        finally:
+            self.runtime._history_loading_chats.discard("chat-a")
+        self.assertEqual(len(self.runtime.shared.chats()), 1)
+        self.assertEqual(self.client.selected, "chat-a")
+
+    def test_failed_replay_preserves_current_binding_history_and_identity(self):
+        self.attach_phone([])
+        self.runtime.shared.bind_session("chat-a", "original")
+        before = self.runtime.shared.chat("chat-a")
+        history = self.runtime.shared.events("chat-a")["events"]
+        self.client.command("/resume")
+        self.client.command("1")
+        with patch.object(self.runtime.agent_manager, "load_recent_session", side_effect=AcpAgentError("cannot load")):
+            self.client.command("y")
+        self.assertEqual(self.runtime.shared.chat("chat-a"), before)
+        self.assertEqual(self.runtime.shared.events("chat-a")["events"], history)
+        self.assertEqual(len(self.runtime.shared.chats()), 1)
+        self.assertIn("cannot load", "".join(self.output))
+
     def setUp(self) -> None:
         self.output: list[str] = []
         self.client = TerminalClient(self.output.append)

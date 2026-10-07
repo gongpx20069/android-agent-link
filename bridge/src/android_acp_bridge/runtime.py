@@ -71,6 +71,9 @@ class PromptOperation:
 
 
 class AgentManager(Protocol):
+    def release_chat(self, chat_id: str) -> None:
+        ...
+
     def prompt(
         self,
         request: AcpPromptRequest,
@@ -164,6 +167,7 @@ class BridgeRuntime:
         self._pre_cancelled_prompt_ids: set[tuple[str, str]] = set()
         self._cancelled_prompt_ids: dict[tuple[str, str], None] = {}
         self._prompt_lock = threading.RLock()
+        self._chat_requests: dict[str, int] = {}
         self._chat_emitters: dict[str, Callable[[dict[str, Any]], None]] = {}
         self._chat_subscribers: dict[str, list[Callable[[dict[str, Any]], None]]] = {}
         self._event_logs: dict[str, list[dict[str, Any]]] = {}
@@ -274,6 +278,52 @@ class BridgeRuntime:
         return self._device_tokens.contains(token)
 
     def websocket_responses(self, payload: Any, emit: Callable[[dict[str, Any]], None] | None = None) -> list[dict[str, Any]]:
+        chat_id = payload.get("chatId") if isinstance(payload, dict) else None
+        deleting = isinstance(payload, dict) and payload.get("type") == "control.request" and payload.get("action") == "chat.delete"
+        if not isinstance(chat_id, str) or deleting:
+            return self._websocket_responses(payload, emit)
+        with self._prompt_lock:
+            if self.shared.is_deleted(chat_id):
+                error = {"chatId": chat_id, "code": "DELETED", "error": "This shared chat was deleted. Create a new chat to resume its agent session."}
+                if payload.get("type") == "control.request":
+                    error.update(type="control.result", requestId=payload.get("requestId"), status="error", message=error["error"])
+                else:
+                    error["type"] = "bridge.error"
+                return [error, {"type": "bridge.done", "chatId": chat_id}]
+            self._chat_requests[chat_id] = self._chat_requests.get(chat_id, 0) + 1
+        try:
+            return self._websocket_responses(payload, emit)
+        finally:
+            with self._prompt_lock:
+                self._chat_requests[chat_id] -= 1
+                if self._chat_requests[chat_id] == 0:
+                    del self._chat_requests[chat_id]
+
+    def delete_shared_chat(self, chat_id: str) -> dict[str, Any]:
+        with self._prompt_lock, self._event_lock:
+            if (self._chat_requests.get(chat_id) or chat_id in self._active_prompts
+                    or self._prompt_queues.get(chat_id) or chat_id in self._history_loading_chats
+                    or chat_id in self._configuring_chats
+                    or any(p.requested["chatId"] == chat_id for p in self._pending_approvals.values())):
+                raise ControlError("CONFLICT", "Chat is busy. Stop or finish tasks and session changes before deleting it.")
+            if not self.shared.is_deleted(chat_id):
+                self.shared.delete_chat(chat_id)
+                self._record_broadcast(chat_id, {"type": "chat.deleted", "chatId": chat_id})
+            for mapping in (self._chat_emitters, self._chat_subscribers, self._event_logs, self._next_event_ids,
+                            self._chat_event_generations, self._chat_status, self._prompt_queues):
+                mapping.pop(chat_id, None)
+            for key in list(self._prompt_operations):
+                if key[0] == chat_id:
+                    del self._prompt_operations[key]
+            self._pre_cancelled_prompt_ids = {key for key in self._pre_cancelled_prompt_ids if key[0] != chat_id}
+            for key in list(self._cancelled_prompt_ids):
+                if key[0] == chat_id:
+                    del self._cancelled_prompt_ids[key]
+            self._history.remove_chat(chat_id)
+        self.agent_manager.release_chat(chat_id)
+        return {"chatId": chat_id, "deleted": True}
+
+    def _websocket_responses(self, payload: Any, emit: Callable[[dict[str, Any]], None] | None = None) -> list[dict[str, Any]]:
         if not isinstance(payload, dict):
             responses = [{"type": "bridge.echo", "payload": payload}, {"type": "bridge.done"}]
             self._log_responses(responses)
@@ -881,6 +931,7 @@ class BridgeRuntime:
                         or chat_id in self._configuring_chats
                         or any(p.requested["chatId"] == chat_id for p in self._pending_approvals.values())):
                     raise AcpAgentError("Chat is busy. Finish its task, approval or session change before resuming context.")
+                self._check_resume_revision(chat_id, payload)
                 self._history_loading_chats.add(chat_id)
                 claimed = True
             registered = self.shared.register(payload)
@@ -965,6 +1016,10 @@ class BridgeRuntime:
         limit = max(1, min(_int_or_default(payload.get("limit"), 50), 200))
         claimed = False
         try:
+            if type(payload.get("publishHistory", False)) is not bool:
+                raise HistoryError("invalid_args", "publishHistory must be boolean.")
+            if payload.get("publishHistory") is True and "expectedHumanRevision" not in payload:
+                raise HistoryError("invalid_args", "Publishing restored history requires expectedHumanRevision.")
             with self._prompt_lock:
                 with self._event_lock:
                     if (
@@ -974,6 +1029,7 @@ class BridgeRuntime:
                         or any(pending.requested["chatId"] == chat_id for pending in self._pending_approvals.values())
                     ):
                         raise HistoryError("session_busy", "Finish the active prompt or approval before loading session history.")
+                    self._check_resume_revision(chat_id, payload)
                     self._history_loading_chats.add(chat_id)
                     claimed = True
             result = self.agent_manager.load_recent_session(chat_id, agent_id, workspace_path, session_id, limit)
@@ -986,6 +1042,27 @@ class BridgeRuntime:
                 chat_id, session_id, updates if isinstance(updates, list) else [],
                 _int_or_default(result.get("scannedEvents"), 0), limit,
             )
+            if payload.get("publishHistory") is True:
+                with self._event_lock:
+                    self.shared.bind_session(chat_id, session_id)
+                    self._record_broadcast(chat_id, self._session_binding_event(chat_id, AcpSessionBinding(
+                        session_id, resumable=True, history_replay_supported=True)))
+                    self._record_broadcast(chat_id, {"type": "session/update", "update": {
+                        "sessionUpdate": "tool_call_update", "toolCallId": "resume:" + page["historyId"],
+                        "title": "Session restored", "kind": "other", "status": "completed",
+                        "rawOutput": "Earlier messages are retained from the previous context. Recent saved messages follow.",
+                    }})
+                    for row in page["messages"]:
+                        update = ({"sessionUpdate": "user_message_chunk" if row["role"] == "user" else "agent_message_chunk",
+                                   "content": {"type": "text", "text": row["text"]},
+                                   "messageId": row["historyItemId"],
+                                   **({"image": row["image"]} if row.get("image") else {})}
+                                  if row["kind"] == "text" else json.loads(row["details"]))
+                        self._record_broadcast(chat_id, {"type": "session/update", "update": update})
+                    self._record_broadcast(chat_id, self._chat_status_event(chat_id, "idle"))
+                    page["latestEventId"] = self._next_event_ids[chat_id] - 1
+                    page["eventGeneration"] = self.shared.chat(chat_id)["eventGeneration"]
+                return [{"type": "session.loadRecent.result", **page}, {"type": "bridge.done", "chatId": chat_id}]
             with self._event_lock:
                 self._event_logs.pop(chat_id, None)
                 generation = self.shared.reset_events(chat_id)
@@ -1011,7 +1088,7 @@ class BridgeRuntime:
                 },
                 {"type": "bridge.done", "chatId": chat_id},
             ]
-        except (AcpAgentError, HistoryError) as exc:
+        except (AcpAgentError, HistoryError, ControlError) as exc:
             return [
                 {
                     "type": "session.loadRecent.result",
@@ -1029,6 +1106,16 @@ class BridgeRuntime:
             if claimed:
                 with self._prompt_lock:
                     self._history_loading_chats.discard(chat_id)
+
+    def _check_resume_revision(self, chat_id: str, payload: dict[str, Any]) -> None:
+        if "expectedHumanRevision" in payload:
+            chat = self.shared.chat(chat_id)
+            revision = payload["expectedHumanRevision"]
+            if (type(revision) is not int or revision != chat["humanRevision"]
+                    or payload.get("agentId") != chat["agentId"]
+                    or payload.get("workspacePath") != chat["workspacePath"]
+                    or ("expectedSessionId" in payload and payload["expectedSessionId"] != chat.get("sessionId"))):
+                raise ControlError("CONFLICT", "Chat changed while selecting a session. Run /resume again.")
 
     def _session_history_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         chat_id = _string_or_default(payload.get("chatId"), "")
@@ -1278,6 +1365,8 @@ class BridgeRuntime:
 
     def _append_event(self, chat_id: str, event: dict[str, Any], log_operation_id: str | None = None) -> dict[str, Any]:
         with self._event_lock:
+            if event.get("type") != "chat.deleted" and self.shared.is_deleted(chat_id):
+                return {"type": "chat.deleted", "chatId": chat_id}
             event_id = self._next_event_ids.get(chat_id, 1)
             enriched = self.attachments.project_update(chat_id, event)
             enriched.setdefault("chatId", chat_id)

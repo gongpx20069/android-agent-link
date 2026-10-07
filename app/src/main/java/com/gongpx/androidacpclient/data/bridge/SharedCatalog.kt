@@ -12,7 +12,8 @@ suspend fun BridgeClient.listSharedChats(machine: Machine): List<JSONObject> =
         var pages = 0
         while (true) {
             check(++pages <= 100) { "Shared catalog exceeds 100 pages." }
-            val result = controlRequest(machine, "chat.list", JSONObject().put("offset", offset).put("limit", 100))
+            val result = controlRequest(machine, "chat.list", JSONObject()
+                .put("offset", offset).put("limit", 100).put("includeDeleted", true))
             check(result.optString("status") == "ok") { "Shared catalog is unavailable." }
             val data = result.getJSONObject("data")
             val rows = data.getJSONArray("chats")
@@ -30,11 +31,13 @@ suspend fun BridgeClient.listSharedChats(machine: Machine): List<JSONObject> =
 
 /** Preserve cached history and replay cursors; remote identity/binding is authoritative. */
 fun mergeSharedChat(machine: Machine, remote: JSONObject, local: Chat?): Chat {
+    require(!remote.optBoolean("deleted")) { "A deleted shared chat cannot be imported." }
     val id = remote.getString("chatId")
     require(id.isNotBlank() && id.length <= 256)
     require(local == null || (local.id == id && local.machineId == machine.id)) {
         "Shared chat identity collides with another machine."
     }
+
     val path = remote.getString("workspacePath")
     require(path.isNotBlank())
     val workspaceId = remote.getString("workspaceId")
@@ -55,4 +58,15 @@ fun mergeSharedChat(machine: Machine, remote: JSONObject, local: Chat?): Chat {
         historyReplaySupported = remote.optBoolean("historyReplaySupported", base.historyReplaySupported),
         agentStatus = remote.optString("status", base.agentStatus),
     )
+}
+
+suspend fun BridgeClient.deleteSharedChat(machine: Machine, chatId: String) {
+    val result = controlRequest(machine, "chat.delete", JSONObject().put("chatId", chatId))
+    check(result.optString("status") == "ok") {
+        result.optString("message", "Shared deletion is unavailable. Update the computer Bridge and reconnect.")
+    }
+    val data = result.getJSONObject("data")
+    check(data.optString("chatId") == chatId && data.optBoolean("deleted")) {
+        "Bridge did not confirm deletion of this chat. Refresh its status before retrying."
+    }
 }

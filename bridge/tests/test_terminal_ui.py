@@ -787,10 +787,15 @@ class FullScreenTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("without interrupting", self.screen())
 
     async def test_reserved_commands_and_display_eviction_cannot_authorize(self):
-        self.ui.submit("/resume")
-        await asyncio.sleep(0.2)
+        with patch.object(self.runtime, "agents_response", return_value={
+            "agents": [{"id": "copilot-cli", "status": "available"}],
+        }):
+            self.ui.submit("/resume")
+            await asyncio.sleep(0.2)
         self.assertFalse(self.runtime._prompt_operations)
-        self.assertIn("Android", self.screen())
+        self.assertIn("CURRENT shared chat", self.screen())
+        self.ui.submit("")
+        await asyncio.sleep(0.1)
         self.client._reviewed.add("old-review")
         for index in range(200):
             self.ui.transcript.add("one", str(index), "Agent", "evict")

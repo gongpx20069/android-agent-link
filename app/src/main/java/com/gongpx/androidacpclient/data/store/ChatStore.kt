@@ -49,6 +49,7 @@ class ChatStore private constructor(private val shared: Shared) {
 
     fun upsert(chat: Chat, prepend: Boolean = false): Chat = synchronized(shared.lock) {
         shared.checkReady()
+        check(chat.id !in shared.removed) { "This shared chat was deleted; create a new chat to resume its session." }
         val old = shared.chats[chat.id]
         val reset = old != null && old.timelineId != chat.timelineId
         if (reset) shared.pending.remove(chat.id)?.let { shared.pendingCharacters -= it.characters }
@@ -82,9 +83,16 @@ class ChatStore private constructor(private val shared: Shared) {
         shared.chats.remove(chatId)
         shared.pending.remove(chatId)?.let { shared.pendingCharacters -= it.characters }
         shared.deleted.add(chatId)
+        shared.removed.add(chatId)
+        shared.removedDirty = true
         shared.unread = shared.unread - chatId
         shared.unreadDirty = true
         shared.schedule()
+    }
+
+    fun isRemoved(chatId: String): Boolean = synchronized(shared.lock) {
+        shared.checkReady()
+        chatId in shared.removed
     }
 
     fun loadUnreadChatIds(): Set<String> = synchronized(shared.lock) {
@@ -167,6 +175,8 @@ class ChatStore private constructor(private val shared: Shared) {
         val chats = linkedMapOf<String, Chat>()
         val pending = linkedMapOf<String, Pending>()
         val deleted = linkedSetOf<String>()
+        val removed = linkedSetOf<String>()
+        var removedDirty = false
         val approvals = linkedMapOf<String, Approval>()
         val pendingApprovals = linkedMapOf<String, Approval?>()
         var unread = emptySet<String>()
@@ -193,7 +203,9 @@ class ChatStore private constructor(private val shared: Shared) {
                 val loaded = database.load()
                 val loadedApprovals = database.loadApprovals()
                 val savedUnread = JSONArray(database.readState("unread") ?: "[]")
+                val savedRemoved = JSONArray(database.readState("removedChats") ?: "[]")
                 synchronized(lock) {
+                    repeat(savedRemoved.length()) { removed.add(savedRemoved.getString(it)) }
                     loaded.forEach { chats[it.id] = it }
                     loadedApprovals.forEach { approvals[it.id] = it }
                     unread = List(savedUnread.length()) { savedUnread.getString(it) }.toSet()
@@ -215,20 +227,24 @@ class ChatStore private constructor(private val shared: Shared) {
             data class Batch(
                 val writes: List<Pending>, val deletes: Set<String>, val unread: Set<String>?,
                 val approvals: Map<String, Approval?>,
+                val removed: Set<String>?,
             )
             val batch = synchronized(lock) {
                 if (failure.value != null) return
-                val batch = Batch(pending.values.toList(), deleted.toSet(), unread.takeIf { unreadDirty }, pendingApprovals.toMap())
+                val batch = Batch(pending.values.toList(), deleted.toSet(), unread.takeIf { unreadDirty },
+                    pendingApprovals.toMap(), removed.toSet().takeIf { removedDirty })
                 pending.clear()
                 writingCharacters = pendingCharacters
                 pendingCharacters = 0
                 deleted.clear()
                 pendingApprovals.clear()
                 unreadDirty = false
+                removedDirty = false
                 scheduled = false
                 batch
             }
-            if (batch.writes.isEmpty() && batch.deletes.isEmpty() && batch.unread == null && batch.approvals.isEmpty()) return
+            if (batch.writes.isEmpty() && batch.deletes.isEmpty() && batch.unread == null &&
+                batch.approvals.isEmpty() && batch.removed == null) return
             try {
                 database.transaction {
                     batch.deletes.forEach(database::remove)
@@ -238,6 +254,7 @@ class ChatStore private constructor(private val shared: Shared) {
                         database.writeChat(it.chat, ordered, it.reset, it.prependIds)
                     }
                     batch.unread?.let { database.writeState("unread", JSONArray(it).toString()) }
+                    batch.removed?.let { database.writeState("removedChats", JSONArray(it).toString()) }
                     batch.approvals.forEach { (id, item) -> database.writeApproval(id, item) }
                 }
             } catch (error: Exception) {

@@ -935,6 +935,9 @@ class RuntimeTests(unittest.TestCase):
 
 
 class FakeAgentManager:
+    def release_chat(self, chat_id: str) -> None:
+        pass
+
     def __init__(self) -> None:
         self.restored_sessions: list[tuple[str, str, bool]] = []
 

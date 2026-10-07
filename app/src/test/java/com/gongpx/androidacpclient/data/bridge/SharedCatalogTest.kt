@@ -8,6 +8,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SharedCatalogTest {
+    @Test fun tombstoneCannotBeMergedBackIntoAChat() {
+        assertThrows(IllegalArgumentException::class.java) {
+            mergeSharedChat(machine, remote().put("deleted", true), null)
+        }
+    }
+
     private val machine = Machine("m", "Machine", "ws://localhost", "not-exported", "fingerprint")
     private fun remote() = JSONObject().put("chatId", "shared-cli-id").put("chatTitle", "CLI chat")
         .put("workspaceId", "w").put("workspacePath", "C:\\repo").put("agentId", "copilot")

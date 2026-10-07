@@ -13,6 +13,30 @@ ACP Agent CLI
 
 The Android app is the control surface. Remote machines run the bridge, agent process, shell commands, Git operations, and repository workspaces.
 
+### Shared deletion and terminal creation
+
+Bridge chat deletion is an authenticated control action serialized against chat
+request admission and prompt/event state. It atomically replaces chat metadata
+with a persistent tombstone and removes chat-owned journal, receipts and image
+rows. Idle provider processes, subscribers and history snapshots are released;
+native provider session files and workspaces remain untouched. Tombstones survive
+restart and prevent old clients from recreating the same identity. Android stores
+its own encrypted removed-ID set in the same transaction as local record deletion.
+It consumes live deletion events and explicit paginated catalog tombstones; absent
+rows alone are not deletion evidence.
+
+Terminal `/new` uses the shared agent/workspace catalog and a numbered input
+state machine on the existing command worker. `/resume` lists saved sessions for
+the current Chat's agent/workspace and requires a separate `y`. It preserves the
+Chat ID/title and uses advertised replay or context-only recovery without a model
+prompt. Confirmation checks the captured human revision/session binding under the
+runtime admission lock; stale/busy selections fail instead of retargeting.
+Successful replay publishes a context boundary, the latest five message bubbles
+and activity metadata to the existing journal while the session-change guard is
+held. Existing messages/cursors remain valid; Android receives the new binding
+and history through the same Chat subscription. Terminal deleted-chat events also clear retained transcript
+rows and suppress late queued display events; numbering is monotonic.
+
 ### Compact composer
 
 Text-only and image-enabled composers use the same `CompactComposerRow` for
@@ -508,7 +532,8 @@ agent-provided choices, and verifies the confirmed value. Chat/session selection
 is pinned to the request. The runtime reserves idle chats across config changes,
 rejecting prompts/history/config races. Session mismatches are checked under the
 agent's chat lock. Configuration responses are sequenced/broadcast to the phone
-and observer without another attach. `/resume` remains an explicit Android action.
+and observer without another attach. Terminal `/resume` restores a saved session
+inside the current shared Chat, as does Android's in-chat resume.
 `/allow-all` uses the same `ConfigPicker` and async config request path, matching
 Android's normalized permission option names. Boolean options become string-valued
 Off/On choices; select options keep advertised values. A separate confirmation

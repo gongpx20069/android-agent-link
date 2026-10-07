@@ -120,15 +120,16 @@ On the default stdlib `/ws` connection, send
 Receive `{"type":"control.result","requestId":"nonce","status":"ok","data":{...}}`
 or `status:"error", code, message`, followed by `bridge.done`.
 Errors include `INVALID_ARGS`, `NOT_FOUND`, `PERMISSION_DENIED`, `CONFLICT`,
-`UNSUPPORTED`, and `PROVIDER_ERROR`. No credential is included in data.
+`UNSUPPORTED`, `DELETED`, and `PROVIDER_ERROR`. No credential is included in data.
 
 | Action | Arguments | Data |
 | --- | --- | --- |
 | `workspace.list` | none | workspaces, agents, workspaceCreationEnabled |
 | `workspace.create` | mode, absolute path; repositoryUrl for clone; sourceWorkspaceId and new branch for worktree | workspace |
-| `chat.list` | workspaceId optional; offset/limit (50 default, 100 max) | chats, hasMore, nextOffset, eventGeneration |
+| `chat.list` | workspaceId optional; offset/limit (50 default, 100 max); includeDeleted boolean (default false) | chats, hasMore, nextOffset, eventGeneration |
 | `chat.create` | workspaceId, agentId, title, optional caller-generated chatId | chat |
 | `chat.register` | existing chatId, workspacePath, agentId, optional sessionId/sessionResumable/chatTitle | chat |
+| `chat.delete` | chatId | chatId, deleted:true |
 | `chat.read` | chatId, afterEventId (default 0), limit (30 default, 100 max) | chat, events, tasks, approvals, latestEventId, nextEventId, hasMore, truncated, eventGeneration, online, observedAt |
 | `chat.send` | chatId, content, operationId, source, expectedHumanRevision | taskId, chatId, state; duplicate on retry |
 | `task.cancel` | chatId, operationId | taskId, state; cancellation_requested is not completed cancellation |
@@ -140,6 +141,31 @@ It validates the echoed task ID, distinguishes cancellation requested from
 completed cancellation, and does not clear the remaining queue or mark idle
 before authoritative status/events arrive. Timeout is an unknown outcome, not
 proof the task stopped.
+
+`chat.delete` removes the shared Chat and its Bridge journal, task receipts and
+image rows, not project files or the provider's native saved session history.
+Active/queued tasks, approvals and in-flight chat/session/config requests return
+`CONFLICT`; deletion never implicitly cancels work. An unknown ID is tombstoned
+too, so a late first registration cannot recreate it. Repeated deletion succeeds.
+Durable tombstones reject register/attach/prompt/history/config with `DELETED`.
+Connected subscribers receive `chat.deleted` with the exact chatId; legacy
+requests for that ID receive `bridge.error` with `code:"DELETED"`.
+With `includeDeleted:true`, catalog pages also contain minimal
+`{chatId,deleted:true,updatedAt}` rows, including when a workspace filter is used.
+Clients remove only explicit tombstones, never infer deletion from a missing row,
+failed page or an empty response. New Chats use a fresh ID. Resuming a session
+inside an existing Chat retains that Chat's ID; a deleted ID is never revived.
+The Android companion IPC allowlist does not expose `chat.delete`.
+
+Terminal `/resume` targets the current Chat. It supplies `expectedHumanRevision`
+and `expectedSessionId` to `session.loadRecent` or `session.resume`; admission checks
+them against the shared binding while claiming the session-change guard, before
+calling the provider. Stale selections return `CONFLICT`.
+For replay, `session.loadRecent` accepts optional boolean `publishHistory` (default
+false). True requires `expectedHumanRevision` and publishes the confirmed binding,
+a context boundary and the bounded history page to the existing journal/subscribers
+before releasing the guard. Earlier messages and generation are retained.
+The default Android snapshot/reset behavior is unchanged when this flag is absent.
 
 Workspace modes are `directory`, `register_existing`, `clone`, `worktree`.
 Mutations require a descendant of a configured `--workspace-root`; existing

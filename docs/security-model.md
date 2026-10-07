@@ -368,8 +368,12 @@ session operation. Requests are pinned to their chat/session; stale session
 selections are rejected under the agent lock. Configuration broadcasts reuse the
 authenticated Android subscriber, not a new endpoint or anonymous attach.
 Unknown slash commands are not prompts or shell commands; advertised agent
-commands use the existing prompt/approval path. `/resume` is reserved for Android's
-explicit session UX. `/allow-all` is a terminal configuration picker, never a
+commands use the existing prompt/approval path. Terminal `/resume` is reserved for
+explicit saved-session selection and confirmation in the current shared Chat, not a
+prompt or shell command. Shared deletion uses existing authenticated phone control;
+the companion IPC allowlist is unchanged. Busy work cannot be implicitly killed,
+and deleting a Chat does not erase provider-native session history or project files.
+`/allow-all` is a terminal configuration picker, never a
 prompt or a raw CLI flag. Only agent-advertised boolean/select permission options
 are offered. Enter selects but does not apply: a separate risk confirmation
 identifies the shared session and target value and requires `y`; `n` returns to

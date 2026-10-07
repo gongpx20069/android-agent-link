@@ -503,8 +503,21 @@ user messages, tool/approval details and labels are literal. Control sequences
 are stripped before/after parsing and only generated styling reaches the UI.
 Links/images do not fetch resources or execute code. `NO_COLOR=1` enables monochrome.
 
-- `/new <agent-id> <absolute workspace>` creates a local chat; it does not
-  automatically add a card to Android. Use an existing Android chat to share work.
+- `/new` guides you through installed agent and existing absolute workspace
+  selection. `/new <agent-id> <absolute workspace>` skips those choices.
+  Both create shared Chats that Android discovers automatically while foreground.
+- `/resume` takes no arguments and lists saved sessions for the CURRENT Chat's
+  agent/workspace, then requires `y` before restoring one in that same Chat.
+  Use `/chats` to select a Chat first; use `/new` then `/resume` to keep an existing
+  Chat separate. Enter cancels; choice input is never a prompt.
+  Replay-capable agents import the latest five available message bubbles and
+  activities; other agents explicitly restore context without pretending to replay
+  history. No extra Chat is created. Changed/busy bindings reject stale selections.
+  A context boundary separates retained earlier messages from imported history;
+  the phone's same Chat receives the binding and messages.
+- Android's confirmed Delete removes the shared Chat from this terminal too.
+  Running/queued work and session changes must finish first. Native agent history
+  and project files remain; durable deletion markers prevent stale re-registration.
 - `/approvals` displays pending details. `/approve <approval-id>` requires prior
   review; `/deny <approval-id>` can reject immediately. Oversized details are
   explicitly truncated and must be approved on Android instead.
@@ -521,7 +534,7 @@ Links/images do not fetch resources or execute code. `NO_COLOR=1` enables monoch
 - `/send <text>` can send messages beginning with `/`. Unknown commands are
   rejected, never run as shell commands. Advertised agent commands are available
   directly and in completion; reserved names keep AgentLink meaning. `/resume`
-  remains an explicit Android picker action; `/allow-all` is the local config picker.
+  opens the current-Chat session picker; `/allow-all` is the local config picker.
 - `/copy` copies retained agent-text segments of the latest response in the selected
   chat, preserving Markdown source and all retained pages. Ctrl+Y in conversation
   focus copies highlighted display text when selected; otherwise it copies the

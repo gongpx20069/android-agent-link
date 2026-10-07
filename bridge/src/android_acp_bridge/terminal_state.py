@@ -113,14 +113,20 @@ class Transcript:
     def event(self, item: dict[str, Any]) -> None:
         chat, operation = item["chatId"], str(item.get("operationId", ""))
         kind = item["type"]
-        if kind == "operation.accepted":
+        if kind == "chat.deleted":
+            self.entries = [row for row in self.entries if row.chat_id != chat]
+            self.characters = sum(row.weight for row in self.entries)
+            self.revision += 1
+        elif kind == "operation.accepted":
             role = "You" if operation.startswith("terminal_") else "Phone"
             self.add(chat, operation, role, item.get("content", "") + ("\n[Queued]" if item.get("state") == "queued" else ""))
         elif kind == "operation.done":
             self.add(chat, operation, "Notice", "Task " + str(item.get("status", "finished")) + ".")
         elif kind == "session/update":
             update_kind = item.get("kind")
-            if update_kind == "agent_message_chunk":
+            if update_kind == "user_message_chunk":
+                self.add(chat, operation, "History", item.get("text", ""))
+            elif update_kind == "agent_message_chunk":
                 last = next((r for r in reversed(self.entries) if r.chat_id == chat), None)
                 if last is None or last.operation != operation or last.kind != "Agent":
                     last = self.add(chat, operation, "Agent")

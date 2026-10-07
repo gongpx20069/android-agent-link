@@ -176,6 +176,7 @@ import com.gongpx.androidacpclient.data.tunnel.TunnelAccounts
 import com.gongpx.androidacpclient.data.bridge.restoreQueuedPrompts
 import com.gongpx.androidacpclient.data.bridge.mergeSharedChat
 import com.gongpx.androidacpclient.data.bridge.listSharedChats
+import com.gongpx.androidacpclient.data.bridge.deleteSharedChat
 import com.gongpx.androidacpclient.data.model.Workspace
 import com.gongpx.androidacpclient.integration.IntegrationGrantsActivity
 import com.gongpx.androidacpclient.data.notification.ChatNotificationManager
@@ -629,6 +630,7 @@ fun AgentLinkApp(
     val parser = remember { PairingLinkParser() }
     val machines = remember { mutableStateListOf<Machine>() }
     val chats = remember { mutableStateListOf<Chat>() }
+    val deletingChatIds = remember { mutableStateListOf<String>() }
     val approvals = remember { mutableStateListOf<Approval>() }
     val busyChatIds = remember { mutableStateListOf<String>() }
     val unreadChatIds = remember { mutableStateListOf<String>() }
@@ -681,6 +683,7 @@ fun AgentLinkApp(
 
     fun upsertChat(chat: Chat, prepend: Boolean = false) {
         if (storageError != null) return
+        if (chatStore.isRemoved(chat.id)) return
         val saved = try {
             chatStore.upsert(chat, prepend)
         } catch (error: IllegalStateException) {
@@ -819,9 +822,9 @@ fun AgentLinkApp(
         setChatUnread(chatId, false)
     }
 
-    fun deleteChat(chat: Chat) {
-        chats.removeAll { it.id == chat.id }
+    fun removeConfirmedChat(chat: Chat) {
         chatStore.remove(chat.id)
+        chats.removeAll { it.id == chat.id }
         unreadChatIds.remove(chat.id)
         chatNotificationManager.cancel(chat.id)
         chatConnections.remove(chat.id)?.close()
@@ -835,6 +838,40 @@ fun AgentLinkApp(
         statusSynchronizedChatIds.remove(chat.id)
         busyChatIds.remove(chat.id)
         if (selectedChatId == chat.id) selectedChatId = null
+    }
+
+    fun deleteChat(chat: Chat) {
+        if (chat.id in deletingChatIds || chatStore.isRemoved(chat.id)) return
+        val machine = machines.firstOrNull { it.id == chat.machineId }
+        if (machine == null) {
+            statusMessage = strings.reliability(
+                "Reconnect this chat's computer before deleting the shared chat.",
+                "请先重新连接此聊天所属的电脑，再删除共享聊天。",
+            )
+            return
+        }
+        if (chat.id in busyChatIds || chat.id in sessionLoadingChatIds || chat.queuedPrompts.isNotEmpty()) {
+            statusMessage = strings.reliability(
+                "Stop or finish tasks and queued messages before deleting this chat.",
+                "请先停止或完成任务并处理待发送消息，再删除此聊天。",
+            )
+            return
+        }
+        deletingChatIds.add(chat.id)
+        scope.launch {
+            try {
+                bridgeClient.deleteSharedChat(machine, chat.id)
+                removeConfirmedChat(chat)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                statusMessage = strings.reliability(
+                    "Shared deletion was not confirmed. Reconnect/update the computer Bridge and retry: ${error.message}",
+                    "未能确认共享删除，请重新连接或更新电脑端 Bridge 后重试：${error.message}",
+                )
+            } finally {
+                deletingChatIds.remove(chat.id)
+            }
+        }
     }
 
     fun deleteMachine(machine: Machine) {
@@ -1549,7 +1586,8 @@ fun AgentLinkApp(
 
     fun ensureChatConnection(chat: Chat): Boolean {
         if (storageError != null || !appInForeground.value || !uiOwnsConnections || !storesLoaded ||
-            chat.id in authenticationRequiredChatIds || chat.id in sessionLoadingChatIds
+            chat.id in authenticationRequiredChatIds || chat.id in sessionLoadingChatIds ||
+            chat.id in deletingChatIds || chatStore.isRemoved(chat.id)
         ) return false
         if (chat.id in chatConnections) return true
         val machine = machines.firstOrNull { it.id == chat.machineId } ?: return false
@@ -1566,6 +1604,9 @@ fun AgentLinkApp(
             sessionResumable = chat.acpSessionResumable,
             queuedPrompts = emptyList(),
             initialMessages = chat.messages,
+            onDeleted = {
+                if (chatConnections[chat.id] === connection) removeConfirmedChat(chat)
+            },
             onMessage = { event, isReplay ->
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
                 val current = chats.firstOrNull { it.id == chat.id }
@@ -1873,6 +1914,12 @@ fun AgentLinkApp(
                     for (remote in catalog) {
                         val id = remote.getString("chatId")
                         val local = chats.firstOrNull { it.id == id }
+                        if (remote.optBoolean("deleted")) {
+                            if (local?.machineId == machine.id) removeConfirmedChat(local)
+                            else if (local == null && !chatStore.isRemoved(id)) chatStore.remove(id)
+                            continue
+                        }
+                        if (id in deletingChatIds || chatStore.isRemoved(id)) continue
                         if (local != null && requestedBindings[id] != Triple(local.acpSessionId, local.workspacePath, local.agentId)) {
                             // An attach/session operation completed while this snapshot was in flight.
                             continue
@@ -1885,7 +1932,10 @@ fun AgentLinkApp(
                         }
                     }
                     val remoteIds = catalog.map { it.getString("chatId") }.toSet()
-                    for (local in chats.filter { it.machineId == machine.id && it.id !in remoteIds }.toList()) {
+                    for (local in chats.filter {
+                        it.machineId == machine.id && it.id !in remoteIds && it.id !in deletingChatIds &&
+                            !chatStore.isRemoved(it.id)
+                    }.toList()) {
                         val registration = bridgeClient.controlRequest(machine, "chat.register", JSONObject()
                             .put("chatId", local.id).put("chatTitle", local.title)
                             .put("workspacePath", local.workspacePath).put("agentId", local.agentId)
@@ -2186,7 +2236,7 @@ fun AgentLinkApp(
                             approvals = approvals,
                             connectedChatIds = statusSynchronizedChatIds.toSet(),
                             loadingHistoryChatIds = loadingHistoryChatIds.toSet(),
-                            sessionOperationChatIds = (sessionLoadingChatIds + configuringChatIds).toSet(),
+                            sessionOperationChatIds = (sessionLoadingChatIds + configuringChatIds + deletingChatIds).toSet(),
                             onApprovalDecision = ::updateApproval,
                             onLoadOlder = ::loadOlderHistory,
                             onRetryConnection = { chat ->
@@ -2200,6 +2250,7 @@ fun AgentLinkApp(
                             onLoadExistingSessions = ::loadExistingSessions,
                             onOpenChat = { openChat(it.id) },
                             onDeleteChat = ::deleteChat,
+                            deletingChatIds = deletingChatIds.toSet(),
                             onBackToList = { selectedChatId = null },
                             onResume = ::showResumeDialog,
                             onModel = ::showModelDialog,
@@ -2505,9 +2556,34 @@ internal fun ChatsScreen(
     onCancelTask: (Chat) -> Unit = {},
     imageClient: BridgeClient? = null,
     onSendImage: (Chat, String, ImageAttachment) -> Boolean = { _, _, _ -> false },
+    deletingChatIds: Set<String> = emptySet(),
 ) {
     val strings = LocalAppStrings.current
     val detailStateHolder = rememberSaveableStateHolder()
+    var retainedChatIds by remember { mutableStateOf(chats.map { it.id }.toSet()) }
+    val currentChatIds = chats.map { it.id }.toSet()
+    LaunchedEffect(currentChatIds) {
+        (retainedChatIds - currentChatIds).forEach(detailStateHolder::removeState)
+        retainedChatIds = currentChatIds
+    }
+    var chatToDelete by remember { mutableStateOf<Chat?>(null) }
+    chatToDelete?.let { chat ->
+        AlertDialog(
+            onDismissRequest = { chatToDelete = null },
+            title = { Text(strings.reliability("Delete shared chat?", "删除共享聊天？")) },
+            text = { Text(strings.reliability(
+                "Remove this chat from the phone and Server. Other clients will synchronize the deletion. The agent's saved session history and project files are kept.",
+                "将从手机和 Server 删除此聊天，其他客户端也会同步移除。Agent 保存的会话历史和项目文件不会删除。",
+            )) },
+            confirmButton = { TextButton(onClick = {
+                chatToDelete = null
+                onDeleteChat(chat)
+            }) { Text(strings.reliability("Delete", "删除")) } },
+            dismissButton = { TextButton(onClick = { chatToDelete = null }) {
+                Text(strings.reliability("Cancel", "取消"))
+            } },
+        )
+    }
     val selectedChat = chats.firstOrNull { it.id == selectedChatId }
     var choosingConfiguration by remember(selectedChat?.id) { mutableStateOf(false) }
     if (selectedChat != null) {
@@ -2728,11 +2804,13 @@ internal fun ChatsScreen(
             items(chats, key = { it.id }) { chat ->
                 val machineState = if (chat.id in connectedChatIds) ConnectionState.Online else ConnectionState.Offline
                 SwipeToDeleteItem(onDelete = {
-                    detailStateHolder.removeState(chat.id)
-                    onDeleteChat(chat)
+                    if (chat.id !in deletingChatIds) chatToDelete = chat
                 }) {
-                    ElevatedCard(onClick = { onOpenChat(chat) }, modifier = Modifier.fillMaxWidth()) {
+                    ElevatedCard(onClick = { onOpenChat(chat) }, enabled = chat.id !in deletingChatIds, modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
+                            if (chat.id in deletingChatIds) {
+                                Text(strings.reliability("Deleting from Server...", "正在从 Server 删除…"))
+                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
