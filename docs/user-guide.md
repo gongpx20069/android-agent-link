@@ -178,6 +178,24 @@ session offered by that agent. When an agent requests approval, respond from
 **Approvals**. Available sessions, models, and permission behavior depend on the
 installed agent CLI.
 
+Pending requests appear as cards after the latest chat messages. Tap **Review** in
+the chat's pending bar to jump to them, or use **Approvals** for all chats; handled
+requests are under **History**. Review the machine, workspace and operation, use
+**Full details** for the complete target, then choose a one-time option or deny.
+Requests are newest first; a new arrival moves the approval list back to the top.
+Cards show short previews; **Full details** opens a popup with the full context
+and operation. Amber means pending, blue submitting, green approved, red
+denied/error, orange expired, and gray unavailable; text labels remain visible.
+**Persistent choices** require another confirmation; their scope and duration are
+defined by the agent. Questions show an answer form instead of execution approval.
+
+Each new, unexpired request raises a separate phone notification, even while
+AgentLink is open. Tapping it opens the matching chat and card. Reconnects do not
+repeat known requests; resolved or expired alerts are removed. Enable AgentLink
+notifications and the **Approval requests** channel. Android's Do Not Disturb and
+battery/background restrictions still apply; force-stopping the app stops
+monitoring, and there is no cloud push fallback.
+
 On Android, choose a session or configuration value, then press **Resume** or
 **Apply** to confirm. Drafts stay with their chat when you change chats or tabs.
 Use **Details** in the chat header for the full project path and connection

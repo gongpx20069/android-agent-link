@@ -613,6 +613,14 @@ snapshot on attach, independent of event cursors. Decisions are not considered
 successful until acknowledged. Expiration is a terminal event, not a silent
 transition back to busy.
 
+Foreground and monitor callbacks share approval-notification reconciliation, using
+the encrypted approval records as the known-ID set rather than a socket-local
+replay flag. Each newly discovered unexpired request gets its own notification on
+a dedicated high-importance channel, including requests first found in a snapshot.
+Chat/request intent extras route to the exact card. Notifications expire locally
+and are cancelled on authoritative resolution; notification actions cannot decide
+permissions. Local deadline checks only disable decisions, not confirm resolution.
+
 Recent ACP history is an explicitly paged snapshot with tools and plans retained.
 Older pages come from an immutable bridge snapshot and never reload an active ACP
 process. Event-gap recovery waits until the agent is idle and advertises incomplete

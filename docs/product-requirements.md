@@ -280,6 +280,19 @@ Permission modes for MVP:
 - Keep pending/submitting/resolved/expired approval states across app restarts;
   reconcile against the bridge snapshot independently of the event checkpoint.
 - Do not present a decision as approved/denied until the bridge acknowledges it.
+- Present each request as a distinct card after the latest chat messages, with a
+  persistent review shortcut and a pending-first approval center. Keep resolved
+  history separate; swiping a pending card must not deny it.
+- Sort approval cards newest first, including within the chat's request group.
+  New arrivals return the approval list to its top. Use distinct status-colored
+  cards plus text labels; summarize content in the card and show complete context
+  and operation details in a popup without truncating stored data.
+- Separate one-time and persistent choices. Persistent choices require explicit
+  scope confirmation; questions remain answer forms, never execution approvals.
+- Post an independent system notification for every newly discovered unexpired
+  pending request, even in the foreground. Deduplicate known IDs across replay and
+  reconnect; click through to the exact request. Respect Android notification
+  settings and existing background-monitoring limits.
 
 ### Machines
 

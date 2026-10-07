@@ -257,6 +257,16 @@ Every approval must show:
 
 Approvals must not use vague labels such as "continue" when the action is risky.
 
+Android cards separate exact one-time options from persistent options; persistent
+choices require a second confirmation and do not claim a scope or duration beyond
+what the provider supplies. Missing target details and unverified risk stay explicit.
+Compact previews do not replace exact targets: the detail popup retains the full
+summary, machine/workspace, operation and error. State colors indicate workflow
+status, not risk; they are paired with text and readable light/dark contrast.
+Pending cards cannot be dismissed by swipe-to-delete. New-request notifications
+only navigate to trusted review UI, never authorize an operation directly. Their
+public lock-screen version omits chat titles, commands and other request details.
+
 ### Approval recovery
 
 Every chat attach returns an authoritative chat-scoped pending approval snapshot,

@@ -41,7 +41,7 @@ class ClaudeInteractionTest {
             ApprovalOption("always", "Always allow", "allow_always"),
             ApprovalOption("once", "Allow once", "allow_once"),
         ))
-        compose.setContent { MaterialTheme { ApprovalCard(item) { _, selected -> answer = selected } } }
+        compose.setContent { MaterialTheme { ApprovalCard(item, { _, selected -> answer = selected }) } }
         compose.onNodeWithText("Allow once").performClick()
         assertEquals("once", answer?.optionId)
         assertEquals(ApprovalStatus.Approved, answer?.status)
@@ -53,7 +53,7 @@ class ClaudeInteractionTest {
             interaction = "question", summary = "Name your branch",
             requestedSchema = """{"type":"object","properties":{"branch":{"type":"string","title":"Branch"}},"required":["branch"]}""",
         )
-        compose.setContent { MaterialTheme { ApprovalCard(item) { _, selected -> answer = selected } } }
+        compose.setContent { MaterialTheme { ApprovalCard(item, { _, selected -> answer = selected }) } }
         compose.onNodeWithText("Approve").assertDoesNotExist()
         compose.onNodeWithText("Send answer").performClick()
         assertNull(answer)
@@ -65,7 +65,7 @@ class ClaudeInteractionTest {
 
     @Test fun questionOptionsAndSchemaSurviveEncryptedStoreCodec() {
         val item = approval.copy(interaction = "question", requestedSchema = """{"type":"object","properties":{"x":{"type":"string"}}}""",
-            options = listOf(ApprovalOption("id", "Name", "allow_once")))
+            options = listOf(ApprovalOption("id", "Name", "allow_once")), agentName = "Claude Code")
         assertEquals(item, ApprovalJsonCodec.decode(ApprovalJsonCodec.encode(listOf(item))).single())
         val request = JSONObject("""{"approvalId":"q","interaction":"question","requestedSchema":{"type":"object","properties":{"x":{"type":"string"}}},"options":[]}""")
             .toBridgeApprovalRequest()!!

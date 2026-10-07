@@ -14,7 +14,6 @@ import com.gongpx.androidacpclient.R
 import com.gongpx.androidacpclient.data.bridge.BridgeClient
 import com.gongpx.androidacpclient.data.bridge.restoreQueuedPrompts
 import com.gongpx.androidacpclient.data.bridge.ChatConnection
-import com.gongpx.androidacpclient.data.model.ApprovalStatus
 import com.gongpx.androidacpclient.data.model.BridgeApprovalRequest
 import com.gongpx.androidacpclient.data.model.BridgeConnectionException
 import com.gongpx.androidacpclient.data.model.BridgeConnectionFailureCategory
@@ -206,11 +205,7 @@ class ChatMonitorService : Service() {
                         val previous = approvalStore.load().filter { it.chatId == chat.id }
                         approvalStore.reconcile(state.chat, requests)
                         val current = approvalStore.load().filter { it.chatId == chat.id }
-                        previous.filter { old -> current.none { it.id == old.id && it.status == ApprovalStatus.Pending } }
-                            .forEach { notifications.cancelApproval(it.id) }
-                        current.filter { it.status == ApprovalStatus.Pending }
-                            .filter { item -> previous.none { it.id == item.id && it.status == ApprovalStatus.Pending } }
-                            .forEach { notifications.showApproval(it) }
+                        notifications.syncApprovals(previous, current)
                     }
                 },
                 onApprovalResolved = { id, status, decidedAt ->
@@ -337,14 +332,9 @@ class ChatMonitorService : Service() {
     private fun receiveApproval(state: MonitoredChat, request: BridgeApprovalRequest) {
         if (approvalStore.load().any { it.id == request.approvalId }) return
         val chat = state.chat
-        val expired = request.expiresAtMillis?.let { it <= System.currentTimeMillis() } == true
-        val approval = request.toApproval(chat, System.currentTimeMillis()).copy(
-            status = if (expired) ApprovalStatus.Expired else ApprovalStatus.Pending,
-        )
+        val approval = request.toApproval(chat, System.currentTimeMillis())
         approvalStore.upsert(approval)
-        if (approval.status == ApprovalStatus.Pending) {
-            notifications.showApproval(approval)
-        }
+        notifications.syncApprovals(emptyList(), listOf(approval))
     }
 
     private fun finishIfIdle(state: MonitoredChat) {

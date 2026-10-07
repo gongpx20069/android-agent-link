@@ -11,12 +11,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.ContextCompat
 import com.gongpx.androidacpclient.data.notification.EXTRA_CHAT_ID
+import com.gongpx.androidacpclient.data.notification.EXTRA_APPROVAL_ID
 import com.gongpx.androidacpclient.data.notification.ChatMonitorService
 import com.gongpx.androidacpclient.ui.AgentLinkApp
 
 class MainActivity : ComponentActivity() {
     private val incomingPairingLink = mutableStateOf<String?>(null)
     private val incomingChatId = mutableStateOf<String?>(null)
+    private val incomingApprovalId = mutableStateOf<String?>(null)
     private val appInForeground = mutableStateOf(false)
     private val notificationPermissionRevision = mutableStateOf(0)
     private val notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -31,6 +33,7 @@ class MainActivity : ComponentActivity() {
             AgentLinkApp(
                 incomingPairingLink = incomingPairingLink,
                 incomingChatId = incomingChatId,
+                incomingApprovalId = incomingApprovalId,
                 appInForeground = appInForeground,
                 notificationPermissionRevision = notificationPermissionRevision.value,
             )
@@ -62,6 +65,7 @@ class MainActivity : ComponentActivity() {
     private fun routeIntent(intent: Intent?) {
         incomingPairingLink.value = intent?.dataString
         incomingChatId.value = intent?.getStringExtra(EXTRA_CHAT_ID)
+        incomingApprovalId.value = intent?.getStringExtra(EXTRA_APPROVAL_ID)
     }
 
     private fun requestNotificationPermission() {

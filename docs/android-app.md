@@ -265,7 +265,7 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - New Chat form with two modes: create a new ACP session, or open an existing resumable ACP session returned by the selected machine and agent.
 - New and loaded Chats persist their ACP session ID and resumable state, then restore that exact session after Android or Bridge restarts.
 - Chat list and WhatsApp-style chat detail view with full conversation history.
-- Chat, approval, and machine list rows move left by only the fixed Delete-action width, keeping most of the row visible. Swiping right closes the action, and deletion still requires tapping Delete. Deleting a pending approval sends a deny decision before removing it locally.
+- Chat, resolved approval, and machine list rows move left by only the fixed Delete-action width, keeping most of the row visible. Swiping right closes the action, and deletion still requires tapping Delete. Pending approvals cannot be swiped away: denial is an explicit card action.
 - Chat list rows and the chat detail header show a small status dot: busy while a prompt is running, idle otherwise.
 - Completed Agent responses show a red unread dot on the chat list until that chat is opened.
 - On startup, Android synchronizes persisted Chats with at most three unsynchronized
@@ -637,6 +637,37 @@ Submitting; only `approval.decide.result` or `approval.resolved` confirms the
 decision. Failed submissions retain their error. Expired requests cannot be
 approved, and an empty attach snapshot clears stale actionable state without
 inventing a successful decision.
+
+Pending cards follow the latest chat messages instead of sitting above the entire
+transcript. A compact persistent review bar jumps to them without forcing a user
+reading older messages to scroll. The approval center shows pending cards first,
+newest first; new arrivals return the approval list to the top. The chat's request
+group is also newest first, and resolved history is collapsed separately and sorted
+by request time. Cards distinguish permission requests from questions. Summary text
+is capped at 160 characters/two lines, target previews at 160 characters/three lines,
+and metadata at one line. A full-detail popup preserves the complete summary,
+agent/machine/workspace, action, target and error, with paged text and explicit copy.
+Status-tinted cards use amber for pending, blue for submitting, green for approved,
+red for denied/errors, orange for expired, and gray for unavailable. Light/dark
+palettes retain at least 4.5:1 text contrast and always retain status labels.
+Colors describe workflow status, never the safety of an operation.
+
+One-time choices are primary actions. Persistent allow/reject choices are separate
+and require another confirmation describing agent-defined scope/duration. Exact
+provider option IDs are preserved. Submitting shows progress and disables decisions;
+expiry disables actions without inventing Server confirmation. Resolved cards show
+status rather than disabled action buttons.
+
+Both foreground and background socket owners notify for every newly discovered,
+unexpired pending approval ID, including new entries in an attach snapshot.
+Persisted known IDs deduplicate replay, reconnect and ownership handoff. A dedicated
+high-importance `approval_requests` channel gives each request a separate notification;
+clicking it opens the exact chat and scrolls to that request. Notifications have no
+authorization actions, hide details in the public lock-screen version, time out at
+the request deadline, and are cancelled on resolution/reconciliation. Sound,
+vibration and heads-up display remain subject to Android permissions, channel
+settings and Do Not Disturb. The existing bounded monitoring/force-stop limitations
+still apply; this is not cloud push.
 
 ## Validation
 

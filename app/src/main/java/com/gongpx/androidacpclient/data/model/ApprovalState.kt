@@ -3,6 +3,12 @@ package com.gongpx.androidacpclient.data.model
 fun ApprovalStatus.isActionable(): Boolean =
     this == ApprovalStatus.Pending || this == ApprovalStatus.Submitting
 
+fun Approval.canDecide(nowMillis: Long): Boolean =
+    status == ApprovalStatus.Pending && (expiresAtMillis == null || nowMillis < expiresAtMillis)
+
+fun List<Approval>.newestApprovalsFirst(): List<Approval> =
+    asReversed().sortedByDescending { it.createdAtMillis }
+
 fun BridgeApprovalRequest.toApproval(chat: Chat, nowMillis: Long): Approval = Approval(
     id = approvalId,
     chatId = chat.id,
@@ -18,6 +24,7 @@ fun BridgeApprovalRequest.toApproval(chat: Chat, nowMillis: Long): Approval = Ap
     options = options,
     interaction = interaction,
     requestedSchema = requestedSchema,
+    agentName = chat.agentName,
 )
 
 fun Approval.resolve(status: String, decidedAt: Long): Approval {

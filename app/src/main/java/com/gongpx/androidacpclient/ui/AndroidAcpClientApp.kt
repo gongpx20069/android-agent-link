@@ -106,6 +106,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -138,6 +139,7 @@ import com.gongpx.androidacpclient.data.model.withResumedContext
 import com.gongpx.androidacpclient.data.model.withUnrecoverableHistoryGap
 import com.gongpx.androidacpclient.data.model.Approval
 import com.gongpx.androidacpclient.data.model.ApprovalAnswer
+import com.gongpx.androidacpclient.data.model.ApprovalOption
 import com.gongpx.androidacpclient.data.model.ApprovalStatus
 import com.gongpx.androidacpclient.data.model.AvailableCommand
 import com.gongpx.androidacpclient.data.model.BridgeApprovalRequest
@@ -167,6 +169,8 @@ import com.gongpx.androidacpclient.data.model.shouldClearBusyAfterCancellation
 import com.gongpx.androidacpclient.data.model.shouldApplyChatStatus
 import com.gongpx.androidacpclient.data.model.startQueuedPrompt
 import com.gongpx.androidacpclient.data.model.isActionable
+import com.gongpx.androidacpclient.data.model.canDecide
+import com.gongpx.androidacpclient.data.model.newestApprovalsFirst
 import com.gongpx.androidacpclient.data.model.toApproval
 import com.gongpx.androidacpclient.data.model.mergeTimelineMessage
 import com.gongpx.androidacpclient.data.model.toolActivitySections
@@ -549,8 +553,8 @@ internal data class AppStrings(
             hide = "收起",
             details = "详情",
             approvalsSubtitle = "在命令、文件变更和高风险操作执行前进行确认。",
-            pending = { "$it 个 pending" },
-            noApprovalRequests = "没有 Approval 请求",
+            pending = { "$it 项待处理" },
+            noApprovalRequests = "暂无待处理请求",
             approvalRequestsAppear = "需要你决策的 Agent 请求会显示在这里。",
             approve = "批准",
             deny = "拒绝",
@@ -613,6 +617,7 @@ fun AgentLinkApp(
     incomingChatId: MutableState<String?>,
     appInForeground: State<Boolean>,
     notificationPermissionRevision: Int = 0,
+    incomingApprovalId: MutableState<String?>? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -986,11 +991,14 @@ fun AgentLinkApp(
 
     fun addApproval(chat: Chat, request: BridgeApprovalRequest? = null) {
         if (request == null) return
-        val known = approvals.any { it.id == request.approvalId }
+        val known = approvalStore.load().any { it.id == request.approvalId }
         if (known) return
-        approvalStore.upsert(request.toApproval(chat, System.currentTimeMillis()))
+        val approval = request.toApproval(chat, System.currentTimeMillis())
+        approvalStore.upsert(approval)
+        chatNotificationManager.syncApprovals(emptyList(), listOf(approval))
         refreshApprovals()
-        if (appInForeground.value && (selectedTab != AppTab.Chats || selectedChatId != chat.id)) {
+        if (approval.canDecide(System.currentTimeMillis()) && appInForeground.value &&
+            (selectedTab != AppTab.Chats || selectedChatId != chat.id)) {
             showChatAttention(chat.id, strings.approvalRequired("${chat.title}: ${request.summary}"))
         }
     }
@@ -1008,8 +1016,18 @@ fun AgentLinkApp(
 
     }
 
-    fun updateApproval(approval: Approval, answer: ApprovalAnswer) {
+    fun updateApproval(requested: Approval, answer: ApprovalAnswer) {
+        val approval = approvalStore.load().firstOrNull { it.id == requested.id } ?: return
         if (approval.status != ApprovalStatus.Pending) return
+        if (!approval.canDecide(System.currentTimeMillis())) {
+            approvalStore.upsert(approval.copy(error = strings.reliability(
+                "This request has expired. Waiting for Server confirmation.",
+                "此请求已超时，正在等待 Server 确认。",
+            )))
+            chatNotificationManager.cancelApproval(approval.id)
+            refreshApprovals()
+            return
+        }
         val machine = machines.firstOrNull { it.id == approval.machineId }
         if (machine == null) {
             approvalStore.upsert(approval.copy(error = strings.machineUnavailable))
@@ -1222,10 +1240,8 @@ fun AgentLinkApp(
     }
 
     fun deleteApproval(approval: Approval) {
-        if (approval.status.isActionable()) {
-            updateApproval(approval, ApprovalAnswer(ApprovalStatus.Denied))
-            return
-        }
+        if (approval.status.isActionable()) return
+        chatNotificationManager.cancelApproval(approval.id)
         approvalStore.remove(approval.id)
         refreshApprovals()
     }
@@ -1634,10 +1650,10 @@ fun AgentLinkApp(
             onApprovalSnapshot = { requests ->
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
                 val current = chats.firstOrNull { it.id == chat.id } ?: return@openChatConnection
+                val previous = approvalStore.load().filter { it.chatId == chat.id }
                 approvalStore.reconcile(current, requests)
                 refreshApprovals()
-                approvals.filter { it.chatId == chat.id && !it.status.isActionable() }
-                    .forEach { chatNotificationManager.cancelApproval(it.id) }
+                chatNotificationManager.syncApprovals(previous, approvals.filter { it.chatId == chat.id })
             },
             onApprovalResolved = { approvalId, status, decidedAt ->
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
@@ -2272,8 +2288,11 @@ fun AgentLinkApp(
                             onSendMessage = { chat, message -> submitPrompt(chat, message) },
                             imageClient = bridgeClient,
                             onSendImage = { chat, message, image -> submitPrompt(chat, message, image) },
+                            approvalToReveal = incomingApprovalId?.value,
+                            onApprovalRevealed = { incomingApprovalId?.value = null },
                         ) }
-                        AppTab.Approvals -> ApprovalsScreen(padding, approvals, ::updateApproval, ::deleteApproval)
+                        AppTab.Approvals -> ApprovalsScreen(padding, approvals, ::updateApproval, ::deleteApproval,
+                            onOpenChat = ::openChat)
                         AppTab.Machines -> MachinesScreen(
                             padding = padding,
                             machines = machines,
@@ -2417,11 +2436,11 @@ private fun SettingsScreen(
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(strings.reliability("Task notifications", "任务通知"), style = MaterialTheme.typography.titleMedium)
                     Text(if (notificationsEnabled) strings.reliability(
-                        "Enabled. Active tasks can be monitored with a foreground notification. Android force-stop and background limits can still interrupt monitoring.",
-                        "已启用。任务运行期间使用前台通知保持监控。强制停止应用或系统后台限制仍会中断监控。",
+                        "Enabled. Each new approval or question alerts separately, including while the app is open. Android notification settings, Do Not Disturb and background limits still apply.",
+                        "已启用。每个新审批或提问单独提醒，App 在前台也会通知。仍受系统通知设置、勿扰模式及后台限制影响。",
                     ) else strings.reliability(
-                        "Notifications are disabled. You will not receive background completion or approval alerts. Reopen the app to synchronize.",
-                        "通知未启用，后台完成及审批提醒不可用。请重新打开应用同步状态。",
+                        "Some notifications are disabled. Check app permissions and the Approval requests channel. Keep the app open to review pending requests.",
+                        "部分通知未启用。请检查应用通知权限及“审批请求”类别，保持 App 打开以查看待处理请求。",
                     ), color = if (notificationsEnabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
                     OutlinedButton(onClick = onNotificationSettings) {
                         Text(strings.reliability("Notification settings", "通知设置"))
@@ -2557,6 +2576,8 @@ internal fun ChatsScreen(
     imageClient: BridgeClient? = null,
     onSendImage: (Chat, String, ImageAttachment) -> Boolean = { _, _, _ -> false },
     deletingChatIds: Set<String> = emptySet(),
+    approvalToReveal: String? = null,
+    onApprovalRevealed: () -> Unit = {},
 ) {
     val strings = LocalAppStrings.current
     val detailStateHolder = rememberSaveableStateHolder()
@@ -2605,6 +2626,8 @@ internal fun ChatsScreen(
             connectionState = selectedMachineState,
             approvals = approvals.filter { it.chatId == selectedChat.id && it.status.isActionable() },
             onApprovalDecision = onApprovalDecision,
+            approvalToReveal = approvalToReveal,
+            onApprovalRevealed = onApprovalRevealed,
             loadingHistory = selectedChat.id in loadingHistoryChatIds,
             sessionOperationInProgress = selectedChat.id in sessionOperationChatIds,
             cancelling = selectedChat.id in cancellingChatIds,
@@ -2868,6 +2891,8 @@ internal fun ChatDetailScreen(
     cancelling: Boolean = false,
     onCancelTask: () -> Unit = {},
     imageContext: ImagePromptContext? = null,
+    approvalToReveal: String? = null,
+    onApprovalRevealed: () -> Unit = {},
 ) {
     val strings = LocalAppStrings.current
     var showConnectionDetails by rememberSaveable(chat.id) { mutableStateOf(false) }
@@ -2875,6 +2900,18 @@ internal fun ChatDetailScreen(
         chat.messages.filter { it.kind != ChatMessageKind.CommandUpdate && it.kind != ChatMessageKind.ConfigUpdate }
     }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = visibleMessages.size + approvals.size)
+    val scope = rememberCoroutineScope()
+    val orderedApprovals = approvals.newestApprovalsFirst()
+    val approvalIds = orderedApprovals.map { it.id }
+    LaunchedEffect(approvalToReveal, approvalIds, connectionState) {
+        val index = approvalIds.indexOf(approvalToReveal)
+        if (index >= 0) {
+            listState.scrollToItem(1 + visibleMessages.size + index)
+            onApprovalRevealed()
+        } else if (approvalToReveal != null && connectionState == ConnectionState.Online) {
+            onApprovalRevealed()
+        }
+    }
     var previousMessageCount by remember(chat.id) { mutableStateOf(0) }
     var previousFirstMessage by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     BackHandler(onBack = onBack)
@@ -2891,12 +2928,12 @@ internal fun ChatDetailScreen(
             addAll(advertisedCommands.filterNot { it.name in builtIns }.sortedBy { COMMON_COMMAND_ORDER.indexOf(it.name).let { index -> if (index < 0) Int.MAX_VALUE else index } })
         }
     }
-    LaunchedEffect(chat.id, visibleMessages.size, visibleMessages.lastOrNull()?.localId) {
+    LaunchedEffect(chat.id, visibleMessages.size, visibleMessages.lastOrNull()?.localId, approvalIds) {
         val nearBottom = (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= previousMessageCount + approvals.size - 2
         val prepended = visibleMessages.size > previousMessageCount && previousMessageCount > 0 &&
             previousFirstMessage?.localId != visibleMessages.firstOrNull()?.localId
-        if (visibleMessages.isNotEmpty() && !loadingHistory && !prepended && (previousMessageCount == 0 || nearBottom)) {
-            listState.scrollToItem(visibleMessages.size + approvals.size)
+        if (approvalToReveal == null && !loadingHistory && !prepended && (previousMessageCount == 0 || nearBottom)) {
+            listState.scrollToItem(if (approvals.isEmpty()) visibleMessages.size else visibleMessages.size + 1)
         }
         previousMessageCount = visibleMessages.size
         previousFirstMessage = visibleMessages.firstOrNull()
@@ -2986,6 +3023,18 @@ internal fun ChatDetailScreen(
                 OutlinedButton(onClick = onRetryConnection) { Text(strings.reliability("Retry", "重试")) }
             }
         }
+        if (approvals.isNotEmpty()) {
+            Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(strings.reliability("${approvals.size} awaiting your response", "${approvals.size} 项等待你处理"),
+                        modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                    TextButton(onClick = { scope.launch { listState.animateScrollToItem(visibleMessages.size + 1) } }) {
+                        Text(strings.reliability("Review", "查看"))
+                    }
+                }
+            }
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -3018,14 +3067,14 @@ internal fun ChatDetailScreen(
                         }
                     }
                 }
-                items(approvals, key = { "approval:${it.id}" }, contentType = { "approval" }) { approval ->
-                    ApprovalCard(approval, onApprovalDecision)
-                }
                 items(visibleMessages, key = { it.localId }, contentType = { it.kind }) { item ->
                     Column {
                         if (item.image == null || item.text.isNotBlank()) ChatTimelineItem(item)
                         item.image?.let { AttachmentPreview(it, imageContext) }
                     }
+                }
+                items(orderedApprovals, key = { "approval:${it.id}" }, contentType = { "approval" }) { approval ->
+                    ApprovalCard(approval, onApprovalDecision)
                 }
             }
 
@@ -3846,37 +3895,71 @@ private fun AgentPlanItem(item: ChatMessage) {
 }
 
 @Composable
-private fun ApprovalsScreen(
+internal fun ApprovalsScreen(
     padding: PaddingValues,
     approvals: List<Approval>,
     onDecision: (Approval, ApprovalAnswer) -> Unit,
     onDeleteApproval: (Approval) -> Unit,
+    onOpenChat: (String) -> Unit = {},
 ) {
     val strings = LocalAppStrings.current
-    LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val ordered = approvals.newestApprovalsFirst()
+    val pending = ordered.filter { it.status.isActionable() }
+    val history = ordered.filterNot { it.status.isActionable() }
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val pendingIds = pending.map { it.id }.toSet()
+    var previousIds by remember { mutableStateOf(pendingIds) }
+    LaunchedEffect(pendingIds) {
+        if ((pendingIds - previousIds).isNotEmpty()) listState.scrollToItem(0)
+        previousIds = pendingIds
+    }
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             PageHero(
                 title = strings.approvals,
                 subtitle = strings.approvalsSubtitle,
-                metric = strings.pending(approvals.count { it.status.isActionable() }),
+                metric = strings.pending(pending.size),
             )
         }
-        if (approvals.isEmpty()) {
+        if (pending.isEmpty()) {
             item { EmptyStateCard(strings.noApprovalRequests, strings.approvalRequestsAppear) }
-        } else {
-            items(approvals, key = { it.id }) { approval ->
+        }
+        items(pending, key = { it.id }) { approval ->
+            ApprovalCard(approval, onDecision, onOpenChat = { onOpenChat(approval.chatId) })
+        }
+        if (history.isNotEmpty()) {
+            item {
+                TextButton(onClick = { showHistory = !showHistory }) {
+                    Text(if (showHistory) strings.reliability("Hide history (${history.size})", "收起已处理记录（${history.size}）")
+                    else strings.reliability("History (${history.size})", "已处理记录（${history.size}）"))
+                }
+            }
+        }
+        if (showHistory) {
+            items(history, key = { it.id }) { approval ->
                 SwipeToDeleteItem(onDelete = { onDeleteApproval(approval) }) {
-                    ApprovalCard(approval, onDecision)
+                    ApprovalCard(approval, onDecision, onOpenChat = { onOpenChat(approval.chatId) })
                 }
             }
         }
     }
 }
 
+internal fun approvalPreview(text: String): String =
+    if (text.length <= 160) text else text.take(160) + "..."
+
 @Composable
-internal fun ApprovalCard(approval: Approval, onDecision: (Approval, ApprovalAnswer) -> Unit) {
+internal fun ApprovalCard(
+    approval: Approval,
+    onDecision: (Approval, ApprovalAnswer) -> Unit,
+    onOpenChat: (() -> Unit)? = null,
+) {
     val strings = LocalAppStrings.current
     var now by remember(approval.id) { mutableStateOf(System.currentTimeMillis()) }
+    var showDetails by rememberSaveable(approval.id) { mutableStateOf(false) }
+    var showMoreOptions by rememberSaveable(approval.id) { mutableStateOf(false) }
+    var persistentOption by remember(approval.id) { mutableStateOf<ApprovalOption?>(null) }
     LaunchedEffect(approval.id, approval.status) {
         while (approval.status.isActionable()) {
             now = System.currentTimeMillis()
@@ -3884,65 +3967,189 @@ internal fun ApprovalCard(approval: Approval, onDecision: (Approval, ApprovalAns
         }
     }
     val expired = approval.expiresAtMillis?.let { now >= it } == true
-    val enabled = approval.status == ApprovalStatus.Pending && !expired
+    val enabled = approval.canDecide(now)
     val question = approval.interaction == "question"
-    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(approval.summary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text(approvalStatusLabel(approval.status, strings), color = MaterialTheme.colorScheme.primary)
-            Text(approval.chatTitle, fontWeight = FontWeight.SemiBold)
-            Text("${approval.machineName} · ${approval.workspacePath}", style = MaterialTheme.typography.bodySmall)
-            Text(strings.reliability("Action: ", "操作：") + approval.action)
-            if (!question) Text(strings.reliability(
-                "Review the exact target below. Risk is not independently verified.",
-                "请核对下方具体操作目标，风险未经独立验证。",
-            ), style = MaterialTheme.typography.bodySmall)
-            if (question) {
-                Text(strings.reliability("Your answer is sent to the agent, not an execution approval.", "回答将发送给 Agent，不代表授权执行操作。"))
-                approval.requestedSchema?.let { schema ->
-                    QuestionForm(
-                        schema = schema, enabled = enabled,
-                        submitLabel = strings.reliability("Send answer", "发送回答"),
-                        invalidLabel = strings.reliability("Check required fields and numeric values.", "请检查必填项和数字格式。"),
-                        onSubmit = { onDecision(approval, ApprovalAnswer(ApprovalStatus.Approved, content = it)) },
-                    )
-                } ?: Text(strings.reliability("Question form is unavailable.", "提问表单不可用。"), color = MaterialTheme.colorScheme.error)
-            } else approval.details?.let {
-                androidx.compose.foundation.text.selection.SelectionContainer {
-                    Text(
-                        it,
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState()),
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+    val actionable = approval.status.isActionable()
+    val colors = approvalCardColors(
+        when {
+            expired && actionable -> ApprovalStatus.Expired
+            approval.error != null -> ApprovalStatus.Denied
+            else -> approval.status
+        },
+        dark = MaterialTheme.colorScheme.surface.luminance() < 0.5f,
+    )
+    val accent = colors.content
+    fun choose(option: ApprovalOption) {
+        onDecision(approval, ApprovalAnswer(
+            if (option.kind.startsWith("allow")) ApprovalStatus.Approved else ApprovalStatus.Denied,
+            optionId = option.optionId,
+        ))
+    }
+    Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp),
+        color = colors.container, contentColor = colors.content,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f))) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(shape = RoundedCornerShape(8.dp), color = accent.copy(alpha = 0.1f)) {
+                    Text(if (question) strings.reliability("QUESTION", "待回答") else strings.reliability("PERMISSION", "操作审批"),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelMedium, color = accent)
                 }
-            } ?: Text(strings.reliability("No target details supplied by the agent.", "Agent 未提供具体目标。"), color = MaterialTheme.colorScheme.error)
-            approval.expiresAtMillis?.takeIf { approval.status.isActionable() }?.let {
-                Text(if (expired) strings.reliability("Deadline passed; awaiting bridge confirmation.", "已超过截止时间，等待远端确认。")
-                else strings.reliability("Expires in ${(it - now) / 1000}s", "${(it - now) / 1000} 秒后超时"),
-                    style = MaterialTheme.typography.labelSmall)
+                Text(if (expired && actionable) strings.reliability("Deadline passed", "已到截止时间")
+                    else approvalStatusLabel(approval.status, strings),
+                    modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium, color = accent)
             }
-            approval.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (!question && approval.options.isNotEmpty()) {
-                    approval.options.filter { it.kind in setOf("allow_once", "allow_always", "reject_once", "reject_always") }.forEach { option ->
-                        OutlinedButton(enabled = enabled, onClick = {
-                            onDecision(approval, ApprovalAnswer(
-                                if (option.kind.startsWith("allow")) ApprovalStatus.Approved else ApprovalStatus.Denied,
-                                optionId = option.optionId,
-                            ))
-                        }) {
-                            Text(option.name + if (option.kind == "allow_always") strings.reliability(" · persistent permission", " · 持续授权") else "")
+            Text(approvalPreview(approval.summary), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                if (onOpenChat != null) TextButton(onClick = onOpenChat, contentPadding = PaddingValues(0.dp)) {
+                    Text(approval.chatTitle + strings.reliability(" · Open chat", " · 打开聊天"),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                } else Text(approval.chatTitle, style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(listOf(approval.agentName, approval.machineName).filter { it.isNotBlank() }.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(approval.workspacePath, style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            TextButton(onClick = { showDetails = true }, contentPadding = PaddingValues(0.dp)) {
+                Text(strings.reliability("Full details", "完整详情"))
+            }
+            if (actionable) {
+                Text(strings.reliability("Action: ", "操作：") + approval.action, style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (!question) {
+                    if (!approval.details.isNullOrBlank()) {
+                        Surface(shape = RoundedCornerShape(10.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                                SelectionContainer {
+                                    Text(approvalPreview(approval.details), maxLines = 3, overflow = TextOverflow.Ellipsis,
+                                        fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    } else Text(strings.reliability("No target details supplied by the agent.", "Agent 未提供具体目标。"),
+                        color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    Text(strings.reliability("Preview only. Review full details before allowing; risk is unverified.",
+                        "仅显示摘要，授权前请查看完整详情；风险未经验证。"), style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Text(strings.reliability("Your answer is sent to the agent, not an execution approval.",
+                        "回答将发送给 Agent，不代表授权执行操作。"), style = MaterialTheme.typography.bodySmall)
+                }
+                approval.expiresAtMillis?.let {
+                    Text(if (expired) strings.reliability("Deadline passed; awaiting Server confirmation.", "已超过截止时间，等待 Server 确认。")
+                    else strings.reliability("Expires in ${((it - now + 999) / 1000)}s", "${((it - now + 999) / 1000)} 秒后超时"),
+                        style = MaterialTheme.typography.labelSmall, color = accent)
+                }
+                approval.error?.let {
+                    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.errorContainer) {
+                        Text(approvalPreview(it), modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                if (approval.status == ApprovalStatus.Submitting) {
+                    androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                if (question) {
+                    approval.requestedSchema?.let { schema ->
+                        QuestionForm(
+                            schema = schema, enabled = enabled,
+                            submitLabel = strings.reliability("Send answer", "发送回答"),
+                            invalidLabel = strings.reliability("Check required fields and numeric values.", "请检查必填项和数字格式。"),
+                            onSubmit = { onDecision(approval, ApprovalAnswer(ApprovalStatus.Approved, content = it)) },
+                        )
+                    } ?: Text(strings.reliability("Question form is unavailable.", "提问表单不可用。"),
+                        color = MaterialTheme.colorScheme.error)
+                } else {
+                    val once = approval.options.filter { it.kind == "allow_once" }
+                    if (approval.options.isEmpty()) {
+                        Button(modifier = Modifier.fillMaxWidth(), enabled = enabled,
+                            onClick = { onDecision(approval, ApprovalAnswer(ApprovalStatus.Approved)) }) {
+                            Text(strings.reliability("Allow once", "仅允许本次"))
+                        }
+                    } else once.forEach { option ->
+                        Button(modifier = Modifier.fillMaxWidth(), enabled = enabled, onClick = { choose(option) }) {
+                            Text(option.name)
                         }
                     }
-                } else if (!question) {
-                    Button(enabled = enabled, onClick = { onDecision(approval, ApprovalAnswer(ApprovalStatus.Approved)) }) { Text(strings.approve) }
+                    if (approval.options.isNotEmpty() && once.isEmpty()) {
+                        Text(strings.reliability("No one-time allow option was supplied.", "Agent 未提供单次允许选项。"),
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    val more = approval.options.filter { it.kind in setOf("allow_always", "reject_always") }
+                    if (more.isNotEmpty()) {
+                        TextButton(enabled = enabled, onClick = { showMoreOptions = !showMoreOptions }) {
+                            Text(strings.reliability("Persistent choices", "持续权限选项"))
+                        }
+                        if (showMoreOptions) more.forEach { option ->
+                            OutlinedButton(modifier = Modifier.fillMaxWidth(), enabled = enabled,
+                                onClick = { persistentOption = option }) { Text(option.name) }
+                        }
+                    }
                 }
-                OutlinedButton(enabled = enabled, onClick = { onDecision(approval, ApprovalAnswer(ApprovalStatus.Denied)) }) {
+                val rejections = if (question) emptyList() else approval.options.filter { it.kind == "reject_once" }
+                if (rejections.isNotEmpty()) rejections.forEach { option ->
+                    OutlinedButton(modifier = Modifier.fillMaxWidth(), enabled = enabled,
+                        onClick = { choose(option) }) { Text(option.name) }
+                } else OutlinedButton(modifier = Modifier.fillMaxWidth(), enabled = enabled,
+                    onClick = { onDecision(approval, ApprovalAnswer(ApprovalStatus.Denied)) }) {
                     Text(if (question) strings.reliability("Cancel question", "取消回答") else strings.deny)
                 }
             }
         }
+    }
+    if (showDetails) {
+        AlertDialog(onDismissRequest = { showDetails = false },
+            title = { Text(strings.reliability("Exact operation details", "完整操作详情")) },
+            text = {
+                Column(Modifier.fillMaxWidth().heightIn(max = 400.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(approvalStatusLabel(approval.status, strings), fontWeight = FontWeight.SemiBold)
+                    SelectionContainer {
+                        Text(listOf(
+                            strings.reliability("Chat: ", "聊天：") + approval.chatTitle,
+                            strings.reliability("Agent: ", "Agent：") + approval.agentName,
+                            strings.reliability("Machine: ", "电脑：") + approval.machineName,
+                            strings.reliability("Workspace: ", "目录：") + approval.workspacePath,
+                            strings.reliability("Action: ", "操作：") + approval.action,
+                        ).joinToString("\n"))
+                    }
+                    Text(strings.reliability("Request", "请求内容"), fontWeight = FontWeight.SemiBold)
+                    PagedDetailText(approval.summary)
+                    Text(strings.reliability("Operation details", "操作详情"), fontWeight = FontWeight.SemiBold)
+                    if (!approval.details.isNullOrBlank()) {
+                        PagedDetailText(approval.details)
+                        CopyTextButton(approval.details, strings.reliability("Copy details", "复制详情"))
+                    } else Text(strings.reliability("No target details supplied by the agent.", "Agent 未提供具体目标。"))
+                    approval.error?.let {
+                        Text(strings.reliability("Error", "错误"), color = MaterialTheme.colorScheme.error)
+                        PagedDetailText(it)
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showDetails = false }) { Text(strings.close) } })
+    }
+    persistentOption?.let { option ->
+        AlertDialog(onDismissRequest = { persistentOption = null },
+            title = { Text(strings.reliability("Confirm persistent choice", "确认持续权限选择")) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(option.name, fontWeight = FontWeight.SemiBold)
+                    Text(approval.summary)
+                    Text(strings.reliability(
+                        "This is not a one-time decision. The agent controls its scope and duration; future matching requests may not ask again.",
+                        "这不是单次决定。生效范围和持续时间由 Agent 定义，后续匹配的请求可能不再询问。",
+                    ))
+                }
+            },
+            confirmButton = { Button(enabled = enabled, onClick = { persistentOption = null; choose(option) }) {
+                Text(strings.reliability("Confirm choice", "确认选择"))
+            } },
+            dismissButton = { TextButton(onClick = { persistentOption = null }) {
+                Text(strings.reliability("Cancel", "取消"))
+            } })
     }
 }
 

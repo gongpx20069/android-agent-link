@@ -50,6 +50,7 @@ internal object ApprovalJsonCodec {
                 options = item.optJSONArray("options").toApprovalOptions(),
                 interaction = item.optString("interaction", "permission"),
                 requestedSchema = item.optJSONObject("requestedSchema")?.toString(),
+                agentName = item.optString("agentName"),
             )
         }
     }
@@ -65,6 +66,7 @@ internal object ApprovalJsonCodec {
                 .put("expiresAtMillis", item.expiresAtMillis).put("decidedAtMillis", item.decidedAtMillis)
                 .put("error", item.error)
                 .put("interaction", item.interaction)
+                .put("agentName", item.agentName)
                 .put("requestedSchema", item.requestedSchema?.let { JSONObject(it) })
                 .put("options", JSONArray(item.options.map {
                     JSONObject().put("optionId", it.optionId).put("name", it.name).put("kind", it.kind)

@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="monitor_channel_name">后台任务监控</string>
-    <string name="monitor_alert_channel_name">审批与监控提醒</string>
+    <string name="monitor_alert_channel_name">监控异常提醒</string>
+    <string name="approval_channel_name">审批请求</string>
+    <string name="approval_channel_description">每个新审批或提问单独提醒。点按查看详情，不在通知中直接授权。</string>
+    <string name="approval_notification_title">待审批 · %1$s</string>
+    <string name="approval_question_title">待回答 · %1$s</string>
     <string name="monitor_title">正在监控远程任务</string>
     <string name="monitor_description">正在同步 %1$d 个未完成的聊天。点按打开 AgentLink。</string>
     <string name="monitor_approval_required">远程任务需要你的审批。请打开 AgentLink 查看详情。</string>

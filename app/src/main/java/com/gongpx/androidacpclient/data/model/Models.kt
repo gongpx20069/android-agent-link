@@ -182,6 +182,7 @@ data class Approval(
     val options: List<ApprovalOption> = emptyList(),
     val interaction: String = "permission",
     val requestedSchema: String? = null,
+    val agentName: String = "",
 )
 
 enum class ApprovalStatus {

@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="monitor_channel_name">Background task monitoring</string>
-    <string name="monitor_alert_channel_name">Approvals and monitoring warnings</string>
+    <string name="monitor_alert_channel_name">Monitoring warnings</string>
+    <string name="approval_channel_name">Approval requests</string>
+    <string name="approval_channel_description">A separate alert for each new approval or question. Tap to review; no actions are authorized from notifications.</string>
+    <string name="approval_notification_title">Approval needed: %1$s</string>
+    <string name="approval_question_title">Answer needed: %1$s</string>
     <string name="monitor_title">Monitoring remote tasks</string>
     <string name="monitor_description">Keeping %1$d outstanding chats synchronized. Tap to open AgentLink.</string>
     <string name="monitor_approval_required">A remote task needs your approval. Open AgentLink to review the details.</string>
