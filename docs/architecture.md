@@ -160,6 +160,13 @@ context, broadcasts configuration and a boundary notice, and retains the journal
 Android preserves saved messages and explicitly acknowledges unrecoverable gaps
 only after synchronized idle, rather than manufacturing a history snapshot.
 
+OpenCode uses the shared ACP session and dynamic catalog as well. Its
+Windows npm launcher is the narrowly allowed extensionless `bin/opencode`
+entry in `opencode-ai`, confined to the package and checked for a Node shebang.
+Native executables run directly. Explicit loopback/ephemeral-port/no-mDNS
+arguments override local network configuration for its backing HTTP server.
+EOF shutdown gives its wrapper/native process time to exit normally.
+
 ## App Modules
 
 ### Android streaming and persistence

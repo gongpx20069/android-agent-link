@@ -37,6 +37,9 @@ AGENT_SPECS = {
                           "Install @qwen-code/qwen-code@0.24.6 (Node.js 22+) and configure authentication locally with qwen."),
     "deepseek-harness": AgentSpec("DeepSeek Harness", "dsh", "@deepseek-ai/dsh", ("--profile", "acp"),
                                  "Install @deepseek-ai/dsh@0.1.7-rc.2 (Node.js 24 recommended) and configure the provider locally. Context resume is supported; ACP history replay is not."),
+    "opencode": AgentSpec("OpenCode", "opencode", "opencode-ai",
+                         ("acp", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false"),
+                         "Install OpenCode (1.18.35 baseline) and run opencode auth login on this machine. Configure permission rules to ask for operations you want to review; OpenCode allows most operations by default."),
 }
 
 

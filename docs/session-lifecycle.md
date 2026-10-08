@@ -18,6 +18,10 @@ stdio input gives the provider an opportunity to dispose sessions before forced
 termination. Their standard prompt response is not promoted to a guarantee that
 all vendor background jobs have stopped; Qwen's private daemon lifecycle is not
 negotiated. Native vendor-terminal attachment is outside this integration.
+OpenCode uses this same lifecycle. Its new sessions are persisted/resumable
+before a prompt, and load/resume can return config options without a session ID.
+The requested ID stays authoritative; old prompts are never resubmitted.
+EOF shutdown is preferred so its Node wrapper and native child can exit normally.
 DeepSeek Harness advertises list/resume/close but not load. Successful new
 sessions are persisted and resumable before a model turn. Explicit context
 resume retains the journal, rejects busy/scope/ownership conflicts, and leaves a

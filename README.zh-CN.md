@@ -14,7 +14,7 @@
   &nbsp; · &nbsp; <a href="https://gongpx20069.github.io/hi-mochi/zh-CN/agentlink/"><strong>AgentLink 官网</strong></a>
 </p>
 
-**GitHub Copilot CLI · Claude Code · Kimi Code · Qwen Code · DeepSeek Harness**
+**GitHub Copilot CLI · Claude Code · Kimi Code · Qwen Code · DeepSeek Harness · OpenCode**
 
 一个 Android App，连接多个 Agent、项目和电脑。
 
@@ -94,6 +94,7 @@ python -m venv .venv
 | **Kimi Code** | 新版 JavaScript Kimi Code + `kimi login`；[安装说明](bridge/README.md#kimi-code-and-qwen-code) | 上下文与历史 |
 | **Qwen Code** | 安装 Qwen Code 并完成本地认证；[安装说明](bridge/README.md#kimi-code-and-qwen-code) | 上下文与历史 |
 | **DeepSeek Harness** | 固定预览版本并配置本地 Provider；[安装说明](bridge/README.md#deepseek-harness) | 仅上下文，不回放旧消息 |
+| **OpenCode** | 原生 ACP，在电脑完成 Provider 认证并配置权限规则；[安装说明](bridge/README.md#opencode) | 上下文与历史 |
 
 上表描述**当前源码的支持情况**。下载的 APK 以发布说明为准；
 新接入的 Agent 可能需要同时更新 App 和 Bridge。版本及运行环境要求见各安装说明。

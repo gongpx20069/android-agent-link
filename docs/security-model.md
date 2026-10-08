@@ -105,6 +105,16 @@ Neither provider is offered client filesystem or terminal capabilities. Windows
 npm shims resolve only JS entry points within the expected installed package;
 workspace paths and shim contents are never interpolated into a command shell.
 
+OpenCode likewise receives no client filesystem/terminal capabilities or
+permission-bypass flags. Its own policy defaults most operations to allow:
+users must configure `ask` rules locally for operations requiring human review.
+Only emitted ACP requests can be mediated by AgentLink; the bridge does not
+override provider configuration or invent missing requests. Exact option IDs
+are preserved, and `always` is a broader session-scoped decision.
+Its internal HTTP server is explicitly restricted to `127.0.0.1`, port `0`,
+with mDNS disabled. The extensionless npm entry is allowed only for OpenCode's
+known `bin/opencode` Node launcher, with package containment still enforced.
+
 Use a private authenticated Microsoft Dev Tunnel as the default transport. Anonymous tunnel access is prohibited; pairing payloads carry a short-lived, machine-specific `X-Tunnel-Authorization` connect token.
 
 Tailscale is an explicit alternative transport and requires both Android and the developer machine to install the Tailscale client and join the same tailnet. Localhost mode remains an explicit manual-testing opt-in.

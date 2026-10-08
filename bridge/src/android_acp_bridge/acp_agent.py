@@ -400,7 +400,7 @@ class AcpAgentSession:
                 timeout_seconds=60,
             )
             session._session_id = _extract_session_id(result)
-            if agent_id == "deepseek-harness":
+            if agent_id in {"deepseek-harness", "opencode"}:
                 session._resumable = True
         except Exception:
             session.stop()
@@ -794,7 +794,7 @@ class AcpAgentSession:
     def stop(self) -> None:
         self._connection.close()
         if self._process.poll() is None:
-            if self._agent_id in {"claude-code", "kimi-cli", "qwen-code", "deepseek-harness"} and self._process.stdin is not None:
+            if self._agent_id in {"claude-code", "kimi-cli", "qwen-code", "deepseek-harness", "opencode"} and self._process.stdin is not None:
                 try:
                     self._process.stdin.close()
                     self._process.wait(timeout=5)
@@ -956,8 +956,15 @@ def _npm_command(executable: str, command: str, package: str) -> list[str]:
             if not isinstance(relative, str) or not relative:
                 raise ValueError("Missing bin entry")
             entry = (root / relative).resolve()
-            if not node or not entry.is_relative_to(root.resolve()) or entry.suffix not in {".js", ".mjs", ".cjs"} or not entry.is_file():
+            if not node or not entry.is_relative_to(root.resolve()) or not entry.is_file():
                 raise ValueError("Invalid JS entry point")
+            # OpenCode publishes a Node launcher without a filename extension.
+            if entry.suffix not in {".js", ".mjs", ".cjs"}:
+                if not (package == "opencode-ai" and command == "opencode" and relative in {"bin/opencode", "./bin/opencode"}):
+                    raise ValueError("Invalid JS entry point")
+                with entry.open(encoding="utf-8") as launcher:
+                    if launcher.readline(128).strip() != "#!/usr/bin/env node":
+                        raise ValueError("Invalid OpenCode Node launcher")
         except (OSError, ValueError) as exc:
             raise AcpAgentError(f"Cannot resolve the installed {command} npm launcher. Reinstall {package} and Node.js.") from exc
         return [node, str(entry)]

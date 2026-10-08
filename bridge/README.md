@@ -101,6 +101,66 @@ accounts still need to be exercised. The regression suite uses subprocess peers
 for prompt streaming, questions/permissions, configuration, cancellation and
 session recovery; it does not contact a model.
 
+## OpenCode
+
+Bridge ID `opencode` uses native ACP with **1.18.35** as the compatibility
+baseline (not an exact-version startup restriction). Install explicitly on the
+computer, using the official native executable or npm:
+
+```powershell
+npm install -g opencode-ai@1.18.35
+opencode auth login
+```
+
+Choose/configure a model and provider locally before creating an OpenCode Chat.
+Discovery checks PATH, not authentication. Windows npm installs require Node.js;
+the bridge resolves the package's extensionless `bin/opencode` Node launcher
+without executing a command shell. Direct native executables are also supported.
+Update/restart the Bridge after active work finishes; the existing Android agent
+picker and terminal `/new` discover OpenCode dynamically.
+
+The launch command is
+`opencode acp --hostname 127.0.0.1 --port 0 --mdns=false`.
+These explicit flags keep OpenCode's internal HTTP server on loopback with a
+random port and disable mDNS even when local server configuration says otherwise.
+
+**Approvals depend on OpenCode's policy.** Most operations default to `allow`.
+To review operations on the phone/AgentLink terminal, merge deliberate `ask`
+rules into your local `opencode.json`, for example:
+
+```json
+{
+  "permission": {
+    "bash": "ask",
+    "edit": "ask"
+  }
+}
+```
+
+Use `"permission": "ask"` instead to request approval for all permissions.
+AgentLink never changes this file or adds a permission-bypass flag.
+Offered `once`, `always`, and `reject` options retain their exact IDs; `always`
+allows matching patterns for the current OpenCode session, not just one tool
+call. Only actual permission requests produce approval cards/notifications.
+
+Supported ACP surfaces include streaming, tool updates, cancellation, paginated
+session listing, history replay via `session/load`, and context-only
+`session/resume`. New sessions are resumable before the first model turn.
+Advertised model, mode and effort settings use the existing `/config` UI.
+Image input requires both the negotiated image capability and a vision-capable
+model. Phone and AgentLink terminal share the same managed Chat; this does not
+attach to a separately running native OpenCode TUI.
+
+No client filesystem/terminal delegation, structured OpenCode question-tool
+integration, or extended background-task completion protocol is negotiated.
+Do not force-enable `OPENCODE_ENABLE_QUESTION_TOOL` for this integration.
+
+The official Windows 1.18.35 executable was exercised in an isolated home with
+no real credentials or model prompts: initialize/new, session listing, history
+loading, process restart/resume, and clean EOF shutdown. Deterministic subprocess
+tests cover permissions, images, configuration, cancellation and error propagation.
+Authenticated model turns and physical-phone acceptance remain unverified.
+
 ## DeepSeek Harness
 
 `deepseek-harness` launches native `dsh --profile acp`. The developer-preview
@@ -152,7 +212,7 @@ confirmed permission UI if you want that mode.
 
 For older CLI compatibility, explicitly use `--copilot-transport acp`. That mode
 retains ACP's limitations for post-prompt background work; there is no automatic
-fallback. Claude Code, Kimi Code, Qwen Code and DeepSeek Harness continue using ACP.
+fallback. Claude Code, Kimi Code, Qwen Code, DeepSeek Harness and OpenCode continue using ACP.
 
 Do not restart an active bridge to apply this change: wait for work to finish or
 explicitly cancel it first. Updating files does not hot-patch an existing process

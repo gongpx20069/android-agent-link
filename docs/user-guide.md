@@ -356,6 +356,7 @@ Use a real terminal, not a redirected pipe; the standard-library server is requi
 | Kimi Code | Native `kimi acp`, current JavaScript Kimi Code 2.1.1 baseline; local `kimi login`. Supports session recovery and question forms. |
 | Qwen Code | Native `qwen --acp`, 0.24.6 baseline; local authentication. Supports session recovery and Qwen question forms. |
 | DeepSeek Harness | Native `dsh --profile acp`, pinned 0.1.7-rc.2 preview. Supports context resume, but not historical-message replay. [Setup](../bridge/README.md#deepseek-harness). |
+| OpenCode | Native `opencode acp`, 1.18.35 baseline; local provider authentication. Supports history/context recovery, advertised settings and images with a compatible model. [Setup and permission rules](../bridge/README.md#opencode). |
 
 See [Kimi/Qwen setup and limitations](../bridge/README.md#kimi-code-and-qwen-code).
 Use Android `/config` or terminal `/config <id>` for advertised mode/reasoning
@@ -366,6 +367,11 @@ For DeepSeek Harness, saved AgentLink messages are retained; imported external
 sessions do not include their old messages. Session changes show a context
 boundary. If bridge events have expired, a missing-history warning remains
 visible; continuing does not mean those messages were recovered.
+
+OpenCode permits most operations by default. Configure local `permission` rules
+to `ask` for actions you want to review; otherwise those actions do not generate
+approval cards or notifications. AgentLink shares its managed OpenCode Chat
+between phone and terminal, not a separately running native OpenCode TUI.
 
 ## Staying connected
 

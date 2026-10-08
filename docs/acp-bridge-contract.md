@@ -115,6 +115,13 @@ returns the offered `proceed_once` option plus Qwen's top-level `answers` map.
 There is no generic approve-without-answers path for these questions.
 The bridge does not implement Qwen's separate daemon API.
 
+The catalog and shared create/register actions also accept `opencode`.
+It uses standard ACP1 permissions, negotiated list/load/resume, image input and
+advertised model/mode/effort config options. Load/resume responses may contain
+only configuration; the requested session ID is retained without inventing a
+new session. No OpenCode-specific client extensions are advertised. Shared
+Chat/event/approval wire shapes are unchanged.
+
 On the default stdlib `/ws` connection, send
 `{"type":"control.request","requestId":"nonce","action":"chat.read","chatId":"..."}`.
 Receive `{"type":"control.result","requestId":"nonce","status":"ok","data":{...}}`

@@ -56,7 +56,18 @@
 - Keep delivering output and interactions between RPCs; announced background tasks
   delay completion and remain cancellable. Unsupported features and provider
   failures are explicit, not empty successful history or invented idle.
-- Kimi Code, Qwen Code and DeepSeek Harness also use the shared ACP transport.
+- Kimi Code, Qwen Code, DeepSeek Harness and OpenCode also use the shared ACP transport.
+
+## OpenCode native ACP integration
+
+- Offer OpenCode through the shared Android/terminal/controller agent catalog.
+- Reuse negotiated history/context recovery, streaming, images, cancellation,
+  exact permission choices and advertised model/mode/effort configuration.
+- Keep authentication local; document OpenCode's default-allow policy and
+  explicit `ask` configuration rather than changing user rules silently.
+- Bind its internal server to loopback with a random port and no mDNS.
+- Do not claim native TUI attachment, structured question-tool support or
+  extended background-task completion beyond negotiated ACP behavior.
 
 ## DeepSeek Harness context recovery
 

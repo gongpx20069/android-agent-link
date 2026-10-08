@@ -307,6 +307,7 @@ Agent 声明支持的斜杠命令也会出现在菜单里。未知命令明确�
 | Kimi Code | 使用原生 `kimi acp`，基线为新版 JavaScript Kimi Code 2.1.1；电脑上执行 `kimi login`。支持会话恢复及问题表单。 |
 | Qwen Code | 使用原生 `qwen --acp`，基线为 0.24.6；在电脑完成认证。支持会话恢复及 Qwen 问题表单。 |
 | DeepSeek Harness | 使用原生 `dsh --profile acp`，固定 0.1.7-rc.2 预览版。支持恢复上下文，不支持旧消息回放。[安装说明](../bridge/README.md#deepseek-harness)。 |
+| OpenCode | 使用原生 `opencode acp`，兼容基线为 1.18.35；在电脑完成 Provider 认证。支持历史与上下文恢复、动态配置，以及支持视觉的模型的图片输入。[安装及权限说明](../bridge/README.md#opencode)。 |
 
 安装与限制见 [Kimi/Qwen 说明](../bridge/README.md#kimi-code-and-qwen-code)。
 手机 `/config` 可选择 agent 暴露的模式、思考等设置；终端 `/config` 列出配置 ID，
@@ -317,6 +318,10 @@ CLI 出现在列表中只代表发现了安装，不代表认证成功；真实�
 DeepSeek Harness 会保留 AgentLink 已保存的消息，但导入外部会话无法带回旧消息。
 切换会话时显示上下文分界；Bridge 事件过期后会显示历史缺失提示。
 可以继续对话不代表缺失的消息已经恢复。
+
+OpenCode 默认允许大部分操作。需要手机审批的操作应在本地 `opencode.json` 中
+把相应 `permission` 规则设为 `ask`，否则不会生成审批卡片或通知。
+手机和 AgentLink 交互终端共享同一个 OpenCode Chat，但不会接管独立启动的 OpenCode 原生 TUI。
 
 ## 关于持续连接
 

@@ -14,7 +14,7 @@
   &nbsp; · &nbsp; <a href="https://gongpx20069.github.io/hi-mochi/agentlink/"><strong>Official website</strong></a>
 </p>
 
-**GitHub Copilot CLI · Claude Code · Kimi Code · Qwen Code · DeepSeek Harness**
+**GitHub Copilot CLI · Claude Code · Kimi Code · Qwen Code · DeepSeek Harness · OpenCode**
 
 One Android app for multiple agents, projects and computers.
 
@@ -96,6 +96,7 @@ session; switching chats does not move conversation context between providers.
 | **Kimi Code** | Current JavaScript Kimi Code + `kimi login`; [setup](bridge/README.md#kimi-code-and-qwen-code) | Context and history |
 | **Qwen Code** | Qwen Code with local authentication; [setup](bridge/README.md#kimi-code-and-qwen-code) | Context and history |
 | **DeepSeek Harness** | Pinned developer preview with local provider configuration; [setup](bridge/README.md#deepseek-harness) | Context only; no old-message replay |
+| **OpenCode** | Native ACP with local provider authentication and permission rules; [setup](bridge/README.md#opencode) | Context and history |
 
 This table describes **current source support**. Downloaded APKs follow their
 release notes; new integrations may need a newer app **and** bridge. Version and

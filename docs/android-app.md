@@ -74,6 +74,12 @@ configuration request/acknowledgement and busy guards remain authoritative.
 Kimi question forms support native choices/multi-select; Qwen questions show
 suggested options and accept required text answers, including custom answers.
 
+OpenCode also uses this dynamic catalog, configuration UI, session recovery,
+image input and approval cards/notifications without provider-specific app UI.
+Only operations configured to `ask` in OpenCode generate approvals; its default
+policy permits most operations. Structured OpenCode question forms are not
+negotiated.
+
 DeepSeek Harness uses the same agent picker, permissions and `/config` UI.
 Negotiated `historyReplaySupported` persists in encrypted chat metadata and
 passes through shared-catalog and foreground/background connection updates.

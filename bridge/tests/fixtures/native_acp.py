@@ -1,4 +1,5 @@
-"""Deterministic ACP1 peer using published Kimi/Qwen/DSH wire shapes; no model/network."""
+"""Deterministic ACP1 peer using Kimi/Qwen/DSH/OpenCode wire shapes; no model/network."""
+import base64
 import json
 import sys
 
@@ -16,6 +17,15 @@ if provider == "deepseek-harness":
     options[1] = {"id": "reasoning_effort", "name": "Reasoning", "type": "select",
                   "category": "thought_level", "currentValue": "high",
                   "options": [{"value": "high", "name": "High"}, {"value": "max", "name": "Max"}]}
+if provider == "opencode":
+    options[0]["currentValue"] = "provider/model-one"
+    options[0]["options"] = [
+        {"value": "provider/model-one", "name": "Provider/One"},
+        {"value": "provider/model-two", "name": "Provider/Two"},
+    ]
+    options.append({"id": "effort", "name": "Effort", "type": "select", "category": "thought_level",
+                    "currentValue": "default",
+                    "options": [{"value": "default", "name": "Default"}, {"value": "high", "name": "High"}]})
 
 
 def send(value):
@@ -43,6 +53,7 @@ for line in sys.stdin:
         assert params["clientCapabilities"] == expected
         result = {"protocolVersion": 1, "agentInfo": {"name": provider, "version": "fixture"},
                   "agentCapabilities": {"loadSession": provider != "deepseek-harness",
+                                        "promptCapabilities": {"image": provider == "opencode"},
                                         "sessionCapabilities": {"list": {}, "resume": {}, "close": {}}}}
     elif method == "session/list":
         result = {"sessions": [{"sessionId": "second" if params.get("cursor") else session_id, "cwd": params["cwd"]}]}
@@ -59,11 +70,35 @@ for line in sys.stdin:
             update("user_message_chunk", content={"type": "text", "text": "saved user"})
             update("agent_message_chunk", content={"type": "text", "text": "saved answer"})
         result = {"sessionId": session_id, "configOptions": options}
+        if provider == "opencode" and method != "session/new":
+            result.pop("sessionId")
     elif method == "session/set_config_option":
         option = next(option for option in options if option["id"] == params["configId"])
         option["currentValue"] = params["value"]
         result = {"configOptions": options}
     elif method == "session/prompt":
+        if provider == "opencode" and params["prompt"][0]["text"] == "auth error":
+            send({"id": message["id"], "error": {"code": -32000, "message": "Authentication required"}})
+            continue
+        if provider == "opencode" and params["prompt"][0]["text"] == "image":
+            assert params["prompt"][1] == {
+                "type": "image", "mimeType": "image/png",
+                "data": base64.b64encode(b"image-bytes").decode("ascii"),
+            }
+            permission = reverse("session/request_permission", {
+                "toolCall": {"toolCallId": "edit", "title": "Edit file", "kind": "edit",
+                             "rawInput": {"filepath": "file.txt"},
+                             "content": [{"type": "diff", "path": "file.txt", "oldText": "old", "newText": "new"}]},
+                "options": [{"optionId": "once", "kind": "allow_once", "name": "Allow once"},
+                            {"optionId": "always", "kind": "allow_always", "name": "Always allow"},
+                            {"optionId": "reject", "kind": "reject_once", "name": "Reject"}],
+            })
+            allowed = permission["outcome"].get("optionId") in {"once", "always"}
+            update("tool_call_update", toolCallId="edit", status="completed",
+                   rawOutput={"permissionOutcome": permission["outcome"]})
+            update("agent_message_chunk", content={"type": "text", "text": "allowed" if allowed else "rejected"})
+            send({"id": message["id"], "result": {"stopReason": "end_turn"}})
+            continue
         if params["prompt"][0]["text"] == "wait for cancel":
             pending_prompt = message["id"]
             update("agent_thought_chunk", content={"type": "text", "text": "working"})

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from android_acp_bridge.acp_agent import AcpAgentError, AcpAgentSession, _agent_command
 from android_acp_bridge.agents import AGENT_SPECS, discover_agents
+from android_acp_bridge.attachments import ImageInput
 from android_acp_bridge.elicitation import qwen_question_form
 
 
@@ -19,15 +20,16 @@ class NativeAcpTests(unittest.TestCase):
         with patch("shutil.which", side_effect=lambda name: str(Path.cwd() / (name + ".exe"))):
             self.assertEqual({agent.id for agent in discover_agents()}, set(AGENT_SPECS))
             self.assertTrue(all(agent.status == "available" for agent in discover_agents()))
-            for identity, command, arguments in (("kimi-cli", "kimi", ["acp"]), ("qwen-code", "qwen", ["--acp"])):
+            for identity, command, arguments in (("kimi-cli", "kimi", ["acp"]), ("qwen-code", "qwen", ["--acp"]),
+                                                  ("opencode", "opencode", ["acp", "--hostname", "127.0.0.1", "--port", "0", "--mdns=false"])):
                 self.assertEqual(_agent_command(identity, Path.cwd()), [str(Path.cwd() / (command + ".exe")), *arguments])
         with patch("shutil.which", return_value=None):
-            for identity in ("kimi-cli", "qwen-code"):
+            for identity in ("kimi-cli", "qwen-code", "opencode"):
                 with self.assertRaisesRegex(AcpAgentError, "Install"):
                     _agent_command(identity, Path.cwd())
 
     def test_windows_npm_global_and_local_bin_resolution_uses_manifest_not_shell(self):
-        for identity in ("claude-code", "kimi-cli", "qwen-code", "deepseek-harness"):
+        for identity in ("claude-code", "kimi-cli", "qwen-code", "deepseek-harness", "opencode"):
             spec = AGENT_SPECS[identity]
             for local in (False, True):
                 with self.subTest(identity=identity, local=local), tempfile.TemporaryDirectory(prefix="acp & spaces ") as directory:
@@ -45,17 +47,26 @@ class NativeAcpTests(unittest.TestCase):
                         (root / "package.json").write_text(json.dumps({"bin": {spec.command: "../../outside.js"}}), encoding="utf-8")
                         with self.assertRaisesRegex(AcpAgentError, "Cannot resolve"):
                             _agent_command(identity, base)
+                        launcher = root / "bin" / "opencode"
+                        launcher.parent.mkdir()
+                        launcher.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+                        (root / "package.json").write_text(json.dumps({"bin": {spec.command: "bin/opencode"}}), encoding="utf-8")
+                        if identity != "opencode":
+                            with self.assertRaisesRegex(AcpAgentError, "Cannot resolve"):
+                                _agent_command(identity, base)
 
     def test_protocol_lifecycle_interactions_configuration_and_recovery(self):
         fixture = Path(__file__).parent / "fixtures" / "native_acp.py"
-        for identity in ("kimi-cli", "qwen-code", "deepseek-harness"):
+        for identity in ("kimi-cli", "qwen-code", "deepseek-harness", "opencode"):
             with self.subTest(identity=identity), tempfile.TemporaryDirectory() as workspace, patch(
                 "android_acp_bridge.acp_agent._agent_command",
                 return_value=[sys.executable, "-u", str(fixture), identity],
             ):
                 session = AcpAgentSession.start(identity, workspace)
                 try:
-                    self.assertEqual(len(session.take_pending_updates()[-1]["update"]["configOptions"]), 2)
+                    self.assertEqual(session.binding().resumable, identity in {"deepseek-harness", "opencode"})
+                    self.assertEqual(len(session.take_pending_updates()[-1]["update"]["configOptions"]),
+                                     3 if identity == "opencode" else 2)
                     self.assertEqual(len(session.list_sessions(workspace)), 2)
                     def permission(message):
                         if message["method"] == "elicitation/create":
@@ -130,6 +141,76 @@ class NativeAcpTests(unittest.TestCase):
         params["options"] = [{"optionId": "proceed_once", "kind": "allow_always"}]
         with self.assertRaisesRegex(ValueError, "submit option"):
             qwen_question_form(params)
+
+    def test_opencode_extensionless_node_launcher_is_narrowly_validated(self):
+        for local in (False, True):
+            with self.subTest(local=local), tempfile.TemporaryDirectory(prefix="opencode & spaces ") as directory:
+                base = Path(directory)
+                root = base / "node_modules" / "opencode-ai"
+                (root / "bin").mkdir(parents=True)
+                entry = root / "bin" / "opencode"
+                manifest = root / "package.json"
+                shim = (base / "node_modules" / ".bin" if local else base) / "opencode.cmd"
+                with patch("shutil.which", side_effect=lambda name: "node.exe" if name == "node" else str(shim)):
+                    for relative in ("bin/opencode", "./bin/opencode"):
+                        manifest.write_text(json.dumps({"bin": {"opencode": relative}}), encoding="utf-8")
+                        entry.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+                        self.assertEqual(_agent_command("opencode", base),
+                                         ["node.exe", str(entry.resolve()), *AGENT_SPECS["opencode"].arguments])
+                    for content in ("#!/bin/sh\n", "", "not a Node launcher"):
+                        entry.write_text(content, encoding="utf-8")
+                        with self.assertRaisesRegex(AcpAgentError, "Cannot resolve"):
+                            _agent_command("opencode", base)
+                    entry.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+                    (root.parent / "outside").write_text("#!/usr/bin/env node\n", encoding="utf-8")
+                    (root / "bin" / "other").write_text("#!/usr/bin/env node\n", encoding="utf-8")
+                    for relative in ("../outside", "bin/other"):
+                        manifest.write_text(json.dumps({"bin": {"opencode": relative}}), encoding="utf-8")
+                        with self.assertRaisesRegex(AcpAgentError, "Cannot resolve"):
+                            _agent_command("opencode", base)
+                    manifest.write_text(json.dumps({"bin": {"opencode": "bin/opencode"}}), encoding="utf-8")
+                    with patch("shutil.which", side_effect=lambda name: None if name == "node" else str(shim)):
+                        with self.assertRaisesRegex(AcpAgentError, "Cannot resolve"):
+                            _agent_command("opencode", base)
+                    entry.unlink()
+                    with self.assertRaisesRegex(AcpAgentError, "Cannot resolve"):
+                        _agent_command("opencode", base)
+
+    def test_opencode_images_exact_permissions_errors_and_configuration(self):
+        fixture = Path(__file__).parent / "fixtures" / "native_acp.py"
+        with tempfile.TemporaryDirectory() as workspace, patch(
+            "android_acp_bridge.acp_agent._agent_command",
+            return_value=[sys.executable, "-u", str(fixture), "opencode"],
+        ):
+            session = AcpAgentSession.start("opencode", workspace)
+            try:
+                self.assertTrue(session.image_input_supported)
+                for choice in ("once", "always", "reject", None, "unknown"):
+                    calls = []
+                    def decide(message):
+                        calls.append(message)
+                        return choice
+                    session.permission_callback = decide if choice is not None else None
+                    events = session.prompt("image", image=ImageInput(b"image-bytes", "image/png"))
+                    self.assertEqual(events[-1]["update"]["content"]["text"],
+                                     "allowed" if choice in {"once", "always"} else "rejected")
+                    expected = ({"outcome": "selected", "optionId": choice or "reject"}
+                                if choice in {"once", "always", "reject", None} else {"outcome": "cancelled"})
+                    self.assertEqual(events[-2]["update"]["rawOutput"]["permissionOutcome"], expected)
+                    if calls:
+                        self.assertEqual([item["kind"] for item in calls[0]["params"]["options"]],
+                                         ["allow_once", "allow_always", "reject_once"])
+                        self.assertEqual(calls[0]["params"]["toolCall"]["content"][0]["type"], "diff")
+                for config, value in (("model", "provider/model-two"), ("effort", "high"), ("mode", "plan")):
+                    configs = session.set_config_option(config, value)[-1]["update"]["configOptions"]
+                    self.assertEqual(next(item["currentValue"] for item in configs if item["id"] == config), value)
+                with self.assertRaisesRegex(AcpAgentError, "Authentication required"):
+                    session.prompt("auth error")
+                session.permission_callback = lambda _: "once"
+                self.assertEqual(session.prompt("work")[-1]["update"]["content"]["text"], "done")
+            finally:
+                session.stop()
+            self.assertEqual(session._process.returncode, 0)
 
     def test_qwen_child_text_is_activity_not_main_answer(self):
         session = AcpAgentSession(MagicMock(), queue.Queue(), "s")

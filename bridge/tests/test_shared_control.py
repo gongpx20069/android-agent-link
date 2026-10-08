@@ -202,7 +202,7 @@ class SharedControlTests(unittest.TestCase):
 
     def test_native_agents_can_register_and_create_shared_chats(self):
         runtime = self.runtime()
-        for agent in ("kimi-cli", "qwen-code"):
+        for agent in ("kimi-cli", "qwen-code", "opencode"):
             registered = self.request(runtime, "chat.register", chatId=agent, workspacePath=str(Path.cwd()), agentId=agent)
             self.assertEqual(registered["status"], "ok")
             created = self.request(runtime, "chat.create", workspaceId=registered["data"]["chat"]["workspaceId"], agentId=agent)
