@@ -181,6 +181,8 @@ import com.gongpx.androidacpclient.data.bridge.restoreQueuedPrompts
 import com.gongpx.androidacpclient.data.bridge.mergeSharedChat
 import com.gongpx.androidacpclient.data.bridge.listSharedChats
 import com.gongpx.androidacpclient.data.bridge.deleteSharedChat
+import com.gongpx.androidacpclient.data.bridge.renameSharedChat
+import com.gongpx.androidacpclient.data.bridge.applySharedTitle
 import com.gongpx.androidacpclient.data.model.Workspace
 import com.gongpx.androidacpclient.integration.IntegrationGrantsActivity
 import com.gongpx.androidacpclient.data.notification.ChatNotificationManager
@@ -653,6 +655,8 @@ fun AgentLinkApp(
     val loadingHistoryChatIds = remember { mutableStateListOf<String>() }
     val sessionLoadingChatIds = remember { mutableStateListOf<String>() }
     val configuringChatIds = remember { mutableStateListOf<String>() }
+    var renameDialogChatId by remember { mutableStateOf<String?>(null) }
+    var renameError by remember { mutableStateOf<String?>(null) }
     val cancellingChatIds = remember { mutableStateListOf<String>() }
     val chatUiStateHolder = rememberSaveableStateHolder()
     val snackbar = remember { SnackbarHostState() }
@@ -1623,6 +1627,11 @@ fun AgentLinkApp(
             onDeleted = {
                 if (chatConnections[chat.id] === connection) removeConfirmedChat(chat)
             },
+            onTitle = { event ->
+                if (chatConnections[chat.id] === connection) {
+                    chats.firstOrNull { it.id == chat.id }?.let { upsertChat(it.applySharedTitle(event)) }
+                }
+            },
             onMessage = { event, isReplay ->
                 if (chatConnections[chat.id] !== connection) return@openChatConnection
                 val current = chats.firstOrNull { it.id == chat.id }
@@ -2026,8 +2035,58 @@ fun AgentLinkApp(
         }
     }
 
+    fun renameChat(chat: Chat, title: String): Boolean {
+        val current = chats.firstOrNull { it.id == chat.id } ?: return false
+        val machine = machines.firstOrNull { it.id == current.machineId }
+        if (machine == null) {
+            renameError = strings.machineUnavailable
+            statusMessage = renameError
+            return false
+        }
+        if (title.isBlank() || title.length > 256 || title.any { it.code < 32 || it.code in 127..159 || it in "\u2028\u2029" }) {
+            renameError = strings.reliability("Use a single-line name of 1-256 characters.", "名称需为 1–256 个字符，不能包含换行或控制字符。")
+            statusMessage = renameError
+            return false
+        }
+        if (current.id in busyChatIds || current.id in configuringChatIds || current.id in sessionLoadingChatIds ||
+            current.id in deletingChatIds || current.queuedPrompts.isNotEmpty()) {
+            renameError = strings.reliability("Finish tasks and session changes before renaming.", "请先完成任务和会话切换，再重命名。")
+            statusMessage = renameError
+            return false
+        }
+        configuringChatIds.add(current.id)
+        renameError = null
+        scope.launch {
+            try {
+                val remote = bridgeClient.renameSharedChat(machine, current, title)
+                chats.firstOrNull { it.id == current.id }?.let { upsertChat(it.applySharedTitle(remote)) }
+                if (renameDialogChatId == current.id) renameDialogChatId = null
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                renameError = strings.reliability("Rename was not confirmed: ${error.message}", "未能确认重命名：${error.message}")
+                statusMessage = renameError
+            } finally {
+                configuringChatIds.remove(current.id)
+            }
+        }
+        return true
+    }
+
     fun submitPrompt(chat: Chat, message: String, image: ImageAttachment? = null): Boolean {
         if (storageError != null) return false
+        val command = message.trim()
+        if (command == "/rename" || command.startsWith("/rename ")) {
+            if (image != null) {
+                statusMessage = strings.reliability("Remove the image before renaming.", "重命名前请移除图片。")
+                return false
+            }
+            if (command == "/rename") {
+                renameError = null
+                renameDialogChatId = chat.id
+                return true
+            }
+            return renameChat(chat, command.removePrefix("/rename ").trim())
+        }
         if (image != null && (!appInForeground.value || !uiOwnsConnections)) return false
         val current = chats.firstOrNull { it.id == chat.id } ?: return false
         if (current.bridgeResyncRequired || chat.id in sessionLoadingChatIds || chat.id in configuringChatIds) return false
@@ -2111,6 +2170,28 @@ fun AgentLinkApp(
 
     MaterialTheme {
         CompositionLocalProvider(LocalAppStrings provides strings) {
+        renameDialogChatId?.let { id ->
+            val target = chats.firstOrNull { it.id == id }
+            if (target != null) {
+                var title by remember(id) { mutableStateOf(target.title) }
+                val applying = id in configuringChatIds
+                AlertDialog(
+                    onDismissRequest = { if (!applying) renameDialogChatId = null },
+                    title = { Text(strings.reliability("Rename chat", "重命名聊天")) },
+                    text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(value = title, onValueChange = { title = it },
+                            singleLine = true, enabled = !applying,
+                            label = { Text(strings.reliability("Name", "名称")) })
+                        renameError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    } },
+                    confirmButton = { TextButton(enabled = !applying && title.isNotBlank() && title.length <= 256,
+                        onClick = { renameChat(target, title) }) {
+                        Text(strings.reliability(if (applying) "Renaming..." else "Rename", if (applying) "正在重命名…" else "重命名"))
+                    } },
+                    dismissButton = { TextButton(enabled = !applying, onClick = { renameDialogChatId = null }) { Text(strings.close) } },
+                )
+            }
+        }
         storageError?.let { error ->
             AlertDialog(
                 onDismissRequest = {},
@@ -2922,9 +3003,10 @@ internal fun ChatDetailScreen(
         buildList {
             if (chat.agentId == "copilot-cli" || chat.modelConfigOption() != null) add(BUILT_IN_MODEL_COMMAND)
             add(BUILT_IN_RESUME_COMMAND)
+            add(BUILT_IN_RENAME_COMMAND)
             if (chat.agentId == "copilot-cli" || chat.allowAllConfigOption() != null) add(BUILT_IN_ALLOW_ALL_COMMAND)
             if (chat.configOptions().isNotEmpty()) add(BUILT_IN_CONFIG_COMMAND)
-            val builtIns = setOf(BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name, BUILT_IN_ALLOW_ALL_COMMAND.name, BUILT_IN_CONFIG_COMMAND.name)
+            val builtIns = setOf(BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name, BUILT_IN_RENAME_COMMAND.name, BUILT_IN_ALLOW_ALL_COMMAND.name, BUILT_IN_CONFIG_COMMAND.name)
             addAll(advertisedCommands.filterNot { it.name in builtIns }.sortedBy { COMMON_COMMAND_ORDER.indexOf(it.name).let { index -> if (index < 0) Int.MAX_VALUE else index } })
         }
     }
@@ -3104,6 +3186,7 @@ internal fun ChatDetailScreen(
                         commands = commands.map { command ->
                             val sessionOperation = command.name in setOf(
                                 BUILT_IN_MODEL_COMMAND.name, BUILT_IN_RESUME_COMMAND.name,
+                                BUILT_IN_RENAME_COMMAND.name,
                                 BUILT_IN_ALLOW_ALL_COMMAND.name, BUILT_IN_CONFIG_COMMAND.name,
                             )
                             PromptCommand(command, !sessionOperation || (!isBusy && !sessionOperationInProgress &&
@@ -4702,6 +4785,12 @@ private fun AppStrings.contextOnlyNotice(switched: Boolean = false): String =
             "此 Agent 不支持历史回放。已保存消息保留，但无法获取外部会话的旧消息。")
 
 private fun String.normalizedKey(): String = lowercase().filter { it.isLetterOrDigit() }
+
+private val BUILT_IN_RENAME_COMMAND = AvailableCommand(
+    name = "rename",
+    description = "Rename this shared chat on phone and Server",
+    inputHint = "New name",
+)
 
 private val BUILT_IN_RESUME_COMMAND = AvailableCommand(
     name = "resume",

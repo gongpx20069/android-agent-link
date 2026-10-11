@@ -4,6 +4,44 @@ Connect your computer's coding agents to the AgentLink Android app.
 For the shortest setup path, start with the [AgentLink quick start](../README.md).
 This guide covers additional installation and connection options.
 
+## Session renaming
+
+Use `/rename <new name>` in the AgentLink terminal or Android chat. Android's
+`/rename` menu item opens an editor. This is a shared metadata operation, never
+a model prompt; it requires an idle Chat and an updated App/Bridge.
+
+Provider naming surfaces were checked against the integration baselines:
+
+| Provider | Naming API available through this integration | Implementation |
+| --- | --- | --- |
+| Qwen Code 0.24.6 | ACP extension `renameSession`, `{sessionId,title,cwd}` -> `{success:true}` | Native RPC first; only JSON-RPC method-not-found permits alias fallback |
+| Claude ACP 0.81.2 | No rename RPC in the pinned adapter | Bridge alias; newer `sessionIndex` / `_session/rename` extensions are not part of this baseline |
+| Kimi Code 2.1.1 | No rename handler in its ACP server | Bridge alias |
+| DeepSeek Harness 0.1.7-rc.2 | No rename handler in its ACP server | Bridge alias |
+| OpenCode 1.18.35 | ACP has list/load/resume but no naming RPC; its HTTP API is separate | Bridge alias |
+| Copilot CLI (SDK 1.0.13 / ACP compatibility) | No supported naming RPC exposed by the integrated transport; a native TUI command is not a protocol API | Bridge alias |
+
+Source references: [Qwen official ACP client](https://github.com/QwenLM/qwen-code/blob/v0.24.6/packages/vscode-ide-companion/src/services/acpConnection.ts),
+[Claude pinned adapter](https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.81.2/src/acp-agent.ts),
+[Kimi pinned ACP server](https://github.com/MoonshotAI/kimi-code/blob/f67e6398fb3210ad8ace970e2dfd5bcc984ed61f/packages/acp-server/src/server.ts),
+[DSH pinned ACP server](https://github.com/deepseek-ai/DeepSeek-Harness/blob/477b4f420553e8a52c2fbccc464d7561b239c443/packages/acp/acp/src/index.ts),
+[OpenCode pinned ACP service](https://github.com/anomalyco/opencode/blob/v1.18.35/packages/opencode/src/acp/service.ts).
+Copilot's installed SDK generated RPC surface was also inspected.
+
+Names are confirmed by the Server, persisted and broadcast to phone/terminal.
+Versioned title metadata prevents stale catalog responses or replay from undoing
+a rename. Session-picker aliases are scoped to the agent, workspace and session,
+survive Chat deletion, and are reused when importing/resuming the same session.
+An unbound Chat can be named without starting an agent; the alias attaches to its
+first session. Renaming does not migrate context or change the Chat/session ID.
+Names are limited to 256 UTF-16 code units without line breaks/control characters.
+
+Fallback names apply inside AgentLink, not a promise to change a separately
+running vendor TUI or its files. Provider errors/timeouts remain visible; a native
+rename followed by Bridge storage failure is reported as uncertain, not success.
+Protocol/persistence tests use deterministic peers, not paid model prompts;
+physical-phone acceptance remains separate.
+
 ## Claude Code
 
 Install the validated ACP adapter explicitly (Node.js 22 or newer):

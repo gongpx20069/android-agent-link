@@ -17,6 +17,40 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class BridgeControlTest {
+    @Test fun renameRequiresExactConfirmationAndUsesMetadataRpc() = runBlocking {
+        val server = MockWebServer()
+        val frames = mutableListOf<JSONObject>()
+        for (name in listOf("New name", "Wrong name")) {
+            server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, null) }
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    val frame = JSONObject(text)
+                    frames.add(frame)
+                    val chat = JSONObject().put("chatId", "chat").put("chatTitle", name)
+                        .put("titleRevision", 1).put("titleGeneration", "server")
+                    webSocket.send(JSONObject().put("type", "control.result").put("requestId", frame.getString("requestId"))
+                        .put("status", "ok").put("data", JSONObject().put("chat", chat)).toString())
+                    webSocket.send("""{"type":"bridge.done"}""")
+                }
+            }))
+        }
+        server.start()
+        try {
+            val machine = Machine("m", "M", server.url("/").toString(), "token", "f")
+            val chat = com.gongpx.androidacpclient.data.model.Chat(
+                "chat", "Old", "m", "M", "w", "W", "workspace", "agent", "Agent", 1, acpSessionId = "saved")
+            withTimeout(5_000) {
+                assertEquals("New name", BridgeClient().renameSharedChat(machine, chat, "New name").getString("chatTitle"))
+                try {
+                    BridgeClient().renameSharedChat(machine, chat, "New name")
+                    fail("Wrong title must not be accepted")
+                } catch (_: IllegalStateException) { }
+            }
+            assertEquals(2, frames.size)
+            assertTrue(frames.all { it.getString("action") == "chat.rename" && it.getString("expectedSessionId") == "saved" })
+        } finally { server.shutdown() }
+    }
+
     @Test fun catalogPreservesExplicitDeletionRowsAcrossPages() = runBlocking {
         val server = MockWebServer()
         val frames = mutableListOf<JSONObject>()

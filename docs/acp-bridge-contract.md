@@ -137,6 +137,7 @@ Errors include `INVALID_ARGS`, `NOT_FOUND`, `PERMISSION_DENIED`, `CONFLICT`,
 | `chat.create` | workspaceId, agentId, title, optional caller-generated chatId | chat |
 | `chat.register` | existing chatId, workspacePath, agentId, optional sessionId/sessionResumable/chatTitle | chat |
 | `chat.delete` | chatId | chatId, deleted:true |
+| `chat.rename` | chatId, title (1-256 characters, single line), optional expectedSessionId | chat, providerRenamed |
 | `chat.read` | chatId, afterEventId (default 0), limit (30 default, 100 max) | chat, events, tasks, approvals, latestEventId, nextEventId, hasMore, truncated, eventGeneration, online, observedAt |
 | `chat.send` | chatId, content, operationId, source, expectedHumanRevision | taskId, chatId, state; duplicate on retry |
 | `task.cancel` | chatId, operationId | taskId, state; cancellation_requested is not completed cancellation |
@@ -148,6 +149,18 @@ It validates the echoed task ID, distinguishes cancellation requested from
 completed cancellation, and does not clear the remaining queue or mark idle
 before authoritative status/events arrive. Timeout is an unknown outcome, not
 proof the task stopped.
+
+`chat.rename` is an idle-only metadata operation, never a model prompt. Qwen's
+ACP `renameSession` extension is used for bound sessions; only method-not-found
+permits a Bridge-only fallback. Other provider errors fail without publishing a
+new title. Providers without a supported naming API use persistent Bridge aliases
+scoped by agent, canonical workspace and session ID (not private provider files).
+An unbound Chat can also be named; its alias is associated on first binding.
+Confirmed changes publish `chat.title` with `chatTitle`, monotonic `titleRevision`
+and durable `titleGeneration`. These fields also appear in catalog rows and an
+attach title snapshot after replay. Clients must reject older title revisions in
+the same generation, including late catalog/rename replies. Session lists overlay
+saved aliases, and stale registrations cannot replace authoritative names.
 
 `chat.delete` removes the shared Chat and its Bridge journal, task receipts and
 image rows, not project files or the provider's native saved session history.
@@ -714,6 +727,22 @@ While a long-running ACP turn is still processing and no ACP update is ready, th
 ```
 
 The stdlib bridge also handles WebSocket ping frames and responds with pong frames so OkHttp/client keepalive does not terminate the connection.
+
+Each stdlib WebSocket has a bounded output queue (1,024 queued messages and
+16 MiB of serialized UTF-8 payloads, including the active write) and at most
+128 pending requests. A write, including pong/close frames, has a 30-second
+deadline checked once per second. An idle read has no added timeout.
+Queue overflow, write failure or an expired write closes only that connection
+and wakes blocked socket I/O; it does not cancel accepted tasks or stop providers.
+Clients reconnect using their last applied event cursor, with the existing
+snapshot/resync path when the journal no longer covers the gap. A lost control
+response does not confirm success; callers must reconcile authoritative state.
+Disconnected requests already in progress also release any late subscriptions.
+
+Connection logs carry a connection ID, the most recently received `chatId`,
+closure reason and numeric socket error, not request content or credentials.
+`connection.bound` records changes of chat scope on a shared control connection.
+These IDs are distinct from Dev Tunnel SSH channel IDs.
 
 ### List Sessions
 

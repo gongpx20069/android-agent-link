@@ -550,6 +550,7 @@ class BridgeClient(
         onHistoryCapability: (Boolean) -> Unit = {},
         onPromptImage: (String, String, ImageAttachment) -> Unit = { _, _, _ -> },
         onDeleted: () -> Unit = {},
+        onTitle: (JSONObject) -> Unit = {},
     ): ChatConnection {
         val requestBuilder = Request.Builder().url(toWebSocketUrl(machine.endpoint, machine.deviceToken))
         machine.connectionHeaders.forEach { (name, value) ->
@@ -759,6 +760,7 @@ class BridgeClient(
                             )
                             if (isSnapshot) attachReplayBoundary = null
                             postApplied {
+                                if (event.has("chatTitle")) onTitle(event)
                                 onStatus(
                                     event.optString("status"),
                                     eventId.takeIf { it >= 0 },
@@ -769,8 +771,12 @@ class BridgeClient(
                             }
                         }
                         "chat.session" -> postApplied {
+                            if (event.has("chatTitle")) onTitle(event)
                             onSession(event.optString("sessionId"), event.optBoolean("resumable"), isReplay)
                             (event.opt("historyReplaySupported") as? Boolean)?.let(onHistoryCapability)
+                        }
+                        "chat.title" -> postApplied {
+                            if (event.optString("chatId") == chatId) onTitle(event)
                         }
                         "chat.resyncRequired" -> postApplied { onResyncRequired() }
                         "approval.requested" -> {
@@ -1036,6 +1042,7 @@ class BridgeClient(
                 "chat.attached",
                 "chat.status",
                 "chat.session",
+                "chat.title",
                 "operation.accepted",
                 "operation.started",
                 "operation.done",

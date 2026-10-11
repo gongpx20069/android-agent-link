@@ -19,6 +19,39 @@ from test_runtime import FakeAgentManager, BlockingAgentManager
 HAS_INTERACTIVE = all(importlib.util.find_spec(module) for module in ("prompt_toolkit", "rich", "markdown_it"))
 
 
+@unittest.skipUnless(HAS_INTERACTIVE, "interactive dependencies are not installed")
+class NoticeStreamTests(unittest.TestCase):
+    def test_stdout_fragments_become_complete_nonempty_lines(self):
+        from android_acp_bridge.terminal_ui import _NoticeStream
+        lines = []
+        stream = _NoticeStream(lines.append)
+        for text in ("Exception from ", "('127.0.0.1', 52217)", "\n", "\n", "Trace", "back:\n"):
+            self.assertEqual(stream.write(text), len(text))
+        self.assertEqual(lines, ["Exception from ('127.0.0.1', 52217)", "Traceback:"])
+        stream.write("unfinished")
+        stream.flush()
+        self.assertEqual(lines[-1], "unfinished")
+        self.assertFalse(stream.pending)
+
+    def test_threads_do_not_merge_partial_lines_and_buffers_stay_bounded(self):
+        from android_acp_bridge.terminal_ui import _NoticeStream
+        lines = []
+        stream = _NoticeStream(lines.append)
+        stream.write("main-")
+        thread = threading.Thread(target=lambda: stream.write("other\n"))
+        thread.start()
+        thread.join(2)
+        stream.write("line\n")
+        self.assertEqual(lines, ["other", "main-line"])
+        stream.write("x" * Transcript.MAX_TEXT)
+        self.assertFalse(stream.pending)
+        for identity in range(129):
+            with patch("android_acp_bridge.terminal_ui.threading.get_ident", return_value=identity):
+                stream.write("partial")
+        self.assertLessEqual(len(stream.pending), 128)
+        self.assertEqual(lines[-1], "partial")
+
+
 def update(kind: str, chat: str = "one", operation: str = "op", **fields):
     return {"type": "session/update", "chatId": chat, "operationId": operation,
             "update": {"sessionUpdate": kind, **fields}}

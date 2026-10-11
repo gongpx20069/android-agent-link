@@ -7,14 +7,52 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import Callable, Protocol, TextIO
 
 
 DEV_TUNNEL_DOWNLOAD_URL_WINDOWS_X64 = "https://aka.ms/TunnelsCliDownload/win-x64"
 DEFAULT_TUNNEL_ID = "agentlink"
+WINDOW_WAIT_PATTERN = re.compile(
+    r"ClientSSH: SshChannel\(Type: forwarded-tcpip, Id: (\d+), RemoteId: (\d+)\) "
+    r"send window is full\. Waiting for window adjustment before sending\."
+)
+
+
+class _TunnelOutput:
+    def __init__(self, write: Callable[[str], None], clock: Callable[[], float] = time.monotonic) -> None:
+        self.write = write
+        self.clock = clock
+        self.last_report: float | None = None
+        self.repeated = 0
+        self.latest_channel = ""
+
+    def line(self, line: str) -> None:
+        text = line.rstrip("\r\n")
+        match = WINDOW_WAIT_PATTERN.fullmatch(text.strip())
+        if match is None:
+            self.write(text)
+            return
+        self.latest_channel = f"{match[1]}/{match[2]}"
+        now = self.clock()
+        if self.last_report is None:
+            self.write(text)
+            self.last_report = now
+            return
+        self.repeated += 1
+        if now - self.last_report >= 30:
+            self.flush()
+            self.last_report = now
+
+    def flush(self) -> None:
+        if self.repeated:
+            self.write(f"Dev Tunnel SSH flow control: {self.repeated} additional send-window waits; "
+                       f"latest channel/local-remote={self.latest_channel}. "
+                       "This is a transport channel, not an AgentLink chat ID.")
+            self.repeated = 0
 
 
 @dataclass(frozen=True)
@@ -246,13 +284,17 @@ def start_devtunnel_host(
     state: dict[str, str | None] = {"https_url": None}
 
     def drain_output(stream: TextIO) -> None:
-        for line in stream:
-            print(line, end="", flush=True)
-            if state["https_url"] is None:
-                parsed = parse_host_url(line, local_port)
-                if parsed is not None:
-                    state["https_url"] = parsed
-                    ready.set()
+        output = _TunnelOutput(lambda text: print(text, flush=True))
+        try:
+            for line in stream:
+                output.line(line)
+                if state["https_url"] is None:
+                    parsed = parse_host_url(line, local_port)
+                    if parsed is not None:
+                        state["https_url"] = parsed
+                        ready.set()
+        finally:
+            output.flush()
 
     output_thread = threading.Thread(target=drain_output, args=(process.stdout,), daemon=True)
     output_thread.start()

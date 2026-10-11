@@ -76,6 +76,16 @@ for line in sys.stdin:
         option = next(option for option in options if option["id"] == params["configId"])
         option["currentValue"] = params["value"]
         result = {"configOptions": options}
+    elif method == "renameSession":
+        assert provider == "qwen-code"
+        assert params["sessionId"] == session_id and params["cwd"]
+        if params["title"] in {"unsupported", "denied"}:
+            send({"id": message["id"], "error": {
+                "code": -32601 if params["title"] == "unsupported" else -32602,
+                "message": params["title"],
+            }})
+            continue
+        result = {"success": params["title"] != "not confirmed"}
     elif method == "session/prompt":
         if provider == "opencode" and params["prompt"][0]["text"] == "auth error":
             send({"id": message["id"], "error": {"code": -32000, "message": "Authentication required"}})

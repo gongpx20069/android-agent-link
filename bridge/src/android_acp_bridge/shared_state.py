@@ -33,6 +33,15 @@ def prompt_digest(text: str, image: dict[str, Any] | None = None) -> str:
     return hashlib.sha256(json.dumps([text, image["id"]], separators=(",", ":")).encode()).hexdigest()
 
 
+def chat_title(value: Any) -> str:
+    raw = required_text(value, "title", 256)
+    if any(ord(c) < 32 or 127 <= ord(c) < 160 or 0xD800 <= ord(c) <= 0xDFFF or c in "\u2028\u2029" for c in raw):
+        raise ControlError("INVALID_ARGS", "title must be a single line without control characters.")
+    if len(raw.encode("utf-16-le")) // 2 > 256:
+        raise ControlError("INVALID_ARGS", "title must be at most 256 UTF-16 code units.")
+    return raw.strip()
+
+
 class SharedState:
     EVENT_LIMIT = 10000
     EVENT_BYTES = 128 * 1024
@@ -59,6 +68,8 @@ class SharedState:
                 PRIMARY KEY(chat,seq));
             CREATE TABLE IF NOT EXISTS tasks(chat TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL,
                 PRIMARY KEY(chat,id));
+            CREATE TABLE IF NOT EXISTS session_titles(agent TEXT NOT NULL, cwd TEXT NOT NULL,
+                session TEXT NOT NULL, title TEXT NOT NULL, PRIMARY KEY(agent,cwd,session));
         """)
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO metadata VALUES('generation',?)", (secrets.token_hex(16),))
@@ -122,6 +133,11 @@ class SharedState:
                     "status": "idle", "revision": 0, "humanRevision": 0, "configOptions": [],
                     "eventGeneration": self.generation,
                     "updatedAt": int(time.time() * 1000)}
+            chat.update(titleRevision=0, titleGeneration=self.generation)
+            if isinstance(chat["sessionId"], str):
+                alias = self.session_title(chat["agentId"], path, chat["sessionId"])
+                if alias is not None:
+                    chat["chatTitle"] = alias
             with self.db:
                 if pending:
                     chat["pendingCreation"] = True
@@ -162,9 +178,31 @@ class SharedState:
     def bind_session(self, identity: str, session: str) -> None:
         with self.lock, self.db:
             chat = self.chat(identity)
+            alias = self.session_title(chat["agentId"], chat["workspacePath"], session)
+            if alias is not None and alias != chat["chatTitle"]:
+                chat.update(chatTitle=alias, titleRevision=chat.get("titleRevision", 0) + 1,
+                            titleGeneration=self.generation)
             chat.update(sessionId=session, sessionResumable=True, status="idle",
                         humanRevision=chat["humanRevision"] + 1, updatedAt=int(time.time() * 1000))
             self._put_chat(chat)
+
+    def session_title(self, agent: str, cwd: str, session: str) -> str | None:
+        path = os.path.normcase(str(Path(cwd).expanduser().resolve()))
+        with self.lock:
+            row = self.db.execute("SELECT title FROM session_titles WHERE agent=? AND cwd=? AND session=?",
+                                  (agent, path, session)).fetchone()
+            return row[0] if row else None
+
+    def _save_session_title(self, chat: dict[str, Any]) -> None:
+        if chat.get("sessionId"):
+            path = os.path.normcase(str(Path(chat["workspacePath"]).expanduser().resolve()))
+            self.db.execute("INSERT OR REPLACE INTO session_titles VALUES(?,?,?,?)",
+                            (chat["agentId"], path, chat["sessionId"], chat["chatTitle"]))
+
+    def title_snapshot(self, identity: str) -> dict[str, Any]:
+        chat = self.chat(identity)
+        return {"type": "chat.title", "chatId": identity, "chatTitle": chat["chatTitle"],
+                "titleRevision": chat.get("titleRevision", 0), "titleGeneration": self.generation}
 
     def chats(self, include_deleted: bool = False) -> list[dict[str, Any]]:
         with self.lock:
@@ -246,10 +284,20 @@ class SharedState:
             if kind == "chat.status":
                 chat["status"] = event.get("status", "unknown")
             elif kind == "chat.session":
+                first_binding = not chat.get("sessionId")
                 chat["sessionId"] = event["sessionId"]
                 chat["sessionResumable"] = event.get("resumable", False)
+                if "chatTitle" in event:
+                    chat.update(chatTitle=event["chatTitle"], titleRevision=event["titleRevision"],
+                                titleGeneration=self.generation)
                 if isinstance(event.get("historyReplaySupported"), bool):
                     chat["historyReplaySupported"] = event["historyReplaySupported"]
+                if first_binding and chat.get("titleRevision", 0) > 0:
+                    self._save_session_title(chat)
+            elif kind == "chat.title":
+                chat.update(chatTitle=event["chatTitle"], titleRevision=event["titleRevision"],
+                            titleGeneration=self.generation)
+                self._save_session_title(chat)
             elif kind == "operation.accepted" and event.get("source") != "mochi":
                 chat["humanRevision"] += 1
             elif kind == "session/update" and event.get("update", {}).get("sessionUpdate") == "config_option_update":

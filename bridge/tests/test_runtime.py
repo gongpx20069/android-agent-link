@@ -935,6 +935,9 @@ class RuntimeTests(unittest.TestCase):
 
 
 class FakeAgentManager:
+    def rename_session(self, chat_id, agent_id, workspace_path, session_id, title):
+        return False
+
     def release_chat(self, chat_id: str) -> None:
         pass
 

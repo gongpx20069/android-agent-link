@@ -99,6 +99,13 @@ confirmation, and dismissed dialogs cannot be reopened by an older response.
 Session/configuration changes use current chat state, preserving newly arrived
 messages; conflicting operations block sending while retaining the draft.
 
+The `/rename` command opens a name editor; `/rename <name>` submits directly.
+It sends `chat.rename`, not an agent prompt, and does not optimistically replace
+the Chat title. The title and its revision/generation persist in encrypted Chat
+metadata; both Activity and background service process title events/snapshots.
+Older catalog replies, replay and legacy registration payloads cannot undo a
+confirmed rename. This feature requires updated App and Bridge builds.
+
 Saveable state holders retain per-chat drafts across chat/tab navigation. A
 rejected local submission does not clear the composer. The chat header keeps
 identity/status visible and collapses full paths and connection diagnostics into

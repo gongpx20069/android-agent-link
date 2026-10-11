@@ -8,6 +8,32 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SharedCatalogTest {
+    @Test fun lateCatalogAndReplayCannotUndoConfirmedRename() {
+        val initial = mergeSharedChat(machine, remote(), null)
+        val latest = initial.applySharedTitle(remote().put("chatTitle", "New name")
+            .put("titleRevision", 2).put("titleGeneration", "server"))
+        val stale = remote().put("chatTitle", "Old name").put("titleRevision", 1).put("titleGeneration", "server")
+        assertEquals("New name", latest.applySharedTitle(stale).title)
+        assertEquals("New name", mergeSharedChat(machine, stale, latest).title)
+        assertEquals("New name", latest.applySharedTitle(remote()).title)
+        assertEquals("Next name", latest.applySharedTitle(remote().put("chatTitle", "Next name")
+            .put("titleRevision", 3).put("titleGeneration", "server")).title)
+        assertEquals("CLI chat", latest.applySharedTitle(remote().put("titleRevision", 0)
+            .put("titleGeneration", "new-server")).title)
+    }
+
+    @Test fun titleChangesPreserveTranscriptAndRejectOtherChatIdentity() {
+        val local = mergeSharedChat(machine, remote(), null).copy(
+            lastBridgeEventId = 9, messages = listOf(ChatMessage(MessageRole.User, "Keep", 1)))
+        val renamed = local.applySharedTitle(remote().put("chatTitle", "Renamed").put("titleRevision", 1)
+            .put("titleGeneration", "server"))
+        assertSame(local.messages, renamed.messages)
+        assertEquals(9, renamed.lastBridgeEventId)
+        assertThrows(IllegalArgumentException::class.java) {
+            renamed.applySharedTitle(remote().put("chatId", "someone-else"))
+        }
+    }
+
     @Test fun tombstoneCannotBeMergedBackIntoAChat() {
         assertThrows(IllegalArgumentException::class.java) {
             mergeSharedChat(machine, remote().put("deleted", true), null)

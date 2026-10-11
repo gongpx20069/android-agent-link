@@ -99,6 +99,17 @@ Event fan-out is connection-specific multicast and disconnect removes only that
 connection. Human revisions protect Mochi continuations, independent of event
 generation resets. Restart ambiguity is represented as interrupted, not success.
 
+The stdlib transport bounds each connection's outbound bytes/message count and
+pending requests. A write watchdog shuts down only a failed or stalled socket,
+waking its reader/writer and removing subscriptions without cancelling accepted
+operations. Reconnection uses the durable event journal. Connection-scoped logs
+associate transport failures with chat IDs, not just a localhost relay port.
+Terminal stdout/stderr capture assembles complete lines per writing thread and
+omits empty notices. Repeated known Dev Tunnel SSH send-window waits are counted
+and summarized at most once per 30 seconds of continued reports (with remaining
+counts emitted when the host output closes); unrelated diagnostics are preserved.
+This limits log noise, not network backpressure itself.
+
 The state is authoritative for accepted messages, confirmed configuration, task
 status and event cursors. Pending approval decisions remain in the existing runtime
 approval state machine. Drafts, scroll and folding stay client-local. Read responses
@@ -166,6 +177,16 @@ entry in `opencode-ai`, confined to the package and checked for a Node shebang.
 Native executables run directly. Explicit loopback/ephemeral-port/no-mDNS
 arguments override local network configuration for its backing HTTP server.
 EOF shutdown gives its wrapper/native process time to exit normally.
+
+Shared renaming uses `chat.rename`, serialized against prompts/config/session
+changes. Qwen's ACP `renameSession` extension is reused on its owning live
+process, or a temporary initialized process for a closed session. Only explicit
+method-not-found selects the Bridge fallback; other errors remain failures.
+`session_titles` stores aliases by agent/canonical workspace/session separately
+from Chat lifetimes. Confirmed `chat.title` journal events persist monotonically
+versioned metadata and notify terminal/phone subscribers. Attach status snapshots,
+session bindings and catalogs carry the same title version; Android foreground
+and background owners apply it without replacing transcripts or checkpoints.
 
 ## App Modules
 

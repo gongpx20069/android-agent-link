@@ -136,7 +136,7 @@ class TerminalClient:
             if isinstance(payload.get("workspacePath"), str):
                 chat.workspace = payload["workspacePath"]
             if isinstance(payload.get("chatTitle"), str):
-                chat.title = " ".join(display_text(payload["chatTitle"][:1024]).split())[:64]
+                chat.title = " ".join(display_text(payload["chatTitle"][:1024]).split())[:256]
             if isinstance(payload.get("sessionId"), str):
                 chat.session_id = payload["sessionId"]
                 chat.resumable = payload.get("sessionResumable") is True
@@ -267,6 +267,10 @@ class TerminalClient:
             if chat is None:
                 return
             kind = event.get("type")
+            if kind in {"chat.title", "chat.session"} and "chatTitle" in event:
+                chat.title = " ".join(display_text(str(event["chatTitle"])).split())[:256]
+                if kind == "chat.title":
+                    return
             if kind == "chat.session":
                 chat.session_id = event.get("sessionId")
                 chat.resumable = event.get("resumable") is True
@@ -519,6 +523,7 @@ class TerminalClient:
             self.say("/chats (choose by number) | /use <number>\n"
                      "/new [agent-id absolute-workspace] (new shared chat, guided when omitted)\n"
                      "/resume (restore a saved session in the CURRENT shared chat)\n"
+                     "/rename <title> (rename this shared chat on phone and Server)\n"
                      "/model (model picker) | /tools (focus tool group) | /qrcode or /pairing (phone QR/link)\n"
                      "/allow-all (session permissions; choose then y to confirm)\n"
                      "/config [id] (list agent settings or open a setting; choose then y to confirm)\n"
@@ -548,6 +553,21 @@ class TerminalClient:
             self._start_creation(argument)
         elif command == "/resume":
             self._start_resume(argument)
+        elif command == "/rename":
+            if not self.selected:
+                self.say("Choose a chat with /chats before renaming.")
+            else:
+                result = self.runtime.websocket_responses({
+                    "type": "control.request", "requestId": "terminal_rename",
+                    "action": "chat.rename", "chatId": self.selected, "title": argument,
+                    "expectedSessionId": self.chats[self.selected].session_id,
+                })[0]
+                if result.get("status") != "ok":
+                    self.say(str(result.get("message", "Rename was not confirmed.")))
+                else:
+                    self.observe_request({"type": "chat.attach", **result["data"]["chat"]})
+                    scope = "provider and AgentLink" if result["data"]["providerRenamed"] else "AgentLink"
+                    self.say(f"Renamed in {scope}: {result['data']['chat']['chatTitle']}")
         elif command == "/approvals":
             self._review_approvals()
         elif command in {"/choose", "/answer"}:

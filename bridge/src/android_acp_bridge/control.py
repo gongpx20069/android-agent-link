@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from .acp_agent import AcpAgentError
 from .attachments import image_metadata
 from .agents import AGENT_SPECS
-from .shared_state import ControlError, required_text, prompt_digest
+from .shared_state import ControlError, required_text, prompt_digest, chat_title
 
 if TYPE_CHECKING:
     from .runtime import BridgeRuntime
@@ -30,7 +30,10 @@ def control_response(runtime: BridgeRuntime, payload: dict[str, Any]) -> list[di
         response.update(status="error", code="PROVIDER_ERROR", message=str(error)[:1024])
     except sqlite3.Error:
         runtime.console.message("error", "shared_state.unavailable")
-        response.update(status="error", code="PROVIDER_ERROR", message="Shared state storage failed; acceptance is uncertain. Inspect task state before retrying.")
+        message = ("Rename storage failed; the provider may already have changed its name. Refresh and retry the same name."
+                   if payload.get("action") == "chat.rename" else
+                   "Shared state storage failed; acceptance is uncertain. Inspect task state before retrying.")
+        response.update(status="error", code="PROVIDER_ERROR", message=message)
     except (OSError, subprocess.SubprocessError):
         response.update(status="error", code="PROVIDER_ERROR",
                         message="Workspace operation failed or timed out. Inspect the target before retrying; no files were deleted.")
@@ -93,6 +96,8 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
     chat_id = required_text(payload.get("chatId"), "chatId", 256)
     if action == "chat.delete":
         return runtime.delete_shared_chat(chat_id)
+    if action == "chat.rename":
+        return runtime.rename_shared_chat(chat_id, chat_title(payload.get("title")), payload)
     if action == "task.read":
         identity = required_text(payload.get("taskId"), "taskId", 256)
         return {"task": runtime.shared.task_receipt(chat_id, identity),

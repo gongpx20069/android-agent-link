@@ -105,6 +105,16 @@ Neither provider is offered client filesystem or terminal capabilities. Windows
 npm shims resolve only JS entry points within the expected installed package;
 workspace paths and shim contents are never interpolated into a command shell.
 
+Chat renaming is an authenticated, idle-only metadata operation. Titles are
+single-line text bounded to 256 UTF-16 code units, not command-shell arguments or
+model prompts. The Qwen ACP extension is invoked with structured JSON and an
+authoritative session/workspace; false confirmations, permission errors and
+transport failures do not silently become Bridge-only success. Fallback names
+stay in Bridge-owned private storage, not vendor session databases. Native
+provider and Bridge storage updates cannot be one transaction: storage failure
+after provider success reports an uncertain result and allows retrying the same
+name. The companion IPC action allowlist does not expose rename.
+
 OpenCode likewise receives no client filesystem/terminal capabilities or
 permission-bypass flags. Its own policy defaults most operations to allow:
 users must configure `ask` rules locally for operations requiring human review.

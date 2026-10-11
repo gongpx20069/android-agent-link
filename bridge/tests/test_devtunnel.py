@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from android_acp_bridge.devtunnel import (
+    _TunnelOutput,
     DevTunnelAuthError,
     DevTunnelConflictError,
     create_or_reuse_tunnel,
@@ -28,6 +29,25 @@ from android_acp_bridge.devtunnel import (
 
 
 class DevTunnelTests(unittest.TestCase):
+    def test_window_waits_are_counted_across_channels_without_hiding_other_errors(self):
+        lines = []
+        now = [0.0]
+        output = _TunnelOutput(lines.append, lambda: now[0])
+        first = ("ClientSSH: SshChannel(Type: forwarded-tcpip, Id: 0, RemoteId: 0) "
+                 "send window is full. Waiting for window adjustment before sending.")
+        output.line(first + "\n")
+        for _ in range(1000):
+            output.line(first.replace("Id: 0", "Id: 2"))
+        output.line("ERROR: tunnel disconnected\n")
+        self.assertEqual(lines, [first, "ERROR: tunnel disconnected"])
+        now[0] = 30
+        output.line(first)
+        self.assertIn("1001 additional", lines[-1])
+        output.line(first)
+        output.flush()
+        self.assertIn("1 additional", lines[-1])
+        self.assertEqual(len(lines), 4)
+
     def test_parse_host_url_prefers_requested_port(self) -> None:
         output = "Hosting port 4317 at https://abc123-4317.usw2.devtunnels.ms/"
 

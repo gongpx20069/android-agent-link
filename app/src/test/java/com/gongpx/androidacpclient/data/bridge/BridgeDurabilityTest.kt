@@ -21,6 +21,39 @@ import org.robolectric.Shadows.shadowOf
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class BridgeDurabilityTest {
+    @Test fun renameEventsAndAttachSnapshotsAreAppliedInOrder() {
+        val server = MockWebServer()
+        val names = mutableListOf<String>()
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                for ((index, kind) in listOf("chat.title", "chat.session", "chat.status").withIndex()) {
+                    webSocket.send(JSONObject().put("type", kind).put("chatId", "chat")
+                        .put("eventId", index + 1).put("sessionId", "saved").put("status", "idle")
+                        .put("snapshot", kind == "chat.status").put("chatTitle", "Name $index")
+                        .put("titleRevision", index + 1).put("titleGeneration", "server").toString())
+                }
+                webSocket.send("""{"type":"chat.title","chatId":"other","chatTitle":"Wrong","eventId":4}""")
+            }
+        }))
+        server.start()
+        val connection = BridgeClient().openChatConnection(
+            machine = Machine("m", "M", server.url("/").toString(), "token", "f"),
+            chatId = "chat", agentId = "agent", workspacePath = "workspace", lastEventId = 0,
+            onTitle = { names.add(it.getString("chatTitle")) },
+        )
+        try {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (names.size < 3 && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(40))
+                Thread.sleep(10)
+            }
+            assertEquals(listOf("Name 0", "Name 1", "Name 2"), names)
+        } finally {
+            connection.close()
+            server.shutdown()
+        }
+    }
+
     @Test fun explicitDeletionAndDeletedAttachErrorsNotifyTheExactChat() {
         for (kind in listOf("chat.deleted", "bridge.error")) {
             val server = MockWebServer()

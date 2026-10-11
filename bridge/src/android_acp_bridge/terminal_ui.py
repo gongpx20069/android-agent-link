@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import queue
+import threading
 from contextlib import redirect_stdout, redirect_stderr
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
@@ -32,6 +33,38 @@ from .terminal_state import Entry, Transcript, allow_all_option, config_value, m
 
 if TYPE_CHECKING:
     from .terminal import TerminalClient
+
+
+class _NoticeStream:
+    def __init__(self, write: Callable[[str], None]) -> None:
+        self.emit = write
+        self.pending: dict[int, str] = {}
+        self.lock = threading.Lock()
+
+    def write(self, text: str) -> int:
+        with self.lock:
+            identity = threading.get_ident()
+            lines = (self.pending.pop(identity, "") + text).split("\n")
+            for line in lines[:-1]:
+                if line.strip():
+                    self.emit(line)
+            tail = lines[-1]
+            if len(tail) >= Transcript.MAX_TEXT:
+                self.emit(tail)
+            elif tail:
+                if len(self.pending) >= 128:
+                    self.emit(self.pending.pop(next(iter(self.pending))))
+                self.pending[identity] = tail
+        return len(text)
+
+    def flush(self) -> None:
+        with self.lock:
+            tail = self.pending.pop(threading.get_ident(), "")
+            if tail.strip():
+                self.emit(tail)
+
+    def isatty(self) -> bool:
+        return False
 
 
 def wrap_display_line(fragments: list[tuple[str, str]], width: int) -> list[list[tuple[str, str]]]:
@@ -83,6 +116,7 @@ class SlashCompleter(Completer):
         "/use": "Switch to a chat number",
         "/new": "New shared chat: guided agent/workspace picker",
         "/resume": "Restore a saved session in the CURRENT shared chat",
+        "/rename": "Rename the current shared chat: /rename <title>",
         "/approvals": "Review pending approval details",
         "/approve": "Approve a fully reviewed request",
         "/choose": "Select an exact reviewed permission option",
@@ -479,6 +513,8 @@ class FullScreenTerminal:
         self.input_was_focused = focused
 
     def write(self, text: str) -> None:
+        if not text.strip():
+            return
         try:
             self.notices.put_nowait(display_text(text[:Transcript.MAX_TEXT]))
         except queue.Full:
@@ -1035,22 +1071,11 @@ class FullScreenTerminal:
             except Exception as error:
                 self.app.exit(exception=error)
 
-        class DisplayStream:
-            def write(stream, text: str) -> int:
-                self.write(text)
-                return len(text)
-
-            def flush(stream) -> None:
-                pass
-
-            def isatty(stream) -> bool:
-                return False
-
         renderer = asyncio.create_task(refresh())
         try:
             # Capture Python-side tunnel/runtime output without writing over the alternate screen.
             # Application.output already owns the original terminal stream.
-            with redirect_stdout(DisplayStream()), redirect_stderr(DisplayStream()):
+            with redirect_stdout(_NoticeStream(self.write)), redirect_stderr(_NoticeStream(self.write)):
                 try:
                     await self.app.run_async()
                 except EOFError:

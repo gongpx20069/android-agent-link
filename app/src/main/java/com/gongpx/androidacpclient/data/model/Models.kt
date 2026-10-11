@@ -77,6 +77,8 @@ data class Chat(
     val localHistoryBefore: Long? = null,
     val historyReplaySupported: Boolean = true,
     val activePromptImages: Map<String, ImageAttachment> = emptyMap(),
+    val titleRevision: Long = 0,
+    val titleGeneration: String? = null,
 )
 
 data class QueuedPrompt(

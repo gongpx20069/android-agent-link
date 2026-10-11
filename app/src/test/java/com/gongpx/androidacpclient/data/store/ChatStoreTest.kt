@@ -37,6 +37,21 @@ class ChatStoreTest {
 
     private fun message(index: Int) = ChatMessage(MessageRole.Agent, "message $index", index.toLong())
 
+    @Test fun renamedTitleAndRevisionSurviveEncryptedStoreRestart() {
+        store.load()
+        store.upsert(chat(messages = listOf(message(1))).copy(
+            title = "Renamed", titleRevision = 7, titleGeneration = "server"))
+        store.awaitDurable()
+        store.closeForTest()
+        database = ChatDatabase(context, cipher) { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
+        store = ChatStore(database)
+        val loaded = store.load().single()
+        assertEquals("Renamed", loaded.title)
+        assertEquals(7L, loaded.titleRevision)
+        assertEquals("server", loaded.titleGeneration)
+        assertEquals("message 1", loaded.messages.single().text)
+    }
+
     @Test fun sharedDeletionRejectsLateWritesAndPersistsAcrossRestart() {
         store.load()
         val stale = chat(messages = listOf(message(1)))

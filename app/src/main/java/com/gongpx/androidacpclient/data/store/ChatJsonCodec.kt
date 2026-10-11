@@ -14,6 +14,8 @@ internal object ChatJsonCodec {
         return JSONObject()
             .put("id", id)
             .put("title", title)
+            .put("titleRevision", titleRevision)
+            .put("titleGeneration", titleGeneration)
             .put("machineId", machineId)
             .put("machineName", machineName)
             .put("workspaceId", workspaceId)
@@ -47,6 +49,8 @@ internal object ChatJsonCodec {
         return Chat(
             id = getString("id"),
             title = getString("title"),
+            titleRevision = optLong("titleRevision", 0),
+            titleGeneration = optString("titleGeneration").ifBlank { null },
             machineId = getString("machineId"),
             machineName = getString("machineName"),
             workspaceId = getString("workspaceId"),

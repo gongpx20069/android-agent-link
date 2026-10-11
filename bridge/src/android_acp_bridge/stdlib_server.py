@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import json
 import queue
+import socket
 import struct
+import sys
 import threading
 import sqlite3
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 from .device_tokens import DeviceTokenStoreError
 from .account_pairing import AccountPairingError
@@ -195,56 +199,167 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Sec-WebSocket-Accept", accept)
         self.end_headers()
 
-        self.server.runtime.console.message("info", "connection.opened", transport="websocket")
-        response_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
-        request_queue: queue.Queue[Any | None] = queue.Queue()
+        runtime = self.server.runtime
+        response_queue: queue.Queue[bytes] = queue.Queue(maxsize=WEBSOCKET_QUEUE_MESSAGES)
+        request_queue: queue.Queue[Any] = queue.Queue(maxsize=128)
+        connection_id = f"{id(response_queue):x}"
+        runtime.console.message("info", "connection.opened", transport="websocket", connection=connection_id)
         stopped = threading.Event()
         write_lock = threading.Lock()
+        state_lock = threading.Lock()
+        pending_bytes = 0
+        write_started: float | None = None
+        close_reason = "peer_closed"
+        close_error = 0
+        last_chat_id = "-"
+
+        def stop_connection(reason: str, error: OSError | None = None) -> None:
+            nonlocal close_reason, close_error, pending_bytes
+            with state_lock:
+                if stopped.is_set():
+                    return
+                close_reason = reason
+                close_error = (getattr(error, "winerror", None) or error.errno or 0) if error else 0
+                stopped.set()
+                while True:
+                    try:
+                        pending_bytes -= len(response_queue.get_nowait())
+                    except queue.Empty:
+                        break
+            # Wake both a blocked recv and send without touching other connections or tasks.
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError as exc:
+                runtime.console.message("debug", "connection.shutdown_failed",
+                                        connection=connection_id, error=exc.errno or 0)
+            # makefile() keeps socket.close() from closing the handle. On Windows,
+            # shutdown alone may leave another thread blocked inside recv_into().
+            handle = self.connection.detach()
+            if handle != -1:
+                try:
+                    socket.close(handle)
+                except OSError as exc:
+                    runtime.console.message("warning", "connection.close_failed",
+                                            connection=connection_id, error=exc.errno or 0)
 
         def emit(response: dict[str, Any]) -> None:
-            if not stopped.is_set():
-                response_queue.put(response)
+            nonlocal pending_bytes
+            if stopped.is_set():
+                return
+            raw = json.dumps(response, separators=(",", ":")).encode("utf-8")
+            with state_lock:
+                if stopped.is_set():
+                    return
+                overflow = pending_bytes + len(raw) > WEBSOCKET_QUEUE_BYTES
+                if not overflow:
+                    try:
+                        response_queue.put_nowait(raw)
+                        pending_bytes += len(raw)
+                    except queue.Full:
+                        overflow = True
+            if overflow:
+                stop_connection("send_queue_full")
         setattr(emit, "_connection_id", id(response_queue))
 
+        def write_frame(opcode: int, raw: bytes, accounted: int = 0) -> bool:
+            nonlocal write_started, pending_bytes
+            with write_lock:
+                try:
+                    with state_lock:
+                        if stopped.is_set():
+                            return False
+                        write_started = time.monotonic()
+                    # Bound the OS send itself: closing a handle from another thread
+                    # does not always interrupt a blocking Winsock send immediately.
+                    timeout = (int(WEBSOCKET_WRITE_SECONDS * 1000) if sys.platform == "win32" else
+                               struct.pack("ll", int(WEBSOCKET_WRITE_SECONDS),
+                                           int(WEBSOCKET_WRITE_SECONDS % 1 * 1_000_000)))
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO, timeout)
+                    _write_websocket_frame(self.wfile, opcode, raw)
+                    return True
+                except OSError as exc:
+                    timed_out = (isinstance(exc, TimeoutError) or
+                                 exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK, errno.ETIMEDOUT} or
+                                 getattr(exc, "winerror", None) == 10060)
+                    stop_connection("write_timeout" if timed_out else "write_failed", exc)
+                    return False
+                finally:
+                    with state_lock:
+                        write_started = None
+                        pending_bytes -= accounted
+
+        def watch_writes() -> None:
+            while not stopped.wait(WEBSOCKET_WATCH_SECONDS):
+                with state_lock:
+                    expired = write_started is not None and time.monotonic() - write_started >= WEBSOCKET_WRITE_SECONDS
+                if expired:
+                    stop_connection("write_timeout")
+                    return
+
         def write_responses() -> None:
+            heartbeat_at = time.monotonic() + WEBSOCKET_HEARTBEAT_SECONDS
             while not stopped.is_set():
                 try:
-                    response = response_queue.get(timeout=WEBSOCKET_HEARTBEAT_SECONDS)
+                    raw = response_queue.get(timeout=WEBSOCKET_WATCH_SECONDS)
                 except queue.Empty:
-                    response = {"type": "bridge.heartbeat"}
-                if response is None:
+                    if time.monotonic() >= heartbeat_at:
+                        if not write_frame(0x1, b'{"type":"bridge.heartbeat"}'):
+                            return
+                        heartbeat_at = time.monotonic() + WEBSOCKET_HEARTBEAT_SECONDS
+                    continue
+                if not write_frame(0x1, raw, accounted=len(raw)):
                     return
-                if not _write_websocket_json(self.wfile, response, write_lock=write_lock):
-                    stopped.set()
-                    return
+                heartbeat_at = time.monotonic() + WEBSOCKET_HEARTBEAT_SECONDS
 
         def dispatch_requests() -> None:
-            while not stopped.is_set():
-                request = request_queue.get()
-                if request is None:
-                    return
-                for response in self.server.runtime.websocket_responses(request, emit=emit):
-                    emit(response)
+            try:
+                while not stopped.is_set():
+                    try:
+                        request = request_queue.get(timeout=WEBSOCKET_WATCH_SECONDS)
+                    except queue.Empty:
+                        continue
+                    if stopped.is_set():
+                        return
+                    for response in runtime.websocket_responses(request, emit=emit):
+                        emit(response)
+            finally:
+                stop_connection("request_dispatch_ended")
+                # A request already in progress may have subscribed after the reader detached.
+                runtime.detach(emit)
 
-        threading.Thread(target=write_responses, daemon=True).start()
-        threading.Thread(target=dispatch_requests, daemon=True).start()
+        writer = threading.Thread(target=write_responses, name=f"ws-writer-{connection_id}", daemon=True)
+        watcher = threading.Thread(target=watch_writes, name=f"ws-watch-{connection_id}", daemon=True)
+        writer.start()
+        watcher.start()
+        threading.Thread(target=dispatch_requests, name=f"ws-dispatch-{connection_id}", daemon=True).start()
         try:
             while not stopped.is_set():
-                message = _read_websocket_text(self.rfile, self.wfile, write_lock=write_lock)
+                message = _read_websocket_text(self.rfile, self.wfile, send_control=write_frame)
                 if message is None:
                     return
                 try:
                     payload = json.loads(message)
                 except json.JSONDecodeError:
                     payload = message
+                chat_id = payload.get("chatId") if isinstance(payload, dict) else None
+                if isinstance(chat_id, str) and chat_id != last_chat_id:
+                    last_chat_id = chat_id
+                    runtime.console.message("info", "connection.bound", connection=connection_id, chat=last_chat_id)
                 emit({"type": "bridge.accepted", "chatId": payload.get("chatId") if isinstance(payload, dict) else None})
-                request_queue.put(payload)
+                try:
+                    request_queue.put_nowait(payload)
+                except queue.Full:
+                    stop_connection("request_queue_full")
+        except OSError as exc:
+            stop_connection("read_failed", exc)
         finally:
-            stopped.set()
-            self.server.runtime.detach(emit)
-            request_queue.put(None)
-            response_queue.put(None)
-            self.server.runtime.console.message("info", "connection.closed", transport="websocket")
+            stop_connection("peer_closed")
+            runtime.detach(emit)
+            writer.join(timeout=2)
+            watcher.join(timeout=2)
+            runtime.console.message("info" if close_reason == "peer_closed" else "warning", "connection.closed",
+                                    transport="websocket", connection=connection_id, chat=last_chat_id,
+                                    reason=close_reason, error=close_error)
 
 
 def run_server(runtime: BridgeRuntime) -> None:
@@ -254,6 +369,10 @@ def run_server(runtime: BridgeRuntime) -> None:
 
 
 WEBSOCKET_HEARTBEAT_SECONDS = 5
+WEBSOCKET_QUEUE_MESSAGES = 1024
+WEBSOCKET_QUEUE_BYTES = 16 * 1024 * 1024
+WEBSOCKET_WRITE_SECONDS = 30
+WEBSOCKET_WATCH_SECONDS = 1
 
 
 def _websocket_accept(key: str) -> str:
@@ -265,6 +384,7 @@ def _read_websocket_text(
     stream: Any,
     output_stream: Any,
     write_lock: threading.Lock | None = None,
+    send_control: Callable[[int, bytes], bool] | None = None,
 ) -> str | None:
     while True:
         frame = _read_websocket_frame(stream)
@@ -274,10 +394,17 @@ def _read_websocket_text(
         if opcode == 0x1:
             return payload.decode("utf-8")
         if opcode == 0x8:
-            _write_websocket_frame(output_stream, 0x8, payload, write_lock=write_lock)
+            if send_control is not None:
+                send_control(0x8, payload)
+            else:
+                _write_websocket_frame(output_stream, 0x8, payload, write_lock=write_lock)
             return None
         if opcode == 0x9:
-            _write_websocket_frame(output_stream, 0xA, payload, write_lock=write_lock)
+            if send_control is not None:
+                if not send_control(0xA, payload):
+                    return None
+            else:
+                _write_websocket_frame(output_stream, 0xA, payload, write_lock=write_lock)
             continue
         if opcode == 0xA:
             continue

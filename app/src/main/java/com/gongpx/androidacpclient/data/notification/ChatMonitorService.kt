@@ -1,4 +1,6 @@
 package com.gongpx.androidacpclient.data.notification
+
+import com.gongpx.androidacpclient.data.bridge.applySharedTitle
 import com.gongpx.androidacpclient.data.model.withPromptImage
 
 import android.app.Service
@@ -196,6 +198,7 @@ class ChatMonitorService : Service() {
                         removeMonitor(state)
                     }
                 },
+                onTitle = { event -> apply { persist(state, state.chat.applySharedTitle(event)) } },
                 onMessage = { message, _ ->
                     apply { persist(state, state.chat.copy(messages = state.chat.messages.mergeTimelineMessage(message))) }
                 },

@@ -9,13 +9,44 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from android_acp_bridge.acp_agent import AcpAgentError, AcpAgentSession, _agent_command
+from android_acp_bridge.acp_agent import AcpAgentError, AcpAgentManager, AcpAgentSession, _agent_command
 from android_acp_bridge.agents import AGENT_SPECS, discover_agents
 from android_acp_bridge.attachments import ImageInput
 from android_acp_bridge.elicitation import qwen_question_form
 
 
 class NativeAcpTests(unittest.TestCase):
+    def test_qwen_native_rename_requires_confirmation_and_only_falls_back_for_missing_method(self):
+        fixture = Path(__file__).parent / "fixtures" / "native_acp.py"
+        with tempfile.TemporaryDirectory() as workspace, patch(
+            "android_acp_bridge.acp_agent._agent_command",
+            return_value=[sys.executable, "-u", str(fixture), "qwen-code"],
+        ):
+            session = AcpAgentSession.start("qwen-code", workspace)
+            try:
+                self.assertTrue(session.rename("A new name"))
+                self.assertFalse(session.rename("unsupported"))
+                for title in ("denied", "not confirmed"):
+                    with self.assertRaises(AcpAgentError):
+                        session.rename(title)
+                manager = AcpAgentManager()
+                manager._set_session("chat", session)
+                self.assertTrue(manager.rename_session("chat", "qwen-code", workspace, session.session_id, "Live name"))
+                with self.assertRaisesRegex(AcpAgentError, "Session changed"):
+                    manager.rename_session("chat", "qwen-code", workspace, "other-session", "Wrong")
+            finally:
+                session.stop()
+            self.assertTrue(AcpAgentManager().rename_session("chat", "qwen-code", workspace, "native-session", "Closed name"))
+
+    def test_providers_without_naming_rpc_never_spawn_or_send_prompts(self):
+        manager = AcpAgentManager()
+        with patch("android_acp_bridge.acp_agent._agent_command") as command:
+            for agent in AGENT_SPECS:
+                self.assertFalse(manager.rename_session("chat", agent, str(Path.cwd()), None, "Before session"))
+                if agent != "qwen-code":
+                    self.assertFalse(manager.rename_session("chat", agent, str(Path.cwd()), "saved", "Alias"))
+            command.assert_not_called()
+
     def test_discovery_and_native_commands(self):
         with patch("shutil.which", side_effect=lambda name: str(Path.cwd() / (name + ".exe"))):
             self.assertEqual({agent.id for agent in discover_agents()}, set(AGENT_SPECS))

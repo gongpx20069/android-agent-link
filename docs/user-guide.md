@@ -322,6 +322,15 @@ messages first. Offline/old-Bridge errors keep the card until deletion is confir
 Native agent history and project files are kept; use Existing Session or `/new` then `/resume`
 to open that history with a fresh Chat ID. Both App and Bridge must be updated.
 
+Use `/rename <new name>` on the phone or interactive Server to name the current
+Chat. Android's command menu also opens a name editor. Finish active/queued tasks
+and session changes first. The confirmed name appears on both ends and in
+AgentLink's saved-session pickers, survives restart/reconnect, and is not undone
+by an older catalog response. Qwen's native naming RPC is reused; other current
+providers use Bridge-owned aliases (their separate vendor UI may retain its own
+name). See [provider details](../bridge/README.md#session-renaming).
+This feature needs updated **App and Bridge**.
+
 The bridge persists the shared catalog and a bounded
 journal; terminal selection and its live display are not restored across restarts.
 Interactive mode does not print the QR/link at startup: use `/qrcode` to open

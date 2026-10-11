@@ -22,6 +22,112 @@ from test_runtime import BlockingAgentManager, FakeAgentManager
 
 
 class SharedControlTests(unittest.TestCase):
+    def test_rename_persists_broadcasts_and_overlays_scoped_session_names_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "names.sqlite3"
+            runtime = self.runtime(shared_state_store=path)
+            self.register(runtime)
+            runtime._record_broadcast("chat", {"type": "chat.session", "sessionId": "saved", "resumable": True})
+            self.request(runtime, "chat.register", chatId="same-session", workspacePath=str(Path.cwd()),
+                         agentId="copilot-cli", sessionId="saved")
+            phone = []
+            runtime.websocket_responses({"type": "chat.attach", "chatId": "chat"}, phone.append)
+            result = self.request(runtime, "chat.rename", chatId="chat", title="  Latest name  ", expectedSessionId="saved")
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse(result["data"]["providerRenamed"])
+            self.assertEqual(result["data"]["chat"]["chatTitle"], "Latest name")
+            self.assertEqual(runtime.shared.chat("same-session")["chatTitle"], "Latest name")
+            self.assertEqual(next(e["chatTitle"] for e in reversed(phone) if e["type"] == "chat.title"), "Latest name")
+            self.request(runtime, "chat.register", chatId="chat", workspacePath=str(Path.cwd()),
+                         agentId="copilot-cli", chatTitle="Stale")
+            attached = runtime.websocket_responses({"type": "chat.attach", "chatId": "chat", "chatTitle": "Stale"})
+            self.assertEqual(attached[-1]["chatTitle"], "Latest name")
+            self.assertEqual(runtime.shared.chat("chat")["titleRevision"], 1)
+            runtime.shared.close()
+            restored = self.runtime(shared_state_store=path)
+            self.assertEqual(restored.shared.chat("chat")["chatTitle"], "Latest name")
+            with patch.object(restored.agent_manager, "list_sessions", return_value=[
+                {"sessionId": "saved", "title": "Provider old name", "cwd": str(Path.cwd())},
+                {"sessionId": "saved", "title": "Different workspace", "cwd": directory},
+            ]):
+                rows = restored.websocket_responses({"type": "session.list", "agentId": "copilot-cli",
+                                                     "workspacePath": str(Path.cwd())})[0]["sessions"]
+            self.assertEqual([row["title"] for row in rows], ["Latest name", "Different workspace"])
+            self.request(restored, "chat.delete", chatId="chat")
+            imported = self.request(restored, "chat.register", chatId="imported", workspacePath=str(Path.cwd()),
+                                    agentId="copilot-cli", sessionId="saved")["data"]["chat"]
+            self.assertEqual(imported["chatTitle"], "Latest name")
+            self.assertIsNone(restored.shared.session_title("qwen-code", str(Path.cwd()), "saved"))
+            restored.shared.close()
+
+    def test_rename_validation_conflicts_provider_failure_and_storage_failure_are_explicit(self):
+        runtime = self.runtime()
+        original = self.register(runtime)["chatTitle"]
+        for title in ("", " \t", "x" * 257, "a\nb", "a\x1bb", 7, None):
+            self.assertEqual(self.request(runtime, "chat.rename", chatId="chat", title=title)["code"], "INVALID_ARGS")
+        self.assertEqual(self.request(runtime, "chat.rename", chatId="chat", title="x",
+                                      expectedSessionId="stale")["code"], "CONFLICT")
+        for busy in (runtime._configuring_chats, runtime._history_loading_chats):
+            busy.add("chat")
+            self.assertEqual(self.request(runtime, "chat.rename", chatId="chat", title="x")["code"], "CONFLICT")
+            busy.remove("chat")
+        with patch.object(runtime.agent_manager, "rename_session", side_effect=AcpAgentError("denied")):
+            self.assertEqual(self.request(runtime, "chat.rename", chatId="chat", title="x")["code"], "PROVIDER_ERROR")
+        self.assertEqual(runtime.shared.chat("chat")["chatTitle"], original)
+        self.assertFalse(runtime._configuring_chats)
+        runtime.shared.db.execute("CREATE TRIGGER rename_failure BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'test'); END")
+        self.assertEqual(self.request(runtime, "chat.rename", chatId="chat", title="x")["status"], "error")
+        self.assertEqual(runtime.shared.chat("chat")["chatTitle"], original)
+        runtime.shared.db.execute("DROP TRIGGER rename_failure")
+        with patch.object(runtime.shared, "session_title", side_effect=sqlite3.OperationalError("read failed")), \
+                patch.object(runtime.agent_manager, "list_sessions", return_value=[{"sessionId": "saved"}]):
+            result = runtime.websocket_responses({"type": "session.list", "agentId": "copilot-cli",
+                                                  "workspacePath": str(Path.cwd())})[0]
+            self.assertIn("error", result)
+            self.assertEqual(result["sessions"], [])
+
+    def test_unbound_rename_attaches_alias_on_first_session_without_prompting(self):
+        runtime = self.runtime()
+        self.register(runtime)
+        self.request(runtime, "chat.rename", chatId="chat", title="Before first turn")
+        runtime._record_broadcast("chat", {"type": "chat.session", "sessionId": "first", "resumable": True})
+        self.assertEqual(runtime.shared.session_title("copilot-cli", str(Path.cwd()), "first"), "Before first turn")
+        runtime._record_broadcast("chat", {"type": "chat.session", "sessionId": "second", "resumable": True})
+        self.assertIsNone(runtime.shared.session_title("copilot-cli", str(Path.cwd()), "second"))
+        runtime._record_broadcast("chat", {"type": "chat.title", "chatTitle": "Second name",
+                                         "titleRevision": 2, "titleGeneration": runtime.shared.generation})
+        returned = runtime._record_broadcast("chat", {"type": "chat.session", "sessionId": "first", "resumable": True})
+        self.assertEqual(returned["chatTitle"], "Before first turn")
+        self.assertEqual(runtime.shared.chat("chat")["chatTitle"], "Before first turn")
+        self.assertGreater(returned["titleRevision"], 2)
+
+    def test_rename_reserves_chat_against_concurrent_prompt_delete_and_rename(self):
+        runtime = self.runtime()
+        self.register(runtime)
+        entered, release = threading.Event(), threading.Event()
+        def rename(*args):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return True
+        with patch.object(runtime.agent_manager, "rename_session", side_effect=rename):
+            results = []
+            worker = threading.Thread(target=lambda: results.append(self.request(
+                runtime, "chat.rename", chatId="chat", title="First name")))
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(3))
+                self.assertEqual(self.request(runtime, "chat.rename", chatId="chat", title="Second")["code"], "CONFLICT")
+                self.assertEqual(self.request(runtime, "chat.delete", chatId="chat")["code"], "CONFLICT")
+                prompt = runtime.websocket_responses({"type": "chat.prompt", "chatId": "chat",
+                                                      "operationId": "busy", "content": "Must not start"})
+                self.assertTrue(any(e.get("error") for e in prompt))
+            finally:
+                release.set()
+                worker.join(5)
+            self.assertEqual(results[0]["status"], "ok")
+            self.assertTrue(results[0]["data"]["providerRenamed"])
+            self.assertEqual(runtime.shared.chat("chat")["chatTitle"], "First name")
+
     def test_delete_retries_failed_idle_process_release_without_reviving_chat(self):
         runtime = self.runtime()
         self.register(runtime)

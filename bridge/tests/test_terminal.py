@@ -26,6 +26,21 @@ HAS_INTERACTIVE = all(importlib.util.find_spec(module) for module in ("prompt_to
 
 
 class TerminalTests(unittest.TestCase):
+    def test_rename_command_is_shared_metadata_not_an_agent_prompt(self):
+        self.attach_phone([])
+        self.client.command("/chats")
+        self.client.command("1")
+        with patch.object(self.runtime.agent_manager, "prompt") as prompt:
+            self.client.command("/rename Terminal name")
+            self.assertEqual(self.runtime.shared.chat("chat-a")["chatTitle"], "Terminal name")
+            self.assertEqual(self.client.chats["chat-a"].title, "Terminal name")
+            self.runtime.websocket_responses({"type": "control.request", "action": "chat.rename",
+                                              "chatId": "chat-a", "title": "Phone name"})
+            self.assertEqual(self.client.chats["chat-a"].title, "Phone name")
+            self.client.command("/rename")
+            self.assertEqual(self.runtime.shared.chat("chat-a")["chatTitle"], "Phone name")
+            prompt.assert_not_called()
+
     def test_absolute_workspace_input_is_not_interpreted_as_a_slash_command(self):
         self.client._creation = {"stage": "workspace", "agent": "copilot-cli", "workspaces": [], "page": 0}
         with patch("android_acp_bridge.terminal.os.path.isabs", return_value=True), \
@@ -324,7 +339,7 @@ class TerminalTests(unittest.TestCase):
         })
         self.assertEqual(self.client.chats["chat-a"].number, 1)
         self.assertEqual(self.client.selected, "chat-b")
-        self.assertLessEqual(len(self.client.chats["chat-a"].title), 64)
+        self.assertLessEqual(len(self.client.chats["chat-a"].title), 256)
         self.assertNotIn("\x1b", self.client.chat_label("chat-a"))
         self.assertNotIn("\n", self.client.chat_label("chat-a"))
         self.assertNotIn("\u202e", self.client.chat_label("chat-a"))

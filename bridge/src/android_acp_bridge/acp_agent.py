@@ -126,6 +126,27 @@ class AcpAgentManager:
         session = self._get_session(chat_id)
         return session is not None and session.image_input_supported
 
+    def rename_session(self, chat_id: str, agent_id: str, workspace_path: str,
+                       session_id: str | None, title: str) -> bool:
+        # The other supported baselines have no ACP/SDK naming RPC. Never send
+        # a TUI slash command as a model prompt or modify a provider database.
+        if agent_id != "qwen-code" or not session_id:
+            return False
+        with self._chat_lock(chat_id):
+            live = self._get_session(chat_id)
+            if live is not None:
+                live.ensure_replaceable()
+                if live.session_id != session_id:
+                    raise AcpAgentError("Session changed. Refresh before renaming.")
+                return live.rename(title)
+            with self._claim_session(chat_id, agent_id, session_id):
+                session = self._session_type(agent_id).start_without_session(agent_id, workspace_path)
+                try:
+                    session._session_id = session_id
+                    return session.rename(title)
+                finally:
+                    session.stop()
+
     def resume_session(self, chat_id: str, agent_id: str, workspace_path: str, session_id: str) -> tuple[AcpSessionBinding, list[dict[str, Any]]]:
         _resolve_workspace(workspace_path)
         self._set_session_replacing(chat_id, True)
@@ -790,6 +811,22 @@ class AcpAgentSession:
         config_options = result.get("configOptions")
         if isinstance(config_options, list):
             self._latest_config_options = [option.copy() for option in config_options if isinstance(option, dict)]
+
+    def rename(self, title: str) -> bool:
+        if self._agent_id != "qwen-code":
+            return False
+        response, _, _, _ = self._connection.request(
+            "renameSession", {"sessionId": self._session_id, "cwd": self._workspace, "title": title}, 30,
+        )
+        error = response.get("error")
+        if isinstance(error, dict) and error.get("code") == -32601:
+            return False
+        if error is not None:
+            raise _request_error("renameSession", error)
+        result = response.get("result")
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise AcpAgentError("The provider did not confirm the session rename.")
+        return True
 
     def stop(self) -> None:
         self._connection.close()

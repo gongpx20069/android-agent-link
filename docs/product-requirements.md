@@ -12,6 +12,12 @@
   To restore history in another Chat, use `/new` first, then `/resume`.
 - Synchronize terminal-created chats automatically while Android is foreground.
   Do not send a model prompt merely to create/resume or publish failed partial chats.
+- `/rename <name>` renames the current shared Chat on Android and the interactive
+  Server. Reuse an available provider naming RPC; otherwise persist a Bridge alias.
+  Update titles only after confirmation, retain names across reconnect/restart,
+  overlay session-picker names, and reject stale catalog/replay title revisions.
+  Renaming is an idle-only metadata operation, not a model prompt. The Android
+  command menu also offers a name editor with visible errors and submitting state.
 
 ## Compact chat input
 

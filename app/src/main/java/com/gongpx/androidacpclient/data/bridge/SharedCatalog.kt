@@ -48,8 +48,7 @@ fun mergeSharedChat(machine: Machine, remote: JSONObject, local: Chat?): Chat {
         workspaceId = workspaceId, workspaceName = workspaceId, workspacePath = path,
         agentId = agentId, agentName = agentId, createdAtMillis = System.currentTimeMillis(),
     )
-    return base.copy(
-        title = remote.optString("chatTitle", base.title),
+    return base.applySharedTitle(remote).copy(
         workspaceId = workspaceId, workspacePath = path,
         workspaceName = machine.workspaces.firstOrNull { it.id == workspaceId }?.displayName ?: workspaceId,
         agentId = agentId, agentName = machine.agents.firstOrNull { it.id == agentId }?.displayName ?: agentId,
@@ -58,6 +57,35 @@ fun mergeSharedChat(machine: Machine, remote: JSONObject, local: Chat?): Chat {
         historyReplaySupported = remote.optBoolean("historyReplaySupported", base.historyReplaySupported),
         agentStatus = remote.optString("status", base.agentStatus),
     )
+}
+
+/** Catalog replies and replay may arrive after a newer live rename. */
+fun Chat.applySharedTitle(remote: JSONObject): Chat {
+    val name = remote.opt("chatTitle") as? String ?: return this
+    require(remote.optString("chatId") == id && name.isNotBlank() && name.length <= 256) {
+        "Invalid shared chat title."
+    }
+    val generation = (remote.opt("titleGeneration") as? String)?.takeIf { it.isNotBlank() }
+    val revision = remote.optLong("titleRevision", 0)
+    require(revision >= 0) { "Invalid shared title revision." }
+    if (generation == null && titleGeneration != null) return this
+    if (generation == titleGeneration && revision < titleRevision) return this
+    return copy(title = name, titleRevision = revision, titleGeneration = generation)
+}
+
+suspend fun BridgeClient.renameSharedChat(machine: Machine, chat: Chat, title: String): JSONObject {
+    val result = controlRequest(machine, "chat.rename", JSONObject()
+        .put("chatId", chat.id).put("title", title)
+        .put("expectedSessionId", chat.acpSessionId ?: JSONObject.NULL))
+    check(result.optString("status") == "ok") {
+        result.optString("message", "Rename is unavailable. Update the computer Bridge and reconnect.")
+    }
+    val remote = result.getJSONObject("data").getJSONObject("chat")
+    check(remote.optString("chatId") == chat.id && remote.optString("chatTitle") == title.trim() &&
+        remote.optLong("titleRevision") > 0 && remote.optString("titleGeneration").isNotBlank()) {
+        "Bridge did not confirm this rename. Refresh before retrying."
+    }
+    return remote
 }
 
 suspend fun BridgeClient.deleteSharedChat(machine: Machine, chatId: String) {

@@ -71,6 +71,10 @@ class PromptOperation:
 
 
 class AgentManager(Protocol):
+    def rename_session(self, chat_id: str, agent_id: str, workspace_path: str,
+                       session_id: str | None, title: str) -> bool:
+        ...
+
     def release_chat(self, chat_id: str) -> None:
         ...
 
@@ -323,6 +327,38 @@ class BridgeRuntime:
         self.agent_manager.release_chat(chat_id)
         return {"chatId": chat_id, "deleted": True}
 
+    def rename_shared_chat(self, chat_id: str, title: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._prompt_lock:
+            chat = self.shared.chat(chat_id)
+            if (chat_id in self._active_prompts or self._prompt_queues.get(chat_id)
+                    or chat_id in self._history_loading_chats or chat_id in self._configuring_chats
+                    or any(p.requested["chatId"] == chat_id for p in self._pending_approvals.values())):
+                raise ControlError("CONFLICT", "Chat is busy. Finish tasks, approvals and session changes before renaming.")
+            if "expectedSessionId" in payload and payload["expectedSessionId"] != chat.get("sessionId"):
+                raise ControlError("CONFLICT", "Session changed. Refresh before renaming.")
+            self._configuring_chats.add(chat_id)
+        try:
+            renamed = self.agent_manager.rename_session(
+                chat_id, chat["agentId"], chat["workspacePath"], chat.get("sessionId"), title,
+            )
+            with self._event_lock:
+                targets = [self.shared.chat(chat_id)]
+                if chat.get("sessionId"):
+                    targets += [other for other in self.shared.chats()
+                                if other["chatId"] != chat_id and other["agentId"] == chat["agentId"]
+                                and other.get("sessionId") == chat["sessionId"]
+                                and other["workspaceId"] == chat["workspaceId"]]
+                for current in targets:
+                    self._record_broadcast(current["chatId"], {
+                        "type": "chat.title", "chatId": current["chatId"], "chatTitle": title,
+                        "titleRevision": current.get("titleRevision", 0) + 1,
+                        "titleGeneration": self.shared.generation,
+                    })
+                return {"chat": self.shared.chat(chat_id), "providerRenamed": renamed}
+        finally:
+            with self._prompt_lock:
+                self._configuring_chats.discard(chat_id)
+
     def _websocket_responses(self, payload: Any, emit: Callable[[dict[str, Any]], None] | None = None) -> list[dict[str, Any]]:
         if not isinstance(payload, dict):
             responses = [{"type": "bridge.echo", "payload": payload}, {"type": "bridge.done"}]
@@ -338,7 +374,7 @@ class BridgeRuntime:
                 registered = self.shared.register(payload)
                 if registered is not None:
                     payload = {**payload, **{key: registered[key] for key in (
-                        "agentId", "workspacePath", "sessionId", "sessionResumable")}}
+                        "agentId", "workspacePath", "sessionId", "sessionResumable", "chatTitle")}}
             except ControlError as error:
                 return [{"type": "bridge.error", "chatId": payload.get("chatId"), "error": str(error)},
                         {"type": "bridge.done", "chatId": payload.get("chatId")}]
@@ -912,9 +948,18 @@ class BridgeRuntime:
         workspace_path = _string_or_default(payload.get("workspacePath"), "")
         try:
             sessions = self.agent_manager.list_sessions(agent_id, workspace_path)
+            sessions = [
+                {**item, "title": alias} if (alias := self.shared.session_title(
+                    agent_id, item.get("cwd") or workspace_path, item["sessionId"])) is not None else item
+                for item in sessions
+            ]
             return [{"type": "session.list.result", "sessions": sessions}, {"type": "bridge.done"}]
         except AcpAgentError as exc:
             return [{"type": "session.list.result", "sessions": [], "error": str(exc)}, {"type": "bridge.done"}]
+        except sqlite3.Error:
+            self.console.message("error", "shared_state.unavailable")
+            return [{"type": "session.list.result", "sessions": [],
+                     "error": "Saved session names are unavailable. Reconnect and retry."}, {"type": "bridge.done"}]
 
     def _session_resume_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         chat_id = _string_or_default(payload.get("chatId"), "")
@@ -1073,15 +1118,19 @@ class BridgeRuntime:
                 page["eventGeneration"] = self._chat_event_generations[chat_id]
                 if payload.get("workspacePath"):
                     self.shared.bind_session(chat_id, session_id)
+                binding_event = self._session_binding_event(chat_id, AcpSessionBinding(session_id, resumable=True))
+                if payload.get("workspacePath"):
+                    title = self.shared.title_snapshot(chat_id)
+                    binding_event.update({key: title[key] for key in ("chatTitle", "titleRevision", "titleGeneration")})
                 for subscriber in self._subscribers(chat_id):
                     subscriber({"type": "chat.attached", "chatId": chat_id, "latestEventId": 0,
                                 "eventGeneration": generation, "checkpointReset": True, "replayed": 0})
-                    subscriber(self._session_binding_event(chat_id, AcpSessionBinding(session_id, resumable=True)))
+                    subscriber(binding_event)
                     subscriber({"type": "chat.resyncRequired", "chatId": chat_id,
                                 "latestEventId": 0, "eventGeneration": generation,
                                 "reason": "Session history was explicitly replaced; refresh its history snapshot."})
             return [
-                self._session_binding_event(chat_id, AcpSessionBinding(session_id, resumable=True)),
+                binding_event,
                 {
                     "type": "session.loadRecent.result",
                     **page,
@@ -1251,6 +1300,14 @@ class BridgeRuntime:
                         for event in [*session_events, status_event]:
                             subscriber(event)
                 status_snapshot = {**status_event, "snapshot": True}
+                try:
+                    title = self.shared.title_snapshot(chat_id)
+                except ControlError as error:
+                    # Legacy attach can precede registration and has no catalog title yet.
+                    if error.code != "NOT_FOUND":
+                        raise
+                else:
+                    status_snapshot.update({key: title[key] for key in ("chatTitle", "titleRevision", "titleGeneration")})
                 resync_responses = (
                     [
                         {
@@ -1372,6 +1429,17 @@ class BridgeRuntime:
             enriched.setdefault("chatId", chat_id)
             enriched["eventId"] = event_id
             enriched.setdefault("timestamp", int(time.time() * 1000))
+            if enriched.get("type") == "chat.session":
+                try:
+                    chat = self.shared.chat(chat_id)
+                except ControlError as error:
+                    if error.code != "NOT_FOUND":
+                        raise
+                else:
+                    alias = self.shared.session_title(chat["agentId"], chat["workspacePath"], enriched["sessionId"])
+                    enriched.update(chatTitle=alias if alias is not None else chat["chatTitle"],
+                                    titleRevision=chat.get("titleRevision", 0) + int(alias is not None and alias != chat["chatTitle"]),
+                                    titleGeneration=self.shared.generation)
             if enriched.get("type") == "chat.status":
                 self._chat_status[chat_id] = _string_or_default(enriched.get("status"), "idle")
             self.shared.append(chat_id, enriched)

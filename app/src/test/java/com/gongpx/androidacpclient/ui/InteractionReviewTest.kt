@@ -70,6 +70,21 @@ class InteractionReviewTest {
         compose.onNodeWithText("Chat A").assertIsEnabled()
     }
 
+    @Test fun renameActionIsAvailableAndSharedTitleRefreshKeepsDraft() {
+        val current = mutableStateOf(chat("A"))
+        var command = ""
+        compose.setContent {
+            Screen(chats = listOf(current.value), selected = "A", onSend = { _, text -> command = text; true })
+        }
+        compose.onNode(hasSetTextAction()).performTextInput("Keep my draft")
+        compose.onNodeWithContentDescription("Chat actions").performClick()
+        compose.onNodeWithText("rename").performClick()
+        assertEquals("/rename", command)
+        compose.runOnIdle { current.value = current.value.copy(title = "Server renamed") }
+        compose.onNodeWithText("Server renamed").assertExists()
+        compose.onNode(hasSetTextAction()).assertTextEquals("Keep my draft")
+    }
+
     @Test fun missingAgentsRemainVisibleInNewSessionAfterCatalogRefresh() {
         val installed = listOf(
             Agent("claude-code", "Claude Code", "available"),
