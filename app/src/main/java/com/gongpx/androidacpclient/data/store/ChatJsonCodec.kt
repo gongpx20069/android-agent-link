@@ -34,6 +34,8 @@ internal object ChatJsonCodec {
             .put("bridgeEventGeneration", bridgeEventGeneration)
             .put("bridgeResyncRequired", bridgeResyncRequired)
             .put("agentStatus", agentStatus)
+            .put("backgroundWork", backgroundWork)
+            .put("scheduledTasks", scheduledTasks)
             .put("lastSyncAtMillis", lastSyncAtMillis)
             .put("connectionError", connectionError)
             .put("historyId", historyId)
@@ -71,6 +73,8 @@ internal object ChatJsonCodec {
             bridgeEventGeneration = optString("bridgeEventGeneration").ifBlank { null },
             bridgeResyncRequired = optBoolean("bridgeResyncRequired", false),
             agentStatus = optString("agentStatus", "unknown"),
+            backgroundWork = optBoolean("backgroundWork"),
+            scheduledTasks = optInt("scheduledTasks"),
             lastSyncAtMillis = optLong("lastSyncAtMillis", 0),
             connectionError = optString("connectionError").ifBlank { null },
             historyId = optString("historyId").ifBlank { null },

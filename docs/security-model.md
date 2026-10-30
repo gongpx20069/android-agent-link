@@ -6,6 +6,17 @@ The Android app must let users control powerful remote coding agents without acc
 
 ## Trust Boundaries
 
+### Offline chat removal
+
+Explicit confirmation authorizes local removal plus durable retries of `chat.delete`
+on the original machine/chat only. The encrypted retry record never copies machine
+credentials or targets a replacement computer. Disconnecting the local subscription
+does not cancel provider work or answer approvals. Local approval records/notifications
+are removed without issuing decisions; blocking server approvals must be handled on
+another client. Remote busy/authorization failures remain pending and visible, not
+interpreted as successful deletion. Native session history and project files remain
+outside this operation.
+
 ### Image attachments
 
 Image upload, download and capability endpoints require the paired device bearer

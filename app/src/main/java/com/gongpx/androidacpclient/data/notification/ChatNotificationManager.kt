@@ -171,6 +171,15 @@ class ChatNotificationManager(private val context: Context) {
         notificationManager.cancel("monitor:$chatId", 0)
     }
 
+    /** Reconcile notifications left behind by process death between a durable delete and UI cleanup. */
+    fun reconcileRemovedChats(removedIds: Set<String>, approvals: List<Approval>) {
+        removedIds.forEach(::cancel)
+        val retained = approvals.map { "approval:${it.id}" }.toSet()
+        notificationManager.activeNotifications.filter {
+            it.tag?.startsWith("approval:") == true && it.tag !in retained
+        }.forEach { notificationManager.cancel(it.tag, it.id) }
+    }
+
     private companion object {
         const val CHANNEL_ID = "chat_completions"
         const val MONITOR_CHANNEL_ID = "chat_monitor"

@@ -56,6 +56,8 @@ fun mergeSharedChat(machine: Machine, remote: JSONObject, local: Chat?): Chat {
         acpSessionResumable = remote.optBoolean("sessionResumable"),
         historyReplaySupported = remote.optBoolean("historyReplaySupported", base.historyReplaySupported),
         agentStatus = remote.optString("status", base.agentStatus),
+        backgroundWork = remote.optBoolean("backgroundWork"),
+        scheduledTasks = remote.optInt("scheduledTasks"),
     )
 }
 

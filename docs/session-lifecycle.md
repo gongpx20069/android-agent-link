@@ -43,11 +43,18 @@ claim the native backend's background completion guarantees.
 
 - Subscribe before sending, and retain the subscription for the session lifetime.
   RPC acceptance and assistant message/turn completion are not task completion.
-- Keep the bridge prompt operation active until the native session is idle with
-  no background agents or attached shell commands in flight. Ignore child idle
-  events and autopilot pauses. Queue subsequent prompts behind that operation.
-- Serialize visible output and lifecycle events before publishing `operation.done`
-  and `chat.status=idle`. Background tool output belongs to the same operation.
+- Root `assistant.idle` after the user turn starts releases the foreground FIFO,
+  emitting nonterminal `operation.background` when session-level idle is deferred.
+  Ignore child idle events, queued-message acknowledgement and autopilot pauses.
+  Native versions without this event still wait for session idle.
+- Root `session.idle` settles background receipts, not a newer foreground turn.
+  Serialize visible output and lifecycle events before publishing completion.
+  Keep tool/interaction ownership across foreground yields. Scheduled output is
+  session-scoped and excluded from human task receipts. A queued `user.message`
+  does not take ownership until its `assistant.turn_start`.
+- Persist/replay `chat.activity` separately from foreground busy status. Registered
+  schedules and ongoing background work keep lifecycle/configuration guards and
+  bounded Android monitoring active without disabling normal chat input.
 - Permission handling uses the existing bridge approval flow, including requests
   issued by background work. It must not block the SDK event reader or process
   shutdown. Late approval resolution cannot revive a completed operation.

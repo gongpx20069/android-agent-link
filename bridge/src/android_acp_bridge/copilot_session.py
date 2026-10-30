@@ -10,7 +10,8 @@ import threading
 from typing import Any
 
 from .acp_agent import (
-    SESSION_RESTORE_MAX_EVENTS, AcpAgentError, AcpAgentSession, AcpSessionNotFoundError, UpdateCallback, _resolve_workspace,
+    SESSION_RESTORE_MAX_EVENTS, AcpAgentError, AcpAgentSession, AcpSessionNotFoundError,
+    PermissionCallback, UpdateCallback, _resolve_workspace,
 )
 from .attachments import ImageInput
 
@@ -97,8 +98,8 @@ class CopilotAgentSession(AcpAgentSession):
 
     def ensure_replaceable(self) -> None:
         with self._condition:
-            if self._active:
-                raise AcpAgentError("Copilot is still active; this session cannot be changed.")
+            if self._active or self._work_pending or self._schedules:
+                raise AcpAgentError("Copilot has foreground, background or scheduled work; this session cannot be changed.")
 
     def __init__(self, workspace_path: str) -> None:
         self._workspace = str(_resolve_workspace(workspace_path))
@@ -111,8 +112,20 @@ class CopilotAgentSession(AcpAgentSession):
         self._active = False
         self._started = False
         self._idle = False
+        self._foreground_idle = False
+        self._work_pending = False
+        self._schedules: dict[int, bool] = {}
+        self._mode = "interactive"
+        self._root_sink: UpdateCallback | None = None
+        self._root_permission: PermissionCallback | None = None
+        self._tool_owners: dict[str, tuple[UpdateCallback | None, PermissionCallback | None]] = {}
+        self._root_is_user = False
+        self._next_root: tuple[bool, UpdateCallback | None, PermissionCallback | None] = (False, None, None)
+        self._interactions: dict[str, tuple[bool, UpdateCallback | None, PermissionCallback | None]] = {}
+        self._waiting_on_background = False
         self._cancelled = False
         self._fault: AcpAgentError | None = None
+        self._fault_reported = False
         self._closed = False
         self._sink: UpdateCallback | None = None
         self._projection = CopilotEventProjection()
@@ -186,6 +199,11 @@ class CopilotAgentSession(AcpAgentSession):
         if callback is None:
             return PermissionDecisionReject(feedback="No AgentLink approval channel is available.")
         details = request.to_dict()
+        with self._condition:
+            owner = self._tool_owners.get(details.get("toolCallId"))
+            if owner is not None and owner[1] is not None:
+                callback = owner[1]
+            session_scoped = owner is None or owner[0] is None or owner[1] is None
         params = {
             "toolCall": {"toolCallId": details.get("toolCallId") or details.get("requestId", "permission"),
                          "kind": details.get("kind", "other"),
@@ -206,7 +224,7 @@ class CopilotAgentSession(AcpAgentSession):
         def decide() -> None:
             value, error = None, None
             try:
-                value = callback({"params": params})
+                value = callback({"params": params, "_sessionScoped": session_scoped})
             except Exception as exc:
                 error = exc
             try:
@@ -231,15 +249,66 @@ class CopilotAgentSession(AcpAgentSession):
                         return
                     active = self._active
                     sink = self._sink
+                    fault = self._fault
+                if fault is not None:
+                    self._report_fault()
+                    if event.get("type") == "agentlink.begin":
+                        event["ready"].set()
+                    continue
                 data, kind = event.get("data", {}), event["type"]
                 if kind == "agentlink.begin":
                     with self._condition:
                         self._active = True
                         self._started = self._idle = self._cancelled = False
+                        self._foreground_idle = False
+                        self._waiting_on_background = self._work_pending
                         self._sink = event["sink"]
                     event["ready"].set()
                     continue
                 root = not (event.get("agentId") or data.get("parentToolCallId"))
+                with self._condition:
+                    if root and kind == "user.message":
+                        user = active and data.get("source", "user") == "user"
+                        self._next_root = (user, sink if user else None, self.permission_callback)
+                        if data.get("agentMode"):
+                            self._mode = data["agentMode"]
+                        interaction = data.get("interactionId")
+                        if interaction:
+                            if len(self._interactions) >= 10000:
+                                raise AcpAgentError("Copilot interaction ownership limit reached; reconnect before continuing.")
+                            self._interactions[interaction] = self._next_root
+                        self._work_pending = True
+                        source = data.get("source", "")
+                        if source.startswith("schedule-") and source[9:].isdigit():
+                            schedule_id = int(source[9:])
+                            if not self._schedules.get(schedule_id):
+                                self._schedules.pop(schedule_id, None)
+                    if root and kind == "assistant.turn_start":
+                        owner = self._interactions.get(data.get("interactionId"), self._next_root)
+                        self._root_is_user, self._root_sink, self._root_permission = owner
+                        self._work_pending = True
+                        if active and self._root_is_user and self._root_sink is sink:
+                            self._started = True
+                            self._waiting_on_background = False
+                        elif active:
+                            self._waiting_on_background = True
+                    if root and kind == "session.schedule_created":
+                        self._schedules[data["id"]] = bool(data.get("recurring") or data.get("selfPaced") or data.get("cron") or data.get("intervalMs"))
+                    elif root and kind == "session.schedule_cancelled":
+                        self._schedules.pop(data["id"], None)
+                    elif root and kind == "session.schedule_rearmed":
+                        self._schedules[data["id"]] = True
+                    elif root and kind == "session.mode_changed":
+                        self._mode = data["newMode"]
+                    tool = data.get("toolCallId")
+                    parent = data.get("parentToolCallId") or event.get("agentId")
+                    owner = self._tool_owners.get(parent or tool)
+                    if kind in {"tool.execution_start", "subagent.started"} and tool:
+                        if len(self._tool_owners) >= 10000 and tool not in self._tool_owners:
+                            raise AcpAgentError("Copilot tool ownership limit reached; reconnect before continuing.")
+                        self._tool_owners[tool] = owner or (self._root_sink if root else None, self._root_permission)
+                    owner = self._tool_owners.get(parent or tool)
+                    target = owner[0] if owner else self._root_sink if root else None
                 updates = self._projection.updates(event)
                 if root and kind == "session.model_change":
                     for option in self._latest_config_options:
@@ -247,28 +316,64 @@ class CopilotAgentSession(AcpAgentSession):
                             option["currentValue"] = data["newModel"]
                     updates.extend(self.config_option_updates())
                 for update in updates:
-                    if sink is not None:
-                        sink(update)
+                    if target is not None:
+                        target(update)
+                    elif sink is not None:
+                        sink({**update, "_sessionScoped": True})
                     elif active:
                         with self._condition:
                             self._pending_updates.append(update)
                 with self._condition:
-                    if active and root and kind in {"user.message", "assistant.turn_start"}:
-                        self._started = True
                     if root and kind == "session.error":
                         self._fault = AcpAgentError("Copilot session failed: " + str(data.get("message", "unknown error")))
-                    elif root and kind == "session.shutdown" and active:
+                    elif root and kind == "session.shutdown":
                         self._fault = AcpAgentError("Copilot session shut down before completing its work.")
                     elif root and kind == "session.idle" and active and self._started and data.get("mode") != "autopilot":
                         self._cancelled = bool(data.get("aborted")) or self._cancelled
                         self._idle = True
                         self._projection = CopilotEventProjection()
+                    if (root and kind == "assistant.idle" and active and self._started
+                            and self._root_sink is sink and self._mode != "autopilot"):
+                        self._foreground_idle = True
+                        self._cancelled = bool(data.get("aborted")) or self._cancelled
+                    if root and kind == "session.idle" and data.get("mode") != "autopilot":
+                        self._work_pending = False
+                    failed = root and kind in {"session.error", "session.shutdown"}
+                    if failed:
+                        self._work_pending = False
+                    activity = root and kind in {
+                        "assistant.idle", "session.idle", "session.schedule_created",
+                        "session.schedule_cancelled", "session.schedule_rearmed",
+                        "user.message", "assistant.turn_start", "session.error", "session.shutdown",
+                    }
+                if activity and sink is not None:
+                    sink({"type": "copilot.activity", "backgroundWork": self._work_pending,
+                          "scheduledTasks": len(self._schedules),
+                          "settled": failed or (kind == "session.idle" and data.get("mode") != "autopilot"),
+                          "failed": failed,
+                          "aborted": bool(data.get("aborted"))})
+                    if failed:
+                        self._fault_reported = True
+                with self._condition:
                     self._condition.notify_all()
             except Exception as exc:
                 logging.getLogger(__name__).error("Copilot event delivery failed (%s)", type(exc).__name__)
                 with self._condition:
                     self._fault = AcpAgentError("Copilot event delivery failed; completion is not confirmed.")
                     self._condition.notify_all()
+                self._report_fault()
+
+    def _report_fault(self) -> None:
+        with self._condition:
+            if self._fault_reported or self._sink is None:
+                return
+            self._fault_reported = True
+            sink = self._sink
+        try:
+            sink({"type": "copilot.activity", "backgroundWork": False,
+                  "scheduledTasks": len(self._schedules), "settled": True, "failed": True})
+        except Exception:
+            logging.getLogger(__name__).exception("Could not publish Copilot lifecycle failure; completion is unconfirmed")
 
     def prompt(self, prompt: str, update_callback: UpdateCallback | None = None,
                image: ImageInput | None = None) -> list[dict[str, Any]]:
@@ -303,27 +408,33 @@ class CopilotAgentSession(AcpAgentSession):
             while True:
                 with self._condition:
                     self._condition.wait_for(
-                        lambda: self._idle or self._fault or self._closed, timeout=self.HEARTBEAT_SECONDS)
+                        lambda: self._idle or self._foreground_idle or self._fault or self._closed, timeout=self.HEARTBEAT_SECONDS)
                     if self._fault or self._closed:
                         raise self._fault or AcpAgentError("Copilot session closed during execution.")
-                    if self._idle:
+                    if self._idle or self._foreground_idle:
                         self._resumable = True
                         updates = self.take_pending_updates()
                         if self._cancelled:
                             updates.append({"type": "session/update", "update": {
                                 "sessionUpdate": "agentlink_prompt_cancelled"}})
+                        elif not self._idle:
+                            updates.append({"type": "copilot.foreground_idle"})
                         return updates
                 # Detect transport loss without imposing a model/tool duration limit.
                 self._run(self._client.ping("agentlink"), timeout=10)
         except AcpAgentError as exc:
             with self._condition:
                 self._fault = exc
+            self._report_fault()
             raise
         finally:
             with self._condition:
                 self._active = False
 
     def cancel_prompt(self) -> None:
+        with self._condition:
+            if self._active and self._waiting_on_background:
+                raise AcpAgentError("The user turn has not started; session-wide cancellation could stop scheduled work.")
         self._run(self._native.abort())
 
     async def _refresh_options(self) -> None:
@@ -382,7 +493,7 @@ class CopilotAgentSession(AcpAgentSession):
 
     def _require_idle(self) -> None:
         with self._condition:
-            if self._active or self._fault or self._closed:
+            if self._active or self._work_pending or self._schedules or self._fault or self._closed:
                 raise self._fault or AcpAgentError("Copilot is running or closed; session changes are not safe.")
 
     def history(self) -> tuple[list[dict[str, Any]], int]:

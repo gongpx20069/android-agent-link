@@ -242,8 +242,15 @@ and preserves existing session IDs/model selection. Native protocol compatibilit
 was verified with Copilot CLI 1.0.86 and Python SDK 1.0.13.
 
 An assistant reply such as "waiting for background agents" is not completion.
-The bridge keeps streaming updates/approvals and holds queued prompts until the
-root session reports idle, including background agents and attached shells.
+The bridge keeps streaming updates/approvals. Root `assistant.idle` releases the
+foreground queue so you can chat while schedules/background work continue.
+Earlier tasks remain `background`, not completed, until root `session.idle`
+confirms no background agents or attached shells remain. Phone and terminal
+display background activity and schedule count separately from foreground busy.
+Old task output/approvals retain their owner; scheduled output is session-scoped.
+Update both Bridge and Android. Session changes/deletion remain protected while
+background work or schedules exist; use the provider's task controls in chat
+instead of a session-wide abort that could cancel unrelated work.
 Errors/disconnection are reported as failures rather than successful idle.
 New native sessions do not receive an implicit `--allow-all`; use the existing
 confirmed permission UI if you want that mode.

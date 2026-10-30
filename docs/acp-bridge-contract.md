@@ -590,10 +590,33 @@ Android sends a chat prompt over the attached chat WebSocket:
 
 The bridge starts or reuses the agent session for `chatId`, uses `workspacePath`
 as its working directory, and serializes work through a per-chat FIFO. Copilot's
-default native SDK backend waits for session-level idle, including background
-agents and attached shells, before ending an operation or draining the next
-batch. Assistant messages and individual tool/child completions do not end the
-operation. Notifications and permissions continue after the initial reply.
+default native SDK backend releases the foreground FIFO on root `assistant.idle`
+after the submitted user turn starts (excluding autopilot pauses). If the whole
+session is not idle, it emits `operation.background` with `status: "background"`
+and the same operation fields as `operation.done`; this is **not completion**.
+Clients remove only that operation from their foreground-busy set, without
+finishing its tools or notifying completion. Subsequent messages can run while
+earlier work continues. Root `session.idle`, including background agents and
+attached shells, settles outstanding background operations with `operation.done`
+and `backgroundCompletion: true`. Errors/cancellation are not successful completion.
+Assistant messages and individual tool/child completions never release the FIFO.
+Older native implementations without `assistant.idle` retain the session-idle fallback.
+
+`chat.activity` and authoritative `chat.status` snapshots carry `backgroundWork`
+(boolean) and `scheduledTasks` (count of observed registered schedules), independently
+of foreground `status`. Activity is persisted in the shared catalog and Android
+chat metadata; it does not itself mark a chat busy. On Server restart, outstanding
+background task receipts become `interrupted`, not completed. One-shot schedules
+leave the count when they fire; recurring schedules remain until cancellation.
+Tool ownership follows the originating turn, including late updates and approvals.
+Scheduled/autonomous output has `sessionScoped: true` and no human `operationId`;
+it cannot become the answer receipt of a newer user prompt. Background approvals
+remain actionable without changing foreground status. Session replacement,
+deletion and configuration remain guarded while background/scheduled work exists.
+Task cancellation rejects requests that would use a session-wide abort to stop
+unrelated background work; use provider task/schedule controls through chat.
+
+Update both Bridge and Android for foreground/background status separation.
 The explicit ACP compatibility backend instead uses the `session/prompt`
 response boundary and cannot provide this background lifecycle guarantee.
 Different chats may execute concurrently. At a completion boundary, the bridge

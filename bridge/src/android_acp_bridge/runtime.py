@@ -68,6 +68,7 @@ class PromptOperation:
     source: str = "human"
     image: dict[str, Any] | None = None
     digest: str = ""
+    background_result: str | None = None
 
 
 class AgentManager(Protocol):
@@ -179,6 +180,7 @@ class BridgeRuntime:
         self._event_generation = secrets.token_hex(16)
         self._chat_event_generations: dict[str, str] = {}
         self._chat_status: dict[str, str] = {}
+        self._copilot_activity: dict[str, dict[str, Any]] = {}
         self._event_lock = threading.RLock()
         self._approval_lock = self._event_lock
         self._history = HistoryStore()
@@ -306,6 +308,7 @@ class BridgeRuntime:
     def delete_shared_chat(self, chat_id: str) -> dict[str, Any]:
         with self._prompt_lock, self._event_lock:
             if (self._chat_requests.get(chat_id) or chat_id in self._active_prompts
+                    or self._has_background_work(chat_id)
                     or self._prompt_queues.get(chat_id) or chat_id in self._history_loading_chats
                     or chat_id in self._configuring_chats
                     or any(p.requested["chatId"] == chat_id for p in self._pending_approvals.values())):
@@ -330,7 +333,7 @@ class BridgeRuntime:
     def rename_shared_chat(self, chat_id: str, title: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._prompt_lock:
             chat = self.shared.chat(chat_id)
-            if (chat_id in self._active_prompts or self._prompt_queues.get(chat_id)
+            if (chat_id in self._active_prompts or self._has_background_work(chat_id) or self._prompt_queues.get(chat_id)
                     or chat_id in self._history_loading_chats or chat_id in self._configuring_chats
                     or any(p.requested["chatId"] == chat_id for p in self._pending_approvals.values())):
                 raise ControlError("CONFLICT", "Chat is busy. Finish tasks, approvals and session changes before renaming.")
@@ -633,6 +636,7 @@ class BridgeRuntime:
                             "operationType": "chat.prompt",
                             "content": member.content,
                             "batchSize": len(batch),
+                            "batchOperationId": operation.operation_id,
                             "source": member.source,
                             **({"image": member.image} if member.image is not None else {}),
                         },
@@ -649,7 +653,16 @@ class BridgeRuntime:
                     self._publish_prompt_event(operation, self._session_binding_event(chat_id, binding))
 
                 def emit_update(update: dict[str, Any], operation: PromptOperation = operation) -> None:
-                    update = {**update, "chatId": chat_id, "operationId": operation.operation_id}
+                    if update.get("type") == "copilot.activity":
+                        self._copilot_activity_update(chat_id, update, operation)
+                        return
+                    scoped = update.get("_sessionScoped", False)
+                    update = {key: value for key, value in update.items() if key != "_sessionScoped"}
+                    update = {**update, "chatId": chat_id}
+                    if scoped:
+                        update["sessionScoped"] = True
+                    if not scoped:
+                        update["operationId"] = operation.operation_id
                     with self._event_lock:
                         if operation.state in {"completed", "failed", "cancelled"}:
                             self._record_broadcast(chat_id, update)
@@ -668,8 +681,10 @@ class BridgeRuntime:
                     ),
                     permission_callback=lambda message, operation=operation: self._request_permission(
                         chat_id,
-                        message,
-                        lambda event: self._publish_prompt_event(operation, event),
+                        {**message, "_background": message.get("_sessionScoped") or operation.state not in {"starting", "running"},
+                         "_operationId": None if message.get("_sessionScoped") else operation.operation_id},
+                        (lambda event: self._record_broadcast(chat_id, event)) if message.get("_sessionScoped") else
+                        (lambda event: self._publish_prompt_event(operation, event)),
                     ),
                     update_callback=emit_update,
                     session_callback=emit_session,
@@ -694,6 +709,9 @@ class BridgeRuntime:
                 operation_status = "failed"
 
             for update in updates:
+                if update.get("type") == "copilot.foreground_idle":
+                    operation_status = "background"
+                    continue
                 if update.get("update", {}).get("sessionUpdate") == "agentlink_prompt_cancelled":
                     operation_status = "cancelled"
                 update.setdefault("chatId", chat_id)
@@ -701,6 +719,8 @@ class BridgeRuntime:
                 self._publish_prompt_event(operation, update)
 
             with self._prompt_lock:
+                if operation_status == "background" and operation.background_result is not None:
+                    operation_status = operation.background_result
                 queue_for_chat = self._prompt_queues.setdefault(chat_id, deque())
                 next_batch: list[PromptOperation] = []
                 while queue_for_chat:
@@ -722,7 +742,7 @@ class BridgeRuntime:
                     self._publish_prompt_event(
                         member,
                         {
-                            "type": "operation.done",
+                            "type": "operation.background" if operation_status == "background" else "operation.done",
                             "chatId": chat_id,
                             "operationId": member.operation_id,
                             "operationType": "chat.prompt",
@@ -745,6 +765,8 @@ class BridgeRuntime:
                         ),
                     )
                 for member in batch:
+                    if operation_status == "background":
+                        continue
                     self.attachments.release(chat_id, member.image)
                     self._finish_prompt_transport(member)
                     member.completed.set()
@@ -756,6 +778,41 @@ class BridgeRuntime:
 
             if next_operation is None:
                 return
+
+    def _has_background_work(self, chat_id: str) -> bool:
+        activity = self._copilot_activity.get(chat_id, {})
+        return bool(activity.get("backgroundWork") or activity.get("scheduledTasks"))
+
+    def _copilot_activity_update(self, chat_id: str, update: dict[str, Any], operation: PromptOperation) -> None:
+        with self._prompt_lock:
+            activity = {"backgroundWork": bool(update["backgroundWork"]),
+                        "scheduledTasks": int(update["scheduledTasks"])}
+            self._copilot_activity[chat_id] = activity
+            if activity["backgroundWork"]:
+                operation.background_result = None
+            if update.get("settled"):
+                result = "failed" if update.get("failed") else "cancelled" if update.get("aborted") else "completed"
+                operation.background_result = result
+                for (owner, _), member in list(self._prompt_operations.items()):
+                    if owner != chat_id or member.state != "background":
+                        continue
+                    member.state = result
+                    self._publish_prompt_event(member, {
+                        "type": "operation.done", "chatId": chat_id, "operationId": member.operation_id,
+                        "operationType": "chat.prompt", "status": member.state,
+                        "queueRemaining": len(self._prompt_queues.get(chat_id, ())),
+                        "backgroundCompletion": True,
+                    })
+                    self.attachments.release(chat_id, member.image)
+                    self._finish_prompt_transport(member)
+                    member.completed.set()
+                    member.emit = None
+                    member.content = ""
+                    member.waiters = []
+                    member.batch_members = None
+            self._record_broadcast(chat_id, {"type": "chat.activity", "chatId": chat_id, **activity})
+            if update.get("failed") and chat_id not in self._active_prompts:
+                self._record_broadcast(chat_id, self._chat_status_event(chat_id, "failed"))
 
     def _remove_queued_prompt(
         self,
@@ -1201,12 +1258,14 @@ class BridgeRuntime:
             "createdAt": created_at,
             "expiresAt": created_at + int(APPROVAL_TIMEOUT_SECONDS * 1000),
         }
+        if message.get("_operationId"):
+            requested["operationId"] = message["_operationId"]
         pending = PendingApproval(options, threading.Condition(), deepcopy(requested), emit)
         with self._approval_lock:
             self._pending_approvals[approval_id] = pending
             if emit is not None:
                 emit(requested)
-                if pending.decision is None:
+                if pending.decision is None and not message.get("_background"):
                     emit(self._chat_status_event(chat_id, "waitingApproval"))
             else:
                 self._append_event(chat_id, requested)
@@ -1221,7 +1280,7 @@ class BridgeRuntime:
         self._resolve_approval(approval_id, "expired", chat_id)
         decision = pending.decision or "denied"
 
-        if emit is not None:
+        if emit is not None and not message.get("_background"):
             with self._prompt_lock:
                 active = self._active_prompts.get(chat_id)
                 queued_count = len(self._prompt_queues.get(chat_id, ()))
@@ -1291,6 +1350,7 @@ class BridgeRuntime:
                     "chatId": chat_id,
                     "status": status,
                     "queuedCount": queued_count,
+                    **self._copilot_activity.get(chat_id, {"backgroundWork": False, "scheduledTasks": 0}),
                 }
                 if active_operation is not None:
                     status_payload["operationId"] = active_operation.operation_id
@@ -1486,6 +1546,7 @@ class BridgeRuntime:
             "chatId": chat_id,
             "status": status,
             "queuedCount": queued_count,
+            **self._copilot_activity.get(chat_id, {}),
         }
         if operation_id is not None:
             event["operationId"] = operation_id
@@ -1509,7 +1570,7 @@ class BridgeRuntime:
         chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
         with self._prompt_lock, self._event_lock:
             busy = (
-                chat_id in self._active_prompts or chat_id in self._history_loading_chats
+                chat_id in self._active_prompts or self._has_background_work(chat_id) or chat_id in self._history_loading_chats
                 or chat_id in self._configuring_chats
                 or any(p.requested["chatId"] == chat_id for p in self._pending_approvals.values())
             )

@@ -8,6 +8,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SharedCatalogTest {
+    @Test fun idleChatCanRetainAndClearBackgroundActivity() {
+        val chat = mergeSharedChat(machine, remote().put("status", "idle")
+            .put("backgroundWork", true).put("scheduledTasks", 2), null)
+        assertEquals("idle", chat.agentStatus)
+        assertTrue(chat.backgroundWork)
+        assertEquals(2, chat.scheduledTasks)
+        val settled = mergeSharedChat(machine, remote().put("status", "idle")
+            .put("backgroundWork", false).put("scheduledTasks", 0), chat)
+        assertFalse(settled.backgroundWork)
+        assertEquals(0, settled.scheduledTasks)
+    }
+
     @Test fun lateCatalogAndReplayCannotUndoConfirmedRename() {
         val initial = mergeSharedChat(machine, remote(), null)
         val latest = initial.applySharedTitle(remote().put("chatTitle", "New name")

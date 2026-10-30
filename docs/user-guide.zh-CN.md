@@ -272,9 +272,12 @@ Android 长按消息文字后，拖动选区两端选择需要的片段，再点
 旧消息仍保留；不支持回放时明确提示仅恢复上下文。
 若想另开一个 Chat 恢复历史，先 `/new`，再 `/resume`。创建或恢复本身不会发送模型请求。
 
-手机端删除 Chat 时，会先确认是否同时从 Server 删除，成功后电脑交互终端及其他
-客户端也会同步移除。请先停止或完成任务并处理待发送消息；离线、旧版 Bridge 或
-删除失败时不会直接隐藏聊天。Agent 原生保存的会话历史和项目文件保留，可通过
+手机端删除 Chat 时，会先确认并持久保存删除请求，随后立即从手机移除，即使离线或
+缓存状态仍显示忙碌。顶部「待删除」显示原电脑尚未确认的请求和错误；重连或重新打开
+App 后自动重试，旧版 Bridge 需更新。服务器确认后，电脑交互终端及其他客户端同步移除。
+已经提交的任务和队列不会停止，审批不会自动回答，请在其他客户端处理。
+仅保存在手机尚未发送的提示会丢弃。后台重试遵守 Android 既有监控时限，并非无限运行。
+Agent 原生保存的会话历史和项目文件保留，可通过
 「已有会话」或终端先 `/new` 再 `/resume` 重新打开，不会复活已删除的 Chat ID。
 此行为需要同时更新 App 和 Bridge。
 
@@ -309,7 +312,7 @@ Agent 声明支持的斜杠命令也会出现在菜单里。未知命令明确�
 
 | Agent | AgentLink 接入情况 |
 | --- | --- |
-| GitHub Copilot CLI | 默认通过原生 SDK 连接已安装并登录的 CLI，等待后台任务结束后才显示空闲；兼容选项见 [bridge 指南](../bridge/README.md#copilot-background-task-lifecycle)。 |
+| GitHub Copilot CLI | 默认通过原生 SDK 连接已安装并登录的 CLI。前台回复让出后可继续聊天，后台工作和定时任务单独显示，不会提前报告任务完成；需同时更新 Bridge 和 Android，详见 [bridge 指南](../bridge/README.md#copilot-background-task-lifecycle)。 |
 | Claude Code | 使用 `claude-agent-acp` 0.81.2、Node.js 22+ 及电脑本地的 Claude 登录，参见[安装说明](../bridge/README.md#claude-code)。 |
 | Kimi Code | 使用原生 `kimi acp`，基线为新版 JavaScript Kimi Code 2.1.1；电脑上执行 `kimi login`。支持会话恢复及问题表单。 |
 | Qwen Code | 使用原生 `qwen --acp`，基线为 0.24.6；在电脑完成认证。支持会话恢复及 Qwen 问题表单。 |

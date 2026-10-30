@@ -132,7 +132,7 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
             if source == "mochi" and (type(payload.get("expectedHumanRevision")) is not int
                                       or payload["expectedHumanRevision"] != chat["humanRevision"]):
                 raise ControlError("CONFLICT", "Human input changed or was not read. Read the chat and get renewed user direction before continuing.")
-            for identity in runtime._active_prompts:
+            for identity in set(runtime._active_prompts) | {key for key in runtime._copilot_activity if runtime._has_background_work(key)}:
                 if identity != chat_id:
                     try:
                         other = runtime.shared.chat(identity)
@@ -161,7 +161,13 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
         runtime.shared.chat(chat_id)
         with runtime._prompt_lock:
             active = runtime._active_prompts.get(chat_id)
+            target = runtime._prompt_operations.get((chat_id, identity))
+            if target is not None and target.state == "background":
+                raise ControlError("CONFLICT", "This task is in the background. Use the provider's task/schedule controls in chat; cancelling the whole session could stop another turn.")
             if active and any(member.operation_id == identity for member in active.batch_members or [active]):
+                if any(owner == chat_id and member.state == "background"
+                       for (owner, _), member in runtime._prompt_operations.items()):
+                    raise ControlError("CONFLICT", "Copilot cancellation is session-wide and could stop earlier background work. Use the provider's task controls in chat.")
                 cancel = getattr(runtime.agent_manager, "cancel_prompt", None)
                 if cancel is None:
                     raise ControlError("UNSUPPORTED", "This agent cannot cancel a running task.")

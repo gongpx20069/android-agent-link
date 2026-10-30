@@ -78,12 +78,13 @@ class SharedState:
                     self.delete_chat(identity)
             # Process restart cannot prove that an external command stopped or completed.
             for chat in self.chats():
-                if chat["status"] in {"busy", "waitingApproval"}:
+                if chat["status"] in {"busy", "waitingApproval"} or chat.get("backgroundWork") or chat.get("scheduledTasks"):
                     chat["status"] = "interrupted"
+                    chat.update(backgroundWork=False, scheduledTasks=0)
                     self._put_chat(chat)
             for chat, identity, raw in self.db.execute("SELECT chat,id,data FROM tasks").fetchall():
                 task = json.loads(raw)
-                if task["state"] in {"starting", "running", "queued", "waitingApproval"}:
+                if task["state"] in {"starting", "running", "queued", "waitingApproval", "background"}:
                     task["state"] = "interrupted"
                     task["revision"] = task.get("revision", 0) + 1
                     task["updatedAt"] = int(time.time() * 1000)
@@ -247,12 +248,15 @@ class SharedState:
             task = self.task(chat, identity)
             if task is None:
                 continue
+            if event.get("sessionScoped") or (
+                    event.get("operationId") and event["operationId"] != task.get("batchOperationId", identity)):
+                continue
             original = task.copy()
             if text is not None:
                 combined = task.get("resultText", "") + text
                 task["resultText"] = combined[:self.RESULT_CHARS]
                 task["resultTruncated"] = task.get("resultTruncated", False) or len(combined) > self.RESULT_CHARS
-            if waiting:
+            if waiting and task["state"] != "background":
                 state = "waitingApproval" if event["status"] == "waitingApproval" else "running"
                 if task["state"] != state:
                     task.update(state=state, revision=task.get("revision", 0) + 1, updatedAt=event["timestamp"])
@@ -281,7 +285,9 @@ class SharedState:
             chat["revision"] = event["eventId"]
             chat["updatedAt"] = event["timestamp"]
             kind = event["type"]
-            if kind == "chat.status":
+            if kind == "chat.activity":
+                chat.update(backgroundWork=event["backgroundWork"], scheduledTasks=event["scheduledTasks"])
+            elif kind == "chat.status":
                 chat["status"] = event.get("status", "unknown")
             elif kind == "chat.session":
                 first_binding = not chat.get("sessionId")
@@ -304,7 +310,7 @@ class SharedState:
                 chat["configOptions"] = event["update"].get("configOptions", [])
             self._put_chat(chat)
             self._update_active_receipts(chat_id, event)
-            if kind in {"operation.accepted", "operation.started", "operation.done", "chat.prompt.remove.result"}:
+            if kind in {"operation.accepted", "operation.started", "operation.background", "operation.done", "chat.prompt.remove.result"}:
                 identity = event.get("operationId")
                 if identity:
                     task = self.task(chat_id, identity) or {"taskId": identity, "chatId": chat_id}
@@ -314,11 +320,13 @@ class SharedState:
                                 updatedAt=event["timestamp"], revision=task.get("revision", 0) + 1)
                     if "source" in event:
                         task["source"] = event["source"]
+                    if "batchOperationId" in event:
+                        task["batchOperationId"] = event["batchOperationId"]
                     if kind == "operation.accepted":
                         task["contentDigest"] = prompt_digest(str(event.get("content", "")), event.get("image"))
                     self.db.execute("INSERT OR REPLACE INTO tasks VALUES(?,?,?)", (chat_id, identity, json.dumps(task)))
                     active = self._active_receipts.setdefault(chat_id, set())
-                    if task["state"] in {"starting", "running", "waitingApproval"}:
+                    if task["state"] in {"starting", "running", "waitingApproval", "background"}:
                         active.add(identity)
                     else:
                         active.discard(identity)

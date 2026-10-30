@@ -66,6 +66,8 @@ data class Chat(
     val bridgeEventGeneration: String? = null,
     val bridgeResyncRequired: Boolean = false,
     val agentStatus: String = "unknown",
+    val backgroundWork: Boolean = false,
+    val scheduledTasks: Int = 0,
     val lastSyncAtMillis: Long = 0,
     val connectionError: String? = null,
     val historyId: String? = null,

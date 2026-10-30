@@ -143,7 +143,7 @@ class NativeSessionTests(unittest.TestCase):
         self.native.emit("assistant.turn_end", turnId="1")
         self.native.emit("tool.execution_start", toolCallId="late", toolName="read", arguments={"path": "file"})
         self.native.emit("tool.execution_partial_result", toolCallId="late", partialOutput="late output")
-        wait_until(lambda: any(u["update"].get("rawOutput") == "late output" for u in delivered))
+        wait_until(lambda: any(u.get("update", {}).get("rawOutput") == "late output" for u in delivered))
         self.assertTrue(thread.is_alive())
         self.assertNotIn("updates", result)
         self.native.emit("tool.execution_complete", toolCallId="late", success=True, result={"content": "done"})
@@ -153,7 +153,7 @@ class NativeSessionTests(unittest.TestCase):
         thread.join(3)
         self.assertFalse(thread.is_alive())
         self.assertEqual(result["updates"], [])
-        self.assertEqual(delivered[-1]["update"]["content"]["text"], "Finished.")
+        self.assertEqual([u for u in delivered if u["type"] == "session/update"][-1]["update"]["content"]["text"], "Finished.")
 
     def test_multiple_workers_and_autopilot_idle_do_not_end_prompt(self):
         delivered = []
@@ -163,7 +163,7 @@ class NativeSessionTests(unittest.TestCase):
         self.native.emit("subagent.completed", toolCallId="a", agentDisplayName="a")
         self.native.emit("session.idle", mode="autopilot")
         self.native.emit("assistant.message", messageId="still", content="Worker b is running")
-        wait_until(lambda: any(u["update"].get("messageId") == "still" for u in delivered))
+        wait_until(lambda: any(u.get("update", {}).get("messageId") == "still" for u in delivered))
         self.assertTrue(thread.is_alive())
         self.native.emit("subagent.completed", toolCallId="b", agentDisplayName="b")
         self.native.emit("session.idle", mode="interactive")
@@ -188,7 +188,7 @@ class NativeSessionTests(unittest.TestCase):
         self.native.emit("session.idle")
         thread.join(3)
         self.native.emit("tool.execution_complete", toolCallId="post-idle", success=True, result={"content": "late"})
-        wait_until(lambda: any(u["update"].get("toolCallId") == "post-idle" for u in delivered))
+        wait_until(lambda: any(u.get("update", {}).get("toolCallId") == "post-idle" for u in delivered))
 
     def test_previous_idle_is_not_completion_of_next_prompt(self):
         self.native.emit("session.idle")
@@ -228,7 +228,7 @@ class NativeSessionTests(unittest.TestCase):
         decision = asyncio.run_coroutine_threadsafe(self.permission(request, {}), self.session._loop)
         self.assertTrue(requested.wait(3))
         self.native.emit("assistant.message", messageId="while-pending", content="Other worker progress")
-        wait_until(lambda: any(u["update"].get("messageId") == "while-pending" for u in delivered))
+        wait_until(lambda: any(u.get("update", {}).get("messageId") == "while-pending" for u in delivered))
         self.assertTrue(thread.is_alive())
         approve.set()
         self.assertEqual(decision.result(3).kind, "approve-once")
@@ -465,6 +465,174 @@ class NativeSessionTests(unittest.TestCase):
         wait_until(lambda: runtime._chat_status["chat"] == "failed")
         self.assertEqual(next(e["status"] for e in emitted if e["type"] == "operation.done"), "failed")
         runtime.shared.close()
+
+    def background_runtime(self):
+        manager = AcpAgentManager(copilot_transport="sdk")
+        manager._set_session("chat", self.session)
+        runtime = BridgeRuntime(BridgeConfig(), PairingStore(), agent_manager=manager)
+        self.addCleanup(runtime.shared.close)
+        emitted = []
+        def send(identity):
+            runtime.websocket_responses({
+                "type": "chat.prompt", "chatId": "chat", "operationId": identity,
+                "agentId": "copilot-cli", "workspacePath": str(Path.cwd()), "content": identity,
+            }, emit=emitted.append)
+        return runtime, emitted, send
+
+    def test_foreground_yield_sends_next_prompt_without_completing_background(self):
+        runtime, emitted, send = self.background_runtime()
+        send("first")
+        self.assertTrue(self.native.sent.wait(3))
+        self.native.emit("tool.execution_start", toolCallId="old-tool", toolName="shell")
+        self.native.emit("assistant.message", messageId="answer-1", content="First answer")
+        send("second")
+        self.native.emit("assistant.idle")
+        wait_until(lambda: self.native.send.await_count == 2)
+        first = runtime._prompt_operations[("chat", "first")]
+        self.assertEqual(first.state, "background")
+        self.assertFalse(first.completed.is_set())
+        self.assertFalse(any(e["type"] == "operation.done" for e in emitted))
+        self.native.emit("tool.execution_partial_result", toolCallId="old-tool", partialOutput="late")
+        self.native.emit("assistant.message", messageId="answer-2", content="Second answer")
+        wait_until(lambda: any(e.get("update", {}).get("rawOutput") == "late" for e in emitted))
+        late = next(e for e in emitted if e.get("update", {}).get("rawOutput") == "late")
+        self.assertEqual(late["operationId"], "first")
+        self.native.emit("assistant.idle")
+        wait_until(lambda: runtime._chat_status["chat"] == "idle")
+        second = runtime._prompt_operations[("chat", "second")]
+        self.assertEqual(second.state, "background")
+        self.assertEqual(runtime.shared.task_receipt("chat", "first")["resultText"], "First answer")
+        self.assertEqual(runtime.shared.task_receipt("chat", "second")["resultText"], "Second answer")
+        replay = runtime.websocket_responses({"type": "chat.attach", "chatId": "chat"})
+        snapshot = next(e for e in reversed(replay) if e["type"] == "chat.status")
+        self.assertEqual(snapshot["status"], "idle")
+        self.assertTrue(snapshot["backgroundWork"])
+        with self.assertRaisesRegex(AcpAgentError, "background"):
+            self.session.ensure_replaceable()
+        self.native.emit("session.idle")
+        self.assertTrue(first.completed.wait(3))
+        self.assertTrue(second.completed.wait(3))
+        self.assertEqual([e["operationId"] for e in emitted if e["type"] == "operation.done"], ["first", "second"])
+
+    def test_scheduled_wakeup_is_session_scoped_and_cannot_finish_queued_user(self):
+        runtime, emitted, send = self.background_runtime()
+        send("schedule")
+        self.assertTrue(self.native.sent.wait(3))
+        self.native.emit("session.schedule_created", id=7, at="later")
+        self.native.emit("assistant.idle")
+        wait_until(lambda: runtime._chat_status["chat"] == "idle")
+        self.native.emit("user.message", content="scheduled", source="schedule-7")
+        self.native.emit("assistant.turn_start", turnId="scheduled")
+        self.native.emit("assistant.message", messageId="scheduled-answer", content="Automatic output")
+        wait_until(lambda: any(e.get("sessionScoped") for e in emitted))
+        scheduled = next(e for e in emitted if e.get("update", {}).get("messageId") == "scheduled-answer")
+        self.assertNotIn("operationId", scheduled)
+        self.assertEqual(runtime.shared.task_receipt("chat", "schedule")["resultText"], "")
+        self.assertEqual(runtime._copilot_activity["chat"]["scheduledTasks"], 0)
+        accepted = threading.Event()
+        async def enqueue(prompt, attachments=None):
+            accepted.set()
+            return "queued-user"
+        self.native.send.side_effect = enqueue
+        send("next")
+        self.assertTrue(accepted.wait(3))
+        self.native.emit("user.message", content="next", source="user", messageId="queued-user", interactionId="human")
+        self.native.emit("assistant.message", messageId="scheduled-late", content="Still automatic")
+        self.native.emit("assistant.idle")
+        self.native.emit("session.idle")
+        wait_until(lambda: runtime._prompt_operations[("chat", "schedule")].completed.is_set())
+        self.assertEqual(runtime._prompt_operations[("chat", "next")].state, "running")
+        late = next(e for e in emitted if e.get("update", {}).get("messageId") == "scheduled-late")
+        self.assertNotIn("operationId", late)
+        self.native.emit("assistant.turn_start", turnId="next", interactionId="human")
+        self.native.emit("assistant.idle")
+        wait_until(lambda: runtime._prompt_operations[("chat", "next")].state == "background")
+        self.native.emit("session.idle")
+        self.assertTrue(runtime._prompt_operations[("chat", "next")].completed.wait(3))
+
+    def test_background_failure_is_not_reported_as_completion(self):
+        runtime, emitted, send = self.background_runtime()
+        send("first")
+        self.assertTrue(self.native.sent.wait(3))
+        self.native.emit("assistant.idle")
+        wait_until(lambda: runtime._chat_status["chat"] == "idle")
+        self.native.emit("session.error", message="background connection lost")
+        operation = runtime._prompt_operations[("chat", "first")]
+        self.assertTrue(operation.completed.wait(3))
+        self.assertEqual(operation.state, "failed")
+        wait_until(lambda: runtime._chat_status["chat"] == "failed")
+        self.assertFalse(any(e.get("status") == "completed" for e in emitted))
+
+    def test_failure_between_foreground_return_and_queue_release_stays_failed(self):
+        runtime, emitted, send = self.background_runtime()
+        returned, release = threading.Event(), threading.Event()
+        prompt = self.session.prompt
+        def delayed_return(*args, **kwargs):
+            updates = prompt(*args, **kwargs)
+            returned.set()
+            self.assertTrue(release.wait(3))
+            return updates
+        with patch.object(self.session, "prompt", side_effect=delayed_return):
+            try:
+                send("first")
+                self.assertTrue(self.native.sent.wait(3))
+                self.native.emit("assistant.idle")
+                self.assertTrue(returned.wait(3))
+                self.native.emit("session.error", message="connection lost during handoff")
+                operation = runtime._prompt_operations[("chat", "first")]
+                wait_until(lambda: operation.background_result == "failed")
+            finally:
+                release.set()
+            self.assertTrue(operation.completed.wait(3))
+        self.assertEqual(operation.state, "failed")
+        self.assertFalse(any(e.get("status") == "completed" for e in emitted))
+
+    def test_background_delivery_failure_cannot_later_become_successful_idle(self):
+        runtime, emitted, send = self.background_runtime()
+        send("first")
+        self.assertTrue(self.native.sent.wait(3))
+        self.native.emit("assistant.idle")
+        wait_until(lambda: runtime._chat_status["chat"] == "idle")
+        self.native.emit("tool.execution_complete", toolCallId="malformed")
+        operation = runtime._prompt_operations[("chat", "first")]
+        self.assertTrue(operation.completed.wait(3))
+        self.native.emit("session.idle")
+        wait_until(lambda: self.session._events.empty())
+        self.assertEqual(operation.state, "failed")
+        self.assertEqual([e["status"] for e in emitted if e["type"] == "operation.done"], ["failed"])
+
+    def test_autopilot_and_child_assistant_idle_do_not_yield(self):
+        thread, result = self.start_prompt()
+        self.native.emit("session.mode_changed", newMode="autopilot")
+        self.native.emit("assistant.idle")
+        self.native.emit("session.mode_changed", newMode="interactive")
+        self.native.emit("assistant.idle", parentToolCallId="child")
+        self.native.emit("assistant.message", messageId="barrier", content="working")
+        wait_until(lambda: not self.session._events.qsize())
+        self.assertTrue(thread.is_alive())
+        self.native.emit("assistant.idle")
+        thread.join(3)
+        self.assertTrue(any(e["type"] == "copilot.foreground_idle" for e in result["updates"]))
+
+    def test_background_approval_does_not_change_foreground_status(self):
+        runtime, emitted, send = self.background_runtime()
+        send("first")
+        self.assertTrue(self.native.sent.wait(3))
+        self.native.emit("tool.execution_start", toolCallId="old-tool", toolName="shell")
+        self.native.emit("assistant.idle")
+        wait_until(lambda: runtime._chat_status["chat"] == "idle")
+        requested = SimpleNamespace(to_dict=lambda: {"kind": "shell", "toolCallId": "old-tool"})
+        future = asyncio.run_coroutine_threadsafe(self.permission(requested, {}), self.session._loop)
+        wait_until(lambda: runtime.local_approval_count() == 1)
+        self.assertEqual(runtime._chat_status["chat"], "idle")
+        send("second")
+        wait_until(lambda: self.native.send.await_count == 2)
+        approval = runtime.local_approvals()[0]
+        runtime._resolve_approval(approval["approvalId"], "denied", "chat")
+        future.result(3)
+        self.assertEqual(runtime._chat_status["chat"], "busy")
+        self.native.emit("session.idle")
+        self.assertTrue(runtime._prompt_operations[("chat", "second")].completed.wait(3))
 
     def test_runtime_persists_post_completion_updates_for_reconnect(self):
         manager = AcpAgentManager(copilot_transport="sdk")

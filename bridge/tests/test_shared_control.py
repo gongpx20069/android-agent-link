@@ -231,6 +231,30 @@ class SharedControlTests(unittest.TestCase):
             manager.release.set()
             self.wait_done(runtime, "chat", "two")
 
+    def test_background_receipt_is_interrupted_not_completed_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shared.sqlite3"
+            runtime = self.runtime(shared_state_store=path)
+            try:
+                self.register(runtime)
+                runtime._append_event("chat", {"type": "operation.accepted", "operationId": "background",
+                                              "state": "starting", "content": "work"})
+                runtime._append_event("chat", {"type": "operation.background", "operationId": "background",
+                                              "status": "background"})
+                runtime._append_event("chat", {"type": "chat.activity", "backgroundWork": True, "scheduledTasks": 2})
+                self.assertEqual(runtime.shared.task_receipt("chat", "background")["state"], "background")
+                self.assertTrue(runtime.shared.chat("chat")["backgroundWork"])
+            finally:
+                runtime.shared.close()
+            restored = self.runtime(shared_state_store=path)
+            try:
+                self.assertEqual(restored.shared.task_receipt("chat", "background")["state"], "interrupted")
+                self.assertEqual(restored.shared.chat("chat")["status"], "interrupted")
+                self.assertFalse(restored.shared.chat("chat")["backgroundWork"])
+                self.assertEqual(restored.shared.chat("chat")["scheduledTasks"], 0)
+            finally:
+                restored.shared.close()
+
     def test_durable_receipt_is_exact_bounded_and_survives_journal_reset(self):
         with tempfile.TemporaryDirectory() as directory:
             runtime = self.runtime(shared_state_store=Path(directory) / "shared.sqlite3")

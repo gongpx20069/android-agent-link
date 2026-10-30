@@ -15,6 +15,8 @@ import android.os.SystemClock
 import com.gongpx.androidacpclient.R
 import com.gongpx.androidacpclient.data.bridge.BridgeClient
 import com.gongpx.androidacpclient.data.bridge.restoreQueuedPrompts
+import com.gongpx.androidacpclient.data.bridge.deleteSharedChat
+import com.gongpx.androidacpclient.data.bridge.retryPendingChatDeletions
 import com.gongpx.androidacpclient.data.bridge.ChatConnection
 import com.gongpx.androidacpclient.data.model.BridgeApprovalRequest
 import com.gongpx.androidacpclient.data.model.BridgeConnectionException
@@ -43,6 +45,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /**
@@ -61,6 +64,7 @@ class ChatMonitorService : Service() {
     private var ownedRequestEpoch = -1L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var loadJob: Job? = null
+    private var deletionJob: Job? = null
 
     private class LaunchRequest(val epoch: Long, val chatIds: Set<String>)
 
@@ -130,6 +134,7 @@ class ChatMonitorService : Service() {
                 }
                 val chats = chatStore.loadAsync()
                 if (!acceptingCallbacks || request != ownedRequestEpoch || request != requestEpoch) return@launch
+                notifications.reconcileRemovedChats(chatStore.removedChatIds(), approvalStore.load())
                 chats.filter { it.id in ids }.forEach { chat ->
                     val machine = machines[chat.machineId]
                     when {
@@ -138,7 +143,7 @@ class ChatMonitorService : Service() {
                         else -> monitored[chat.id] = MonitoredChat(chat, machine)
                     }
                 }
-                if (monitored.isEmpty()) {
+                if (monitored.isEmpty() && chatStore.pendingDeletions.value.isEmpty()) {
                     finishMonitoring()
                 } else {
                     handler.postDelayed(
@@ -146,6 +151,22 @@ class ChatMonitorService : Service() {
                         (deadlineElapsedMillis - SystemClock.elapsedRealtime()).coerceAtLeast(0),
                     )
                     monitored.values.toList().forEach { connect(it) }
+                    deletionJob = scope.launch {
+                        try {
+                            while (acceptingCallbacks && chatStore.pendingDeletions.value.isNotEmpty()) {
+                                retryPendingChatDeletions(chatStore, machines.values.toList(), bridgeClient::deleteSharedChat)
+                                if (monitored.isEmpty() && chatStore.pendingDeletions.value.isEmpty()) {
+                                    finishMonitoring()
+                                    return@launch
+                                }
+                                delay(5_000)
+                            }
+                            if (acceptingCallbacks && monitored.isEmpty()) finishMonitoring()
+                        } catch (error: Exception) {
+                            if (error is kotlinx.coroutines.CancellationException) throw error
+                            stopWithWarning(R.string.monitor_storage_error)
+                        }
+                    }
                 }
             } catch (error: Exception) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
@@ -193,8 +214,9 @@ class ChatMonitorService : Service() {
                 initialMessages = chat.messages,
                 onDeleted = {
                     apply {
-                        chatStore.remove(chat.id)
+                        chatStore.confirmDeletion(state.machine.id, chat.id)
                         notifications.cancel(chat.id)
+                        notifications.reconcileRemovedChats(chatStore.removedChatIds(), approvalStore.load())
                         removeMonitor(state)
                     }
                 },
@@ -239,7 +261,7 @@ class ChatMonitorService : Service() {
                 onOperationDone = { type, status, id, queueRemaining, _ ->
                     apply {
                         if (type == "chat.prompt" || type == "chat.prompt.remove") {
-                            if (isTerminalPromptStatus(status)) state.activeOperations.remove(id)
+                            if (isTerminalPromptStatus(status) || status == "background") state.activeOperations.remove(id)
                             if (status == "already_started") state.activeOperations.add(id)
                             state.remoteQueueCount = queueRemaining
                             persist(state, state.chat.finishPrompt(id, status, System.currentTimeMillis()))
@@ -252,6 +274,9 @@ class ChatMonitorService : Service() {
                             }
                         }
                     }
+                },
+                onActivity = { backgroundWork, scheduledTasks ->
+                    apply { persist(state, state.chat.copy(backgroundWork = backgroundWork, scheduledTasks = scheduledTasks)) }
                 },
                 onStatus = { status, _, queuedCount, operationId, snapshot ->
                     apply {
@@ -347,6 +372,7 @@ class ChatMonitorService : Service() {
         if (!canFinishMonitoredChat(
                 state.snapshotReceived, state.chat.agentStatus, state.activeOperations.size,
                 state.remoteQueueCount, state.chat.queuedPrompts.size, pendingApproval,
+                state.chat.backgroundWork, state.chat.scheduledTasks,
             )
         ) return
         removeMonitor(state)
@@ -386,7 +412,7 @@ class ChatMonitorService : Service() {
         state.connectionEpoch++
         state.connection?.close()
         state.connection = null
-        if (monitored.isEmpty()) finishMonitoring()
+        if (monitored.isEmpty() && chatStore.pendingDeletions.value.isEmpty()) finishMonitoring()
     }
 
     private fun stopWithWarning(messageId: Int) {
@@ -406,6 +432,8 @@ class ChatMonitorService : Service() {
         acceptingCallbacks = false
         loadJob?.cancel()
         loadJob = null
+        deletionJob?.cancel()
+        deletionJob = null
         handler.removeCallbacksAndMessages(null)
         monitored.values.forEach { state ->
             state.connectionEpoch++
@@ -528,8 +556,10 @@ internal fun canFinishMonitoredChat(
     remoteQueueCount: Int,
     persistedQueueCount: Int,
     pendingApproval: Boolean,
+    backgroundWork: Boolean = false,
+    scheduledTasks: Int = 0,
 ): Boolean = snapshotReceived && agentStatus in setOf("idle", "failed") && activeOperationCount == 0 &&
-    remoteQueueCount == 0 && persistedQueueCount == 0 && !pendingApproval
+    remoteQueueCount == 0 && persistedQueueCount == 0 && !pendingApproval && !backgroundWork && scheduledTasks == 0
 
 internal fun shouldRestoreMonitoredQueue(
     snapshot: Boolean,

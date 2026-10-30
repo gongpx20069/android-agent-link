@@ -56,7 +56,7 @@ class InteractionReviewTest {
         compose.onNodeWithText("Chat A").performScrollTo().performTouchInput { swipeLeft() }
         compose.onNodeWithText("Delete").performClick()
         compose.onNodeWithText("Delete shared chat?").assertIsDisplayed()
-        compose.onNodeWithText("phone and Server", substring = true).assertExists()
+        compose.onNodeWithText("Remove from this phone now", substring = true).assertExists()
         assertEquals(0, requests)
         compose.onNodeWithText("Cancel").performClick()
         assertEquals(0, requests)

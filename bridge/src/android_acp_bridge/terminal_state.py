@@ -122,6 +122,8 @@ class Transcript:
             self.add(chat, operation, role, item.get("content", "") + ("\n[Queued]" if item.get("state") == "queued" else ""))
         elif kind == "operation.done":
             self.add(chat, operation, "Notice", "Task " + str(item.get("status", "finished")) + ".")
+        elif kind == "operation.background":
+            self.add(chat, operation, "Notice", "Ready for another message; background work continues.")
         elif kind == "session/update":
             update_kind = item.get("kind")
             if update_kind == "user_message_chunk":

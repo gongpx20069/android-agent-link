@@ -534,6 +534,8 @@ class FullScreenTerminal:
             permission = allow_all_option(chat.config_options) if chat else None
             allow_all = display_text(config_value(permission)) if permission else "unknown"
             state = chat.status if chat else "No chat"
+            if chat and (chat.background_work or chat.scheduled_tasks):
+                state += f" | Background: {'active' if chat.background_work else 'idle'} | Schedules: {chat.scheduled_tasks}"
             queued = chat.queued_count if chat else 0
             attention = self.client.toolbar(500)
             hint = "".join(text for _, text in attention).split("\n")[-1].strip()

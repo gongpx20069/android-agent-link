@@ -72,6 +72,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.State
 import androidx.compose.runtime.CompositionLocalProvider
@@ -181,6 +182,7 @@ import com.gongpx.androidacpclient.data.bridge.restoreQueuedPrompts
 import com.gongpx.androidacpclient.data.bridge.mergeSharedChat
 import com.gongpx.androidacpclient.data.bridge.listSharedChats
 import com.gongpx.androidacpclient.data.bridge.deleteSharedChat
+import com.gongpx.androidacpclient.data.bridge.retryPendingChatDeletions
 import com.gongpx.androidacpclient.data.bridge.renameSharedChat
 import com.gongpx.androidacpclient.data.bridge.applySharedTitle
 import com.gongpx.androidacpclient.data.model.Workspace
@@ -244,6 +246,14 @@ private fun agentStatusLabel(status: String, strings: AppStrings): String = when
     "idle" -> strings.reliability("Agent: idle", "Agent：空闲")
     "failed" -> strings.reliability("Agent: failed", "Agent：失败")
     else -> strings.reliability("Agent: awaiting status confirmation", "Agent：等待状态确认")
+}
+
+private fun chatActivityLabel(chat: Chat, strings: AppStrings): String {
+    val activity = if (chat.backgroundWork) strings.reliability(" | Background work", " | 后台工作中") else ""
+    val schedules = if (chat.scheduledTasks > 0) {
+        strings.reliability(" | Schedules: ${chat.scheduledTasks}", " | 定时任务：${chat.scheduledTasks}")
+    } else ""
+    return agentStatusLabel(chat.agentStatus, strings) + activity + schedules
 }
 private const val FEEDBACK_ISSUES_URL = "https://github.com/gongpx20069/android-agent-link/issues/new"
 private const val DEVELOPER_EMAIL = "gongpx20069@vip.qq.com"
@@ -667,6 +677,9 @@ fun AgentLinkApp(
     var selectedTab by rememberSaveable { mutableStateOf(AppTab.Chats) }
     var selectedChatId by rememberSaveable { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+    val pendingDeletions by chatStore.pendingDeletions.collectAsState()
+    var deletionDetailsOpen by remember { mutableStateOf(false) }
+    var deletionRetryRevision by remember { mutableStateOf(0) }
     var scannerOpen by remember { mutableStateOf(false) }
     var resumeDialogState by remember { mutableStateOf<ResumeDialogState?>(null) }
     var modelDialogState by remember { mutableStateOf<ModelDialogState?>(null) }
@@ -831,8 +844,7 @@ fun AgentLinkApp(
         setChatUnread(chatId, false)
     }
 
-    fun removeConfirmedChat(chat: Chat) {
-        chatStore.remove(chat.id)
+    fun removeLocalChat(chat: Chat) {
         chats.removeAll { it.id == chat.id }
         unreadChatIds.remove(chat.id)
         chatNotificationManager.cancel(chat.id)
@@ -846,37 +858,39 @@ fun AgentLinkApp(
         resyncingChatIds.remove(chat.id)
         statusSynchronizedChatIds.remove(chat.id)
         busyChatIds.remove(chat.id)
+        latestAgentPreviews.remove(chat.id)
+        sessionLoadingChatIds.remove(chat.id)
+        configuringChatIds.remove(chat.id)
+        cancellingChatIds.remove(chat.id)
+        authenticationRequiredChatIds.remove(chat.id)
+        loadingHistoryChatIds.remove(chat.id)
+        if (historyDialogChat?.id == chat.id) historyDialogChat = null
+        if (resumeDialogState?.chat?.id == chat.id) resumeDialogState = null
+        if (modelDialogState?.chat?.id == chat.id) modelDialogState = null
+        if (renameDialogChatId == chat.id) renameDialogChatId = null
+        refreshApprovals()
+        chatNotificationManager.reconcileRemovedChats(chatStore.removedChatIds(), approvals)
         if (selectedChatId == chat.id) selectedChatId = null
+    }
+
+    fun removeConfirmedChat(chat: Chat) {
+        chatStore.confirmDeletion(chat.machineId, chat.id)
+        removeLocalChat(chat)
     }
 
     fun deleteChat(chat: Chat) {
         if (chat.id in deletingChatIds || chatStore.isRemoved(chat.id)) return
-        val machine = machines.firstOrNull { it.id == chat.machineId }
-        if (machine == null) {
-            statusMessage = strings.reliability(
-                "Reconnect this chat's computer before deleting the shared chat.",
-                "请先重新连接此聊天所属的电脑，再删除共享聊天。",
-            )
-            return
-        }
-        if (chat.id in busyChatIds || chat.id in sessionLoadingChatIds || chat.queuedPrompts.isNotEmpty()) {
-            statusMessage = strings.reliability(
-                "Stop or finish tasks and queued messages before deleting this chat.",
-                "请先停止或完成任务并处理待发送消息，再删除此聊天。",
-            )
-            return
-        }
         deletingChatIds.add(chat.id)
         scope.launch {
             try {
-                bridgeClient.deleteSharedChat(machine, chat.id)
-                removeConfirmedChat(chat)
+                chatStore.requestDeletion(chat)
+                removeLocalChat(chat)
             } catch (error: Exception) {
                 if (error is kotlinx.coroutines.CancellationException) throw error
-                statusMessage = strings.reliability(
-                    "Shared deletion was not confirmed. Reconnect/update the computer Bridge and retry: ${error.message}",
-                    "未能确认共享删除，请重新连接或更新电脑端 Bridge 后重试：${error.message}",
-                )
+                snackbar.showSnackbar(strings.reliability(
+                    "Deletion could not be saved. Restart the app to retry; server deletion was not requested.",
+                    "无法保存删除请求。请重启后重试；尚未请求服务器删除。",
+                ))
             } finally {
                 deletingChatIds.remove(chat.id)
             }
@@ -994,7 +1008,7 @@ fun AgentLinkApp(
     }
 
     fun addApproval(chat: Chat, request: BridgeApprovalRequest? = null) {
-        if (request == null) return
+        if (request == null || chatStore.isRemoved(chat.id)) return
         val known = approvalStore.load().any { it.id == request.approvalId }
         if (known) return
         val approval = request.toApproval(chat, System.currentTimeMillis())
@@ -1046,6 +1060,7 @@ fun AgentLinkApp(
                 answer.optionId, answer.content,
             )
                 .onSuccess { result ->
+                    if (chatStore.isRemoved(approval.chatId)) return@onSuccess
                     approvalStore.resolve(approval.id, result.status, System.currentTimeMillis())
                     chatNotificationManager.cancelApproval(approval.id)
                     refreshApprovals()
@@ -1129,7 +1144,8 @@ fun AgentLinkApp(
                 val hasRemovalTombstones =
                     chats.firstOrNull { it.id == chatId }?.queuedPrompts?.any { it.removing } == true
                 val recovering = chats.firstOrNull { it.id == chatId }?.bridgeResyncRequired == true
-                if (!recovering && selectedChatId != chatId && (status == "failed" || !hasRemovalTombstones)) {
+                val hasBackground = chats.firstOrNull { it.id == chatId }?.let { it.backgroundWork || it.scheduledTasks > 0 } == true
+                if (!recovering && !hasBackground && selectedChatId != chatId && (status == "failed" || !hasRemovalTombstones)) {
                     chatConnections.remove(chatId)?.close()
                 }
             }
@@ -1153,7 +1169,7 @@ fun AgentLinkApp(
         val wasActivePrompt = activePromptOperationIds[chatId] == operationId
         when (state) {
             "", "starting", "running" -> activePromptOperationIds[chatId] = operationId
-            "completed", "failed", "cancelled", "interrupted" -> {
+            "completed", "failed", "cancelled", "interrupted", "background" -> {
                 if (activePromptOperationIds[chatId] == operationId) {
                     activePromptOperationIds.remove(chatId)
                 }
@@ -1179,9 +1195,10 @@ fun AgentLinkApp(
     ) {
         if (operationType != "chat.prompt") return
         val wasActivePrompt = activePromptOperationIds[chatId] == operationId
-        if (isTerminalPromptStatus(status) && wasActivePrompt) {
+        if ((isTerminalPromptStatus(status) || status == "background") && wasActivePrompt) {
             activePromptOperationIds.remove(chatId)
         }
+        if (status == "background") return
         val current = chats.firstOrNull { it.id == chatId }
         val finished = current?.finishPrompt(operationId, status, System.currentTimeMillis())
         if (finished != null) {
@@ -1681,6 +1698,13 @@ fun AgentLinkApp(
                     ))
                 }
             },
+            onActivity = { backgroundWork, scheduledTasks ->
+                if (chatConnections[chat.id] === connection) {
+                    chats.firstOrNull { it.id == chat.id }?.let {
+                        upsertChat(it.copy(backgroundWork = backgroundWork, scheduledTasks = scheduledTasks))
+                    }
+                }
+            },
             onStatus = statusCallback@{ status, eventId, queuedCount, operationId, isSnapshot ->
                 if (chatConnections[chat.id] !== connection) return@statusCallback
                 val firstSnapshot = isSnapshot && chat.id !in statusSynchronizedChatIds
@@ -1846,8 +1870,9 @@ fun AgentLinkApp(
         chatConnections.values.toList().forEach { it.close() }
         chatConnections.clear()
         foregroundJobs.toList().forEach { it.cancel() }
-        if (monitored.isNotEmpty()) {
-            ChatMonitorService.start(context.applicationContext, monitored).onFailure { error ->
+        val backgroundIds = monitored + chatStore.pendingDeletions.value.map { it.chatId } + deletingChatIds
+        if (backgroundIds.isNotEmpty()) {
+            ChatMonitorService.start(context.applicationContext, backgroundIds).onFailure { error ->
                 monitored.forEach { id ->
                     chats.firstOrNull { it.id == id }?.let { upsertChat(it.copy(connectionError = error.message)) }
                 }
@@ -1885,12 +1910,14 @@ fun AgentLinkApp(
             chats.clear()
             chats.addAll(chatStore.snapshot())
             refreshApprovals()
+            chatNotificationManager.reconcileRemovedChats(chatStore.removedChatIds(), approvals)
             unreadChatIds.clear()
             unreadChatIds.addAll(chatStore.loadUnreadChatIds())
             statusSynchronizedChatIds.clear()
             busyChatIds.clear()
             busyChatIds.addAll(chats.filter {
-                it.agentStatus in setOf("busy", "waitingApproval") || it.queuedPrompts.any { queued -> !queued.removing }
+                it.backgroundWork || it.scheduledTasks > 0 ||
+                    it.agentStatus in setOf("busy", "waitingApproval") || it.queuedPrompts.any { queued -> !queued.removing }
             }.map { it.id })
             notificationsEnabled = chatNotificationManager.notificationsEnabled()
         }
@@ -1925,6 +1952,23 @@ fun AgentLinkApp(
         }
     }
     val machineConnectionKeys = machines.map { "${it.id}|${it.endpoint}|${it.deviceToken}|${it.connectionHeaders.hashCode()}" }
+    LaunchedEffect(machineConnectionKeys, pendingDeletions.map { it.machineId to it.chatId },
+        deletionRetryRevision, appInForeground.value, uiOwnsConnections, storesLoaded) {
+        if (!appInForeground.value || !uiOwnsConnections || !storesLoaded || storageError != null) return@LaunchedEffect
+        val job = coroutineContext[Job]!!
+        foregroundJobs.add(job)
+        try {
+            while (appInForeground.value && uiOwnsConnections && chatStore.pendingDeletions.value.isNotEmpty()) {
+                retryPendingChatDeletions(chatStore, machines.toList(), bridgeClient::deleteSharedChat)
+                delay(5_000)
+            }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            storageError = strings.reliability("Could not save deletion status. Restart to retry.", "无法保存删除状态，请重启后重试。")
+        } finally {
+            foregroundJobs.remove(job)
+        }
+    }
     LaunchedEffect(machineConnectionKeys, appInForeground.value, uiOwnsConnections, storesLoaded) {
         if (!appInForeground.value || !uiOwnsConnections || !storesLoaded || storageError != null) return@LaunchedEffect
         val revisions = mutableMapOf<String, Long>()
@@ -1941,7 +1985,7 @@ fun AgentLinkApp(
                         val local = chats.firstOrNull { it.id == id }
                         if (remote.optBoolean("deleted")) {
                             if (local?.machineId == machine.id) removeConfirmedChat(local)
-                            else if (local == null && !chatStore.isRemoved(id)) chatStore.remove(id)
+                            else if (local == null) chatStore.confirmDeletion(machine.id, id)
                             continue
                         }
                         if (id in deletingChatIds || chatStore.isRemoved(id)) continue
@@ -1961,6 +2005,7 @@ fun AgentLinkApp(
                         it.machineId == machine.id && it.id !in remoteIds && it.id !in deletingChatIds &&
                             !chatStore.isRemoved(it.id)
                     }.toList()) {
+                        if (chatStore.isRemoved(local.id) || local.id in deletingChatIds) continue
                         val registration = bridgeClient.controlRequest(machine, "chat.register", JSONObject()
                             .put("chatId", local.id).put("chatTitle", local.title)
                             .put("workspacePath", local.workspacePath).put("agentId", local.agentId)
@@ -2264,6 +2309,31 @@ fun AgentLinkApp(
             }
         }
         Surface(modifier = Modifier.fillMaxSize()) {
+            if (deletionDetailsOpen) {
+                AlertDialog(
+                    onDismissRequest = { deletionDetailsOpen = false },
+                    title = { Text(strings.reliability("Pending server deletions", "待完成的服务器删除")) },
+                    text = {
+                        Column(Modifier.verticalScroll(rememberScrollState())) {
+                            Text(strings.reliability(
+                                "Removed from this phone. Server deletion is not confirmed. Retries continue while connected; busy tasks and approvals must be handled on another client. No work is cancelled or approved.",
+                                "已从此手机移除，但尚未确认服务器删除。连接后将重试；运行中的任务及审批须在其他客户端处理。不会取消任务或自动批准。",
+                            ))
+                            pendingDeletions.forEach {
+                                Text("${it.title} — ${it.machineName}\n${it.error ?: strings.reliability("Waiting for server confirmation", "等待服务器确认")}",
+                                    modifier = Modifier.padding(top = 12.dp))
+                            }
+                            if (pendingDeletions.isEmpty()) Text(strings.reliability("No pending deletions.", "没有待删除项。"))
+                        }
+                    },
+                    confirmButton = { TextButton(onClick = { deletionRetryRevision++ }) {
+                        Text(strings.reliability("Retry", "重试"))
+                    } },
+                    dismissButton = { TextButton(onClick = { deletionDetailsOpen = false }) {
+                        Text(strings.reliability("Close", "关闭"))
+                    } },
+                )
+            }
             if (scannerOpen) {
                 QrScannerScreen(
                     onLinkScanned = { link ->
@@ -2278,6 +2348,11 @@ fun AgentLinkApp(
                     snackbarHost = { SnackbarHost(snackbar) },
                     topBar = {
                         TopAppBar(
+                            actions = {
+                                if (pendingDeletions.isNotEmpty()) TextButton(onClick = { deletionDetailsOpen = true }) {
+                                    Text(strings.reliability("Pending deletes: ${pendingDeletions.size}", "待删除：${pendingDeletions.size}"))
+                                }
+                            },
                             title = {
                                 Column {
                                     Text("AgentLink", fontWeight = FontWeight.SemiBold)
@@ -2674,8 +2749,8 @@ internal fun ChatsScreen(
             onDismissRequest = { chatToDelete = null },
             title = { Text(strings.reliability("Delete shared chat?", "删除共享聊天？")) },
             text = { Text(strings.reliability(
-                "Remove this chat from the phone and Server. Other clients will synchronize the deletion. The agent's saved session history and project files are kept.",
-                "将从手机和 Server 删除此聊天，其他客户端也会同步移除。Agent 保存的会话历史和项目文件不会删除。",
+                "Remove from this phone now and save a server deletion request. Offline or busy servers will be retried, including after restart. Running work is NOT stopped and approvals are NOT answered; use another client to handle them. Native session history and project files are kept.",
+                "立即从此手机移除并保存服务器删除请求。离线或忙碌时会重试，重启后也会继续。不会停止任务或回答审批；请在其他客户端处理。Agent 会话历史和项目文件将保留。",
             )) },
             confirmButton = { TextButton(onClick = {
                 chatToDelete = null
@@ -2938,7 +3013,7 @@ internal fun ChatsScreen(
                             }
                             Text("${chat.agentName} · ${chat.machineName}", maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Text(chat.workspacePath, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                            Text(agentStatusLabel(chat.agentStatus, strings), color = MaterialTheme.colorScheme.primary)
+                            Text(chatActivityLabel(chat, strings), color = MaterialTheme.colorScheme.primary)
                             val pending = approvals.count { it.chatId == chat.id && it.status.isActionable() }
                             if (pending > 0) Text(strings.pending(pending), color = MaterialTheme.colorScheme.error)
                             chat.connectionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
@@ -3052,7 +3127,7 @@ internal fun ChatDetailScreen(
                     Text("${chat.agentName} · ${chat.machineName} · ${chat.workspaceName}", maxLines = 1, overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(agentStatusLabel(chat.agentStatus, strings), modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+                        Text(chatActivityLabel(chat, strings), modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
                         TextButton(onClick = { showConnectionDetails = !showConnectionDetails }) {
                             Text(strings.reliability(if (showConnectionDetails) "Hide details" else "Details",
                                 if (showConnectionDetails) "收起详情" else "详情"))

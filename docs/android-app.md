@@ -341,9 +341,14 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Automatic update checks on app startup and manual update checks from Settings.
 
 GitHub Copilot CLI uses the bridge's native SDK adapter by default. The adapter
-keeps a prompt busy through background execution until root session idle, while
-continuously projecting messages, child-agent activity, tools and approvals onto
-the existing WebSocket contract. No Android protocol change is required.
+separates foreground readiness from background completion. `operation.background`
+releases the matching foreground operation without finishing tools or notifying
+completion; `operation.done` follows when the background work actually settles.
+Chat labels show background activity and registered schedule count independently
+of foreground status. These fields survive encrypted storage/catalog/attach replay.
+Foreground and bounded background connection owners continue receiving output and
+approvals while the chat is ready for another message. Both Bridge and Android
+must be updated for this extended WebSocket lifecycle.
 `--copilot-transport acp` is an explicit compatibility option without the native
 background-completion guarantee. Claude Code uses the separately installed,
 version-checked Claude ACP adapter; detection does not claim authentication.
@@ -611,10 +616,25 @@ and replaces the loading placeholder with recent text plus associated tool, plan
 and control rows. Older rows are fetched from that immutable snapshot without
 reloading the agent. Failed session switches leave the prior local history intact.
 
-Deleting an Android Chat now requires confirmation to remove it from both the
-phone and Server. The row remains visible with pending feedback until the Bridge
-confirms the exact identity; offline, unsupported and busy failures keep it and
-show an error. Stop/finish running and queued work first. Connected clients handle
+Deleting an Android Chat requires confirmation. The encrypted ChatStore commits
+the local removal, unread/approval cleanup, removed-ID tombstone and pending server
+deletion (original machine ID and chat ID) in one transaction. Only then does the
+row disappear. Missing computers, stale busy flags and offline transport do not
+prevent this local action. Storage failure does prevent acceptance; no server
+request is sent. Unsent local prompts are discarded, but already accepted remote
+tasks/queues continue; removing the chat never cancels a task or answers an approval.
+Use another client to finish tasks or handle approvals blocking server deletion.
+
+The app-wide **Pending deletes** action shows durable requests and their latest
+errors; disappearance of a row is not a claim of server success. Foreground and
+bounded background monitor owners retry every five seconds (15-second per-request
+timeout), including after reconnect/app restart. The existing one-hour background
+service limit and Android restrictions still apply; reopening the app resumes
+pending work. Missing original machines remain pending until that identity is
+available again, never retargeted to another computer. Auth, unsupported Bridge,
+busy/conflict, transport errors and ambiguous replies retain the intent. Only
+exact positive confirmation or an explicit tombstone from the original machine
+clears it; repeated server deletion is idempotent. Connected clients handle
 `chat.deleted`/`DELETED`; foreground catalog synchronization also applies explicit
 deletion rows, including after reconnect. Encrypted local tombstones persist with
 record deletion and reject late writes/imports after restart. Mere catalog absence
@@ -624,8 +644,8 @@ A session with completed prompt history remains in the agent's native store and
 can be selected again through Existing Session, or terminal `/new` followed by
 `/resume`. Terminal `/resume` alone changes the current Chat's session and keeps its
 ID; a deleted Chat ID is never revived. Project files are untouched. A config-only empty session may not
-be listed by the agent. This behavior requires updated Android and Bridge builds;
-older Bridges do not fall back to a misleading local-only delete.
+be listed by the agent. Older Bridges leave server deletion visibly pending until
+updated; they never yield a success-shaped local-only fallback.
 
 The workspace does not have to be a Git repository, but Copilot's coding workflows work best inside a repository. If a parent folder such as `D:\peixianws` is selected instead of `D:\peixianws\android-agent-link`, Git-aware commands may report that the current directory is not a Git repository.
 

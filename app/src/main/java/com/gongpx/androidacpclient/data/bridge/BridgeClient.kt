@@ -551,6 +551,7 @@ class BridgeClient(
         onPromptImage: (String, String, ImageAttachment) -> Unit = { _, _, _ -> },
         onDeleted: () -> Unit = {},
         onTitle: (JSONObject) -> Unit = {},
+        onActivity: (Boolean, Int) -> Unit = { _, _ -> },
     ): ChatConnection {
         val requestBuilder = Request.Builder().url(toWebSocketUrl(machine.endpoint, machine.deviceToken))
         machine.connectionHeaders.forEach { (name, value) ->
@@ -739,7 +740,7 @@ class BridgeClient(
                                 onPromptStarted(event.optString("operationId"), event.optString("content"), isReplay)
                             }
                         }
-                        "operation.done" -> {
+                        "operation.done", "operation.background" -> {
                             if (event.optString("operationType") == "chat.prompt" &&
                                 event.optString("status") in setOf("completed", "failed")
                             ) toolReducer.finishTurn(event.optString("operationId"))
@@ -753,6 +754,9 @@ class BridgeClient(
                                 )
                             }
                         }
+                        "chat.activity" -> postApplied {
+                            onActivity(event.optBoolean("backgroundWork"), event.optInt("scheduledTasks"))
+                        }
                         "chat.status" -> {
                             val isSnapshot = event.optBoolean(
                                 "snapshot",
@@ -761,6 +765,9 @@ class BridgeClient(
                             if (isSnapshot) attachReplayBoundary = null
                             postApplied {
                                 if (event.has("chatTitle")) onTitle(event)
+                                if (event.has("backgroundWork")) {
+                                    onActivity(event.optBoolean("backgroundWork"), event.optInt("scheduledTasks"))
+                                }
                                 onStatus(
                                     event.optString("status"),
                                     eventId.takeIf { it >= 0 },

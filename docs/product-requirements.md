@@ -3,9 +3,15 @@
 ## Shared chat lifecycle
 
 - Android deletion must remove the shared Server Chat after explicit confirmation,
-  and synchronize removal to other clients. Keep the Chat on unconfirmed failure.
+  and synchronize removal to other clients. Accept removal offline by atomically
+  saving local removal and an original-machine/chat server-deletion intent.
+  Hide locally only after persistence succeeds; show pending server deletion and
+  errors until acknowledged. Retry on reconnect/restart, never retarget a missing machine.
 - Never implicitly stop active/queued work or delete agent-native history/project
-  files. Require idle state and persist deletion markers against stale registrations.
+  files. Require authoritative server idle state for remote deletion, not cached
+  busy flags for local removal. Persist deletion markers against stale registrations.
+  Pending approvals are not approved or denied by removal; explain that another
+  client must handle work/approvals while server deletion is pending.
 - Interactive `/new` offers installed-agent and existing-workspace selection;
   `/resume` selects and confirms a saved native session for the current Chat's
   agent/workspace, preserving that Chat ID and synchronizing its binding to Android.

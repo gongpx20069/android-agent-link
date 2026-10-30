@@ -3,6 +3,16 @@ package com.gongpx.androidacpclient.data.store
 import android.content.Context
 import com.gongpx.androidacpclient.data.model.*
 import com.gongpx.androidacpclient.data.store.ChatJsonCodec.toJson
+import com.gongpx.androidacpclient.data.bridge.retryPendingChatDeletions
+import com.gongpx.androidacpclient.data.bridge.BridgeClient
+import com.gongpx.androidacpclient.data.bridge.deleteSharedChat
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CancellationException
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import org.json.JSONObject
 import javax.crypto.KeyGenerator
 import org.json.JSONArray
 import org.junit.After
@@ -36,6 +46,165 @@ class ChatStoreTest {
         Chat(id, "Private title", "machine", "Computer", "workspace", "Project", "C:\\private", "agent", "Agent", 1, messages = messages)
 
     private fun message(index: Int) = ChatMessage(MessageRole.Agent, "message $index", index.toLong())
+
+    private fun restart() {
+        store.closeForTest()
+        database = ChatDatabase(context, cipher) { context.getSharedPreferences(it, Context.MODE_PRIVATE) }
+        store = ChatStore(database)
+        store.load()
+    }
+
+    @Test fun foregroundIdleAndBackgroundActivitySurviveEncryptedRestart() {
+        store.load()
+        store.upsert(chat().copy(agentStatus = "idle", backgroundWork = true, scheduledTasks = 2))
+        store.awaitDurable()
+        restart()
+        val restored = store.snapshot().single()
+        assertEquals("idle", restored.agentStatus)
+        assertTrue(restored.backgroundWork)
+        assertEquals(2, restored.scheduledTasks)
+    }
+
+    @Test fun offlineDeletionCommitsIntentRemovalUnreadAndApprovalsTogether() = runBlocking {
+        store.load()
+        val stale = chat().copy(agentStatus = "busy", queuedPrompts = listOf(QueuedPrompt("q", "queued", 1)))
+        val approval = Approval("a", stale.id, "Chat", stale.machineId, "Machine", "workspace", "command", "Approve", createdAtMillis = 1)
+        store.upsert(stale)
+        store.saveApprovals(listOf(approval))
+        store.setUnread(stale.id, true)
+        store.requestDeletion(stale)
+        assertTrue(database.load().isEmpty())
+        assertTrue(database.loadApprovals().isEmpty())
+        assertEquals(stale.machineId, store.pendingDeletions.value.single().machineId)
+        store.saveApprovals(listOf(approval))
+        store.setUnread(stale.id, true)
+        assertThrows(IllegalStateException::class.java) { store.upsert(stale) }
+        store.awaitDurable()
+        restart()
+        assertTrue(store.snapshot().isEmpty())
+        assertTrue(store.loadUnreadChatIds().isEmpty())
+        assertTrue(store.loadApprovals().isEmpty())
+        assertEquals(stale.id, store.pendingDeletions.value.single().chatId)
+        assertThrows(IllegalStateException::class.java) { store.upsert(stale) }
+        Unit
+    }
+
+    @Test fun failedDeletionTransactionKeepsOriginalChatAndNoRetryIntent() {
+        store.load()
+        store.upsert(chat())
+        store.setUnread("chat", true)
+        store.awaitDurable()
+        database.writableDatabase.execSQL("CREATE TRIGGER reject_delete_intent BEFORE INSERT ON state WHEN NEW.id='pendingChatDeletions' BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+        assertThrows(IllegalStateException::class.java) { runBlocking { store.requestDeletion(chat()) } }
+        assertEquals("chat", database.load().single().id)
+        assertNull(database.readState("pendingChatDeletions"))
+        assertNull(database.readState("removedChats"))
+        assertTrue(store.pendingDeletions.value.isEmpty())
+        assertNotNull(store.failure.value)
+    }
+
+    @Test fun missingMachineNeverRetargetsAndPendingErrorSurvivesRestart() = runBlocking {
+        store.load()
+        store.upsert(chat())
+        store.requestDeletion(chat())
+        val other = Machine("other", "Computer", "http://localhost", "token", "f")
+        retryPendingChatDeletions(store, listOf(other)) { _, _ -> fail("Must not target another machine") }
+        restart()
+        assertTrue(store.pendingDeletions.value.single().error!!.contains("missing"))
+        store.confirmDeletion(other.id, "chat")
+        store.awaitDurable()
+        assertEquals("machine", store.pendingDeletions.value.single().machineId)
+    }
+
+    @Test fun retryKeepsOfflineAuthBusyUnsupportedAndUnknownOutcomesUntilExactSuccess() = runBlocking {
+        store.load()
+        store.upsert(chat())
+        store.requestDeletion(chat())
+        val machine = Machine("machine", "Computer", "http://localhost", "token", "f")
+        for (message in listOf("Offline", "Authentication required", "CONFLICT: busy", "UNSUPPORTED", "Wrong chat confirmation")) {
+            retryPendingChatDeletions(store, listOf(machine)) { target, id ->
+                assertEquals(machine.id, target.id)
+                assertEquals("chat", id)
+                throw IllegalStateException(message)
+            }
+            assertEquals(message, store.pendingDeletions.value.single().error)
+        }
+        restart()
+        retryPendingChatDeletions(store, listOf(machine)) { _, _ -> }
+        assertTrue(store.pendingDeletions.value.isEmpty())
+        restart()
+        assertTrue(store.pendingDeletions.value.isEmpty())
+        assertTrue(store.isRemoved("chat"))
+        assertTrue(store.snapshot().isEmpty())
+    }
+
+    @Test fun ownershipCancellationRetainsDurableRequestForNextOwner() = runBlocking {
+        store.load()
+        store.upsert(chat())
+        store.requestDeletion(chat())
+        val machine = Machine("machine", "Computer", "http://localhost", "token", "f")
+        try {
+            retryPendingChatDeletions(store, listOf(machine)) { _, _ -> throw CancellationException("Handoff") }
+            fail("Cancellation must propagate")
+        } catch (_: CancellationException) { }
+        restart()
+        assertEquals("chat", store.pendingDeletions.value.single().chatId)
+        retryPendingChatDeletions(store, listOf(machine)) { _, _ -> }
+        assertTrue(store.pendingDeletions.value.isEmpty())
+    }
+
+    @Test fun serverTombstoneAcknowledgesOnlyOriginalMachineAndNeverResurrects() = runBlocking {
+        store.load()
+        store.upsert(chat())
+        store.requestDeletion(chat())
+        store.confirmDeletion("machine", "chat")
+        store.awaitDurable()
+        restart()
+        assertTrue(store.pendingDeletions.value.isEmpty())
+        assertTrue(store.isRemoved("chat"))
+        assertThrows(IllegalStateException::class.java) { store.upsert(chat()) }
+        store.requestDeletion(chat())
+        assertTrue(store.pendingDeletions.value.isEmpty())
+    }
+
+    @Test fun onlineDeletionRetriesConflictAndValidatesExactWireConfirmationWithoutOtherActions() = runBlocking {
+        store.load()
+        store.upsert(chat())
+        store.requestDeletion(chat())
+        val server = MockWebServer()
+        val frames = mutableListOf<JSONObject>()
+        listOf(
+            JSONObject().put("status", "error").put("code", "CONFLICT").put("message", "Chat is busy"),
+            JSONObject().put("status", "ok").put("data", JSONObject().put("chatId", "wrong").put("deleted", true)),
+            JSONObject().put("status", "ok").put("data", JSONObject().put("chatId", "chat").put("deleted", true)),
+        ).forEach { response ->
+            server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, null) }
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    val request = JSONObject(text)
+                    frames.add(request)
+                    webSocket.send(response.put("type", "control.result").put("requestId", request.getString("requestId")).toString())
+                    webSocket.send("""{"type":"bridge.done"}""")
+                }
+            }))
+        }
+        server.start()
+        try {
+            val machine = Machine("machine", "Computer", server.url("/").toString(), "token", "f")
+            val bridge = BridgeClient()
+            retryPendingChatDeletions(store, listOf(machine), bridge::deleteSharedChat)
+            assertEquals("Chat is busy", store.pendingDeletions.value.single().error)
+            restart()
+            retryPendingChatDeletions(store, listOf(machine), bridge::deleteSharedChat)
+            assertTrue(store.pendingDeletions.value.single().error!!.contains("confirm"))
+            retryPendingChatDeletions(store, listOf(machine), bridge::deleteSharedChat)
+            assertTrue(store.pendingDeletions.value.isEmpty())
+            assertTrue(frames.all { it.getString("action") == "chat.delete" && it.getString("chatId") == "chat" })
+            assertEquals(3, frames.size)
+        } finally {
+            server.shutdown()
+        }
+    }
 
     @Test fun renamedTitleAndRevisionSurviveEncryptedStoreRestart() {
         store.load()

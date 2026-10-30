@@ -148,7 +148,7 @@ fun Chat.acceptPrompt(
         "completed", "failed", "interrupted" -> startQueuedPrompt(operationId, content, nowMillis).let {
             it.copy(activePromptImages = it.activePromptImages - operationId)
         }
-        "running", "starting", "" ->
+        "running", "starting", "background", "" ->
             startQueuedPrompt(operationId, content, nowMillis)
         else -> this
     }

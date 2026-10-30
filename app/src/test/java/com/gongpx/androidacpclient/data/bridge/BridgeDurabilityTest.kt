@@ -21,6 +21,45 @@ import org.robolectric.Shadows.shadowOf
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class BridgeDurabilityTest {
+    @Test fun foregroundYieldKeepsBackgroundEventsAndLaterCompletionOrdered() {
+        val server = MockWebServer()
+        val received = mutableListOf<String>()
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                listOf(
+                    """{"type":"operation.background","operationType":"chat.prompt","operationId":"old","status":"background"}""",
+                    """{"type":"chat.status","status":"idle","snapshot":true,"backgroundWork":true,"scheduledTasks":1}""",
+                    """{"type":"operation.started","operationId":"new","content":"next"}""",
+                    """{"type":"operation.done","operationType":"chat.prompt","operationId":"old","status":"completed","backgroundCompletion":true}""",
+                    """{"type":"chat.activity","backgroundWork":false,"scheduledTasks":0}""",
+                ).forEachIndexed { index, json ->
+                    webSocket.send(JSONObject(json).put("chatId", "chat").put("eventId", index + 1).toString())
+                }
+            }
+        }))
+        server.start()
+        val connection = BridgeClient().openChatConnection(
+            machine = Machine("m", "M", server.url("/").toString(), "token", "f"),
+            chatId = "chat", agentId = "copilot-cli", workspacePath = "workspace", lastEventId = 0,
+            onOperationDone = { _, status, id, _, _ -> received.add("$id:$status") },
+            onActivity = { work, schedules -> received.add("activity:$work:$schedules") },
+            onStatus = { status, _, _, _, _ -> received.add(status) },
+            onPromptStarted = { id, _, _ -> received.add("$id:started") },
+        )
+        try {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4)
+            while (received.size < 6 && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(40))
+                Thread.sleep(10)
+            }
+            assertEquals(listOf("old:background", "activity:true:1", "idle", "new:started",
+                "old:completed", "activity:false:0"), received)
+        } finally {
+            connection.close()
+            server.shutdown()
+        }
+    }
+
     @Test fun renameEventsAndAttachSnapshotsAreAppliedInOrder() {
         val server = MockWebServer()
         val names = mutableListOf<String>()

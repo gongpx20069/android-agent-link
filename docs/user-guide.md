@@ -317,8 +317,13 @@ replay restore only context. Android's same Chat receives the session change.
 Use `/new` then `/resume` if you want another Chat. No prompt is sent.
 
 Deleting a Chat on Android asks for shared deletion confirmation and removes it
-from the Server/interactive terminal as well. Stop or finish tasks and queued
-messages first. Offline/old-Bridge errors keep the card until deletion is confirmed.
+locally after durably saving the request, even offline or with a stale busy status.
+**Pending deletes** shows requests awaiting the original Server and their errors.
+Reconnect/reopen the app to continue automatic retries; update an unsupported Bridge.
+Server/interactive terminal removal waits for confirmation. Running/queued server
+tasks continue and approvals are not answered: use another client to handle them.
+Unsent phone-only prompts are discarded. Background retries use Android's existing
+bounded monitor, not an indefinite background guarantee.
 Native agent history and project files are kept; use Existing Session or `/new` then `/resume`
 to open that history with a fresh Chat ID. Both App and Bridge must be updated.
 
@@ -360,7 +365,7 @@ Use a real terminal, not a redirected pipe; the standard-library server is requi
 
 | Agent | AgentLink integration |
 | --- | --- |
-| GitHub Copilot CLI | Native SDK transport by default, with session-level background completion. Requires an installed, signed-in CLI; see the [bridge guide](../bridge/README.md#copilot-background-task-lifecycle) for compatibility. |
+| GitHub Copilot CLI | Native SDK transport by default. You can chat once the foreground turn yields while schedules/background tasks continue; completion is reported separately after background work settles. Requires an installed, signed-in CLI; see the [bridge guide](../bridge/README.md#copilot-background-task-lifecycle). |
 | Claude Code | Uses `claude-agent-acp` 0.81.2, Node.js 22+, and local Claude authentication. See [setup](../bridge/README.md#claude-code). |
 | Kimi Code | Native `kimi acp`, current JavaScript Kimi Code 2.1.1 baseline; local `kimi login`. Supports session recovery and question forms. |
 | Qwen Code | Native `qwen --acp`, 0.24.6 baseline; local authentication. Supports session recovery and Qwen question forms. |

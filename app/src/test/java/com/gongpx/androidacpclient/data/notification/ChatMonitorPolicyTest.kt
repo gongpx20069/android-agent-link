@@ -23,6 +23,7 @@ class ChatMonitorPolicyTest {
         assertTrue(shouldNotifyMonitoredCompletion("op-new", null, "failed", 0))
         assertFalse(shouldNotifyMonitoredCompletion("op-new", "op-new", "failed", 0))
         assertFalse(shouldNotifyMonitoredCompletion("op-new", null, "cancelled", 0))
+        assertFalse(shouldNotifyMonitoredCompletion("op-new", null, "background", 0))
     }
 
     @Test
@@ -37,6 +38,8 @@ class ChatMonitorPolicyTest {
         assertFalse(canFinishMonitoredChat(true, "idle", 0, 1, 0, false))
         assertFalse(canFinishMonitoredChat(true, "idle", 0, 0, 1, false))
         assertFalse(canFinishMonitoredChat(true, "idle", 0, 0, 0, true))
+        assertFalse(canFinishMonitoredChat(true, "idle", 0, 0, 0, false, backgroundWork = true))
+        assertFalse(canFinishMonitoredChat(true, "idle", 0, 0, 0, false, scheduledTasks = 1))
     }
 
     @Test

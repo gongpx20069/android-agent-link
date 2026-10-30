@@ -35,6 +35,8 @@ class TerminalChat:
     session_id: str | None = None
     resumable: bool = False
     status: str = "idle"
+    background_work: bool = False
+    scheduled_tasks: int = 0
     queued_count: int = 0
     busy_since: float | None = None
     config_options: list[dict[str, Any]] = field(default_factory=list)
@@ -267,6 +269,9 @@ class TerminalClient:
             if chat is None:
                 return
             kind = event.get("type")
+            if kind in {"chat.activity", "chat.status"} and "backgroundWork" in event:
+                chat.background_work = bool(event["backgroundWork"])
+                chat.scheduled_tasks = int(event.get("scheduledTasks", 0))
             if kind in {"chat.title", "chat.session"} and "chatTitle" in event:
                 chat.title = " ".join(display_text(str(event["chatTitle"])).split())[:256]
                 if kind == "chat.title":
@@ -338,7 +343,7 @@ class TerminalClient:
                         self._dropped += 1
                 elif self.event_sink is not None:
                     item["fields"], item["truncated"] = project_tool(update)
-            elif kind not in {"operation.done", "approval.requested", "approval.resolved", "chat.session.error"}:
+            elif kind not in {"operation.done", "operation.background", "approval.requested", "approval.resolved", "chat.session.error"}:
                 return
             try:
                 self._events.put_nowait(item)
@@ -444,6 +449,9 @@ class TerminalClient:
                         self.say("Queued behind the active task.")
                 elif not selected:
                     self.say(f"[{label}] New task. /chats to switch.")
+            elif kind == "operation.background":
+                if self.event_sink is None:
+                    self.say("Ready for another message; background work continues.")
             elif kind == "operation.done":
                 if self._markdown_key == (chat_id, str(item["operationId"])):
                     self._finish_markdown()

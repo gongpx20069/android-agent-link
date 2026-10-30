@@ -22,6 +22,16 @@ rows. Idle provider processes, subscribers and history snapshots are released;
 native provider session files and workspaces remain untouched. Tombstones survive
 restart and prevent old clients from recreating the same identity. Android stores
 its own encrypted removed-ID set in the same transaction as local record deletion.
+User removal also stores a durable deletion outbox entry in that transaction using
+ChatDatabase's encrypted `state` infrastructure (no new database or scheduler).
+Entries retain original machine/chat identity and last error, independently of the
+removed row. The durable outbox StateFlow drives pending/error UI. Network retries
+pass the store durability barrier; a process-wide mutex and existing foreground/
+bounded background ownership handoff serialize attempts. Cancellation leaves the
+intent retryable; a lost acknowledgment safely repeats the idempotent control action.
+Local cached busy flags never veto local removal; server admission remains authoritative.
+Local approvals and notifications are cleaned without sending decisions; removed-ID
+guards reject late approval/unread updates as well as chat writes/imports/registration.
 It consumes live deletion events and explicit paginated catalog tombstones; absent
 rows alone are not deletion evidence.
 
@@ -400,10 +410,16 @@ CLI's native stdio transport by default. It does not download another CLI or
 change the selected model. `copilot_session.py` projects native events onto the
 existing wire updates; Android, terminal, and Mochi keep the same API.
 The adapter continuously consumes session events on a dedicated thread, while
-permission decisions run outside the SDK event reader. Completion waits for root
-`session.idle` (excluding autopilot pauses), not `send()` acknowledgement,
-`assistant.message`, a child idle event, or `assistant.turn_end`. Native idle
-includes background agents and attached shell commands. Errors and connection
+permission decisions run outside the SDK event reader. Root `assistant.idle`
+releases only the foreground slot after the user turn starts; `operation.background`
+keeps its receipt nonterminal until root `session.idle` (excluding autopilot pauses).
+The next FIFO batch can start before background work finishes. `chat.activity`
+and attach snapshots independently carry background activity and schedule count.
+Turn/interaction and tool ownership keep earlier output and approvals attached
+to their origin; autonomous turns are session-scoped, not new human task results.
+Neither `send()` acknowledgement, `assistant.message`, child idle, nor
+`assistant.turn_end` releases the foreground slot. Native session idle includes
+background agents and attached shell commands. Errors and connection
 loss fail visibly; a heartbeat detects a dead transport without limiting task
 duration. A completed streaming message does not repeat its earlier deltas.
 Live-session history reads reuse the native session rather than stopping it.

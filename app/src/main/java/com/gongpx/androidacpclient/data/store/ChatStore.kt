@@ -9,10 +9,20 @@ import com.gongpx.androidacpclient.data.model.Approval
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
+
+data class PendingChatDeletion(
+    val machineId: String,
+    val chatId: String,
+    val title: String,
+    val machineName: String,
+    val error: String? = null,
+)
 
 /**
  * Process-wide, ordered write-behind repository. UI updates only stage immutable records.
@@ -24,6 +34,49 @@ class ChatStore private constructor(private val shared: Shared) {
     })
     internal constructor(database: ChatDatabase) : this(Shared(database))
     val failure: StateFlow<String?> get() = shared.failure
+    val pendingDeletions: StateFlow<List<PendingChatDeletion>> get() = shared.deletionState
+
+    /** Local removal and retry intent commit together, even if the Activity stops meanwhile. */
+    suspend fun requestDeletion(chat: Chat) {
+        synchronized(shared.lock) {
+            shared.checkReady()
+            val existing = shared.deletions[chat.id]
+            check(existing == null || existing.machineId == chat.machineId) { "Deletion machine mismatch." }
+            check(shared.chats[chat.id]?.machineId.let { it == null || it == chat.machineId }) {
+                "Deletion machine mismatch."
+            }
+            if (chat.id !in shared.removed) {
+                shared.deletions[chat.id] = PendingChatDeletion(chat.machineId, chat.id, chat.title, chat.machineName)
+                shared.deletionsDirty = true
+                remove(chat.id)
+            }
+        }
+        withContext(NonCancellable + Dispatchers.IO) { awaitDurable() }
+    }
+
+    fun confirmDeletion(machineId: String, chatId: String) = synchronized(shared.lock) {
+        shared.checkReady()
+        if (shared.deletions[chatId]?.machineId.let { it != null && it != machineId } ||
+            shared.chats[chatId]?.machineId.let { it != null && it != machineId }) return@synchronized
+        if (chatId in shared.removed && chatId !in shared.deletions) return@synchronized
+        if (shared.deletions.remove(chatId) != null) shared.deletionsDirty = true
+        remove(chatId)
+    }
+
+    fun recordDeletionError(deletion: PendingChatDeletion, message: String) = synchronized(shared.lock) {
+        shared.checkReady()
+        val current = shared.deletions[deletion.chatId] ?: return@synchronized
+        val boundedMessage = message.take(500)
+        if (current.machineId != deletion.machineId || current.error == boundedMessage) return@synchronized
+        shared.deletions[deletion.chatId] = current.copy(error = boundedMessage)
+        shared.deletionsDirty = true
+        shared.schedule()
+    }
+
+    fun removedChatIds(): Set<String> = synchronized(shared.lock) {
+        shared.checkReady()
+        shared.removed.toSet()
+    }
     fun readyForEvent(): Boolean = synchronized(shared.lock) {
         shared.checkFailure()
         shared.pendingCharacters + shared.writingCharacters < 4 * 1024 * 1024
@@ -87,6 +140,10 @@ class ChatStore private constructor(private val shared: Shared) {
         shared.removedDirty = true
         shared.unread = shared.unread - chatId
         shared.unreadDirty = true
+        shared.approvals.values.filter { it.chatId == chatId }.map { it.id }.forEach {
+            shared.approvals.remove(it)
+            shared.pendingApprovals[it] = null
+        }
         shared.schedule()
     }
 
@@ -102,6 +159,7 @@ class ChatStore private constructor(private val shared: Shared) {
 
     fun setUnread(chatId: String, unread: Boolean) = synchronized(shared.lock) {
         shared.checkReady()
+        if (chatId in shared.removed) return@synchronized
         val next = if (unread) shared.unread + chatId else shared.unread - chatId
         if (next != shared.unread) {
             shared.unread = next
@@ -133,7 +191,7 @@ class ChatStore private constructor(private val shared: Shared) {
 
     internal fun saveApprovals(items: List<Approval>) = synchronized(shared.lock) {
         shared.checkReady()
-        val next = items.associateBy { it.id }
+        val next = items.filterNot { it.chatId in shared.removed }.associateBy { it.id }
         shared.approvals.keys.filterNot { it in next }.forEach { shared.pendingApprovals[it] = null }
         next.forEach { (id, item) ->
             if (shared.approvals[id] != item) shared.pendingApprovals[id] = item
@@ -177,6 +235,9 @@ class ChatStore private constructor(private val shared: Shared) {
         val deleted = linkedSetOf<String>()
         val removed = linkedSetOf<String>()
         var removedDirty = false
+        val deletions = linkedMapOf<String, PendingChatDeletion>()
+        val deletionState = MutableStateFlow<List<PendingChatDeletion>>(emptyList())
+        var deletionsDirty = false
         val approvals = linkedMapOf<String, Approval>()
         val pendingApprovals = linkedMapOf<String, Approval?>()
         var unread = emptySet<String>()
@@ -204,8 +265,20 @@ class ChatStore private constructor(private val shared: Shared) {
                 val loadedApprovals = database.loadApprovals()
                 val savedUnread = JSONArray(database.readState("unread") ?: "[]")
                 val savedRemoved = JSONArray(database.readState("removedChats") ?: "[]")
+                val savedDeletions = JSONArray(database.readState("pendingChatDeletions") ?: "[]")
                 synchronized(lock) {
                     repeat(savedRemoved.length()) { removed.add(savedRemoved.getString(it)) }
+                    repeat(savedDeletions.length()) {
+                        val item = savedDeletions.getJSONObject(it)
+                        val deletion = PendingChatDeletion(
+                            item.getString("machineId"), item.getString("chatId"),
+                            item.getString("title"), item.getString("machineName"),
+                            item.optString("error").ifBlank { null },
+                        )
+                        check(deletion.chatId in removed) { "Deletion intent without local tombstone." }
+                        deletions[deletion.chatId] = deletion
+                    }
+                    deletionState.value = deletions.values.toList()
                     loaded.forEach { chats[it.id] = it }
                     loadedApprovals.forEach { approvals[it.id] = it }
                     unread = List(savedUnread.length()) { savedUnread.getString(it) }.toSet()
@@ -228,11 +301,13 @@ class ChatStore private constructor(private val shared: Shared) {
                 val writes: List<Pending>, val deletes: Set<String>, val unread: Set<String>?,
                 val approvals: Map<String, Approval?>,
                 val removed: Set<String>?,
+                val deletions: List<PendingChatDeletion>?,
             )
             val batch = synchronized(lock) {
                 if (failure.value != null) return
                 val batch = Batch(pending.values.toList(), deleted.toSet(), unread.takeIf { unreadDirty },
-                    pendingApprovals.toMap(), removed.toSet().takeIf { removedDirty })
+                    pendingApprovals.toMap(), removed.toSet().takeIf { removedDirty },
+                    deletions.values.toList().takeIf { deletionsDirty })
                 pending.clear()
                 writingCharacters = pendingCharacters
                 pendingCharacters = 0
@@ -240,11 +315,12 @@ class ChatStore private constructor(private val shared: Shared) {
                 pendingApprovals.clear()
                 unreadDirty = false
                 removedDirty = false
+                deletionsDirty = false
                 scheduled = false
                 batch
             }
             if (batch.writes.isEmpty() && batch.deletes.isEmpty() && batch.unread == null &&
-                batch.approvals.isEmpty() && batch.removed == null) return
+                batch.approvals.isEmpty() && batch.removed == null && batch.deletions == null) return
             try {
                 database.transaction {
                     batch.deletes.forEach(database::remove)
@@ -255,8 +331,15 @@ class ChatStore private constructor(private val shared: Shared) {
                     }
                     batch.unread?.let { database.writeState("unread", JSONArray(it).toString()) }
                     batch.removed?.let { database.writeState("removedChats", JSONArray(it).toString()) }
+                    batch.deletions?.let { items ->
+                        database.writeState("pendingChatDeletions", JSONArray(items.map {
+                            JSONObject().put("machineId", it.machineId).put("chatId", it.chatId)
+                                .put("title", it.title).put("machineName", it.machineName).put("error", it.error)
+                        }).toString())
+                    }
                     batch.approvals.forEach { (id, item) -> database.writeApproval(id, item) }
                 }
+                batch.deletions?.let { deletionState.value = it }
             } catch (error: Exception) {
                 fail(error)
             } finally {
