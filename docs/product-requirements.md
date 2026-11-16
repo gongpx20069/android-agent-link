@@ -18,6 +18,10 @@
   keep-screen-on. Refresh shared chat status immediately on entry and every
   three minutes thereafter, as a unified snapshot; allow manual refresh.
   Fit all Chats into the viewport without scrolling; show details on tile tap.
+  Support sensor rotation even with system auto-rotate locked, plus an explicit
+  landscape action. Restore the prior orientation policy outside the foreground
+  Dashboard. Use distinct pastel status blocks with readable status labels;
+  update highlights must preserve the status background color.
   Dashboard, navigation, Settings and Data migration follow the selected language.
 - Highlight updated/new chats in a bright color plus a text label, retain that
   highlight until acknowledged, and distinguish offline/stale from confirmed idle.

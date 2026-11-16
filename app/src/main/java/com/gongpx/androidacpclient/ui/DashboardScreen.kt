@@ -3,6 +3,7 @@ package com.gongpx.androidacpclient.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -10,12 +11,16 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -60,8 +65,27 @@ internal fun Context.activity(): Activity? = when (this) {
 }
 
 @Composable
-internal fun DashboardWindow(active: Boolean, fullscreen: Boolean) {
-    val window = LocalContext.current.activity()?.window
+internal fun DashboardWindow(active: Boolean, fullscreen: Boolean, landscape: Boolean) {
+    val activity = LocalContext.current.activity()
+    val window = activity?.window
+    // Rotation can recreate the Activity while its requested orientation is still overridden.
+    val originalOrientation = rememberSaveable {
+        activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+    DisposableEffect(activity, active) {
+        onDispose {
+            if (active && activity != null && !activity.isChangingConfigurations && !activity.isFinishing) {
+                activity.requestedOrientation = originalOrientation
+            }
+        }
+    }
+    LaunchedEffect(activity, active, landscape) {
+        if (active) activity?.requestedOrientation = if (landscape) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+        }
+    }
     DisposableEffect(window, active, fullscreen) {
         val hadKeepAwake = window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0
         val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
@@ -89,7 +113,9 @@ internal fun DashboardScreen(
     snapshot: DashboardSnapshot,
     refreshing: Boolean,
     fullscreen: Boolean,
+    landscape: Boolean,
     onFullscreen: (Boolean) -> Unit,
+    onLandscape: (Boolean) -> Unit,
     onRefresh: () -> Unit,
     onAcknowledge: (String, String) -> Unit,
     onOpen: (Chat) -> Unit,
@@ -97,19 +123,41 @@ internal fun DashboardScreen(
     val strings = LocalAppStrings.current
     var selected by remember { mutableStateOf<Pair<String, String>?>(null) }
     BackHandler(fullscreen) { onFullscreen(false) }
-    Column(Modifier.fillMaxSize().padding(padding).padding(8.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(strings.tabLabel(AppTab.Dashboard), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(strings.reliability("${snapshot.chats.size} chats · Awake · 3 min",
-                    "${snapshot.chats.size} 个聊天 · 常亮 · 3 分钟刷新"),
-                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(Modifier.fillMaxSize().background(Color(0xFFF6F8FC)).padding(padding)
+        .padding(horizontal = 16.dp, vertical = 10.dp)) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val heading: @Composable () -> Unit = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(Modifier.size(38.dp).background(Color(0xFFE6EDFA), RoundedCornerShape(12.dp)).padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        repeat(2) { row ->
+                            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                                repeat(2) { column ->
+                                    Box(Modifier.weight(1f).fillMaxHeight().background(
+                                        Color(0xFF4268AE).copy(alpha = if (row == column) 1f else 0.45f),
+                                        RoundedCornerShape(2.dp)))
+                                }
+                            }
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(strings.tabLabel(AppTab.Dashboard), color = Color(0xFF233047),
+                            style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(strings.reliability("${snapshot.chats.size} chats", "${snapshot.chats.size} 个聊天"),
+                            style = MaterialTheme.typography.labelSmall, color = Color(0xFF67758A))
+                    }
+                }
             }
-            TextButton(enabled = !refreshing, onClick = onRefresh) {
-                Text(strings.reliability(if (refreshing) "Refreshing..." else "Refresh", if (refreshing) "刷新中…" else "刷新"))
-            }
-            TextButton(onClick = { onFullscreen(!fullscreen) }) {
-                Text(strings.reliability(if (fullscreen) "Exit fullscreen" else "Fullscreen", if (fullscreen) "退出全屏" else "全屏"))
+            if (maxWidth < 600.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    heading()
+                    DashboardActions(refreshing, fullscreen, landscape, onRefresh, onFullscreen, onLandscape, Modifier.fillMaxWidth())
+                }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { heading() }
+                    DashboardActions(refreshing, fullscreen, landscape, onRefresh, onFullscreen, onLandscape, Modifier.width(336.dp))
+                }
             }
         }
         if (snapshot.failedMachines.isNotEmpty()) Text(
@@ -117,13 +165,13 @@ internal fun DashboardScreen(
                 "${snapshot.failedMachines.size} 台电脑离线"),
             style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error,
         )
-        BoxWithConstraints(Modifier.fillMaxWidth().weight(1f).padding(vertical = 6.dp).testTag("dashboard-grid")) {
+        BoxWithConstraints(Modifier.fillMaxWidth().weight(1f).padding(vertical = 10.dp).testTag("dashboard-grid")) {
             if (snapshot.chats.isEmpty()) {
                 Text(strings.reliability("No chats to display.", "暂无可显示的聊天。"), Modifier.align(Alignment.Center))
             } else {
                 val columns = dashboardColumns(snapshot.chats.size, maxWidth.value, maxHeight.value)
                 val rows = snapshot.chats.chunked(columns)
-                val gap = min(6f, min(maxWidth.value / columns, maxHeight.value / rows.size) / 12f).dp
+                val gap = min(10f, min(maxWidth.value / columns, maxHeight.value / rows.size) / 12f).dp
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
                     rows.forEach { row ->
                         Row(Modifier.weight(1f).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(gap)) {
@@ -140,11 +188,13 @@ internal fun DashboardScreen(
                 }
             }
         }
-        if (snapshot.refreshedAt != 0L) Text(
-            strings.reliability("Last check: ", "上次检查：") +
+        Text(
+            strings.reliability("Awake · Every 3 min", "常亮 · 每 3 分钟刷新") +
+                if (snapshot.refreshedAt != 0L) strings.reliability(" · Checked ", " · 检查于 ") +
                 DateFormat.getTimeInstance(DateFormat.SHORT, if (strings == AppStrings.Chinese) Locale.CHINESE else Locale.ENGLISH)
-                    .format(Date(snapshot.refreshedAt)),
-            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    .format(Date(snapshot.refreshedAt)) else "",
+            style = MaterialTheme.typography.labelSmall, color = Color(0xFF67758A),
+            modifier = Modifier.align(Alignment.CenterHorizontally),
         )
     }
     snapshot.chats.firstOrNull { selected == (it.chat.machineId to it.chat.id) }?.let { item ->
@@ -175,30 +225,66 @@ internal fun DashboardScreen(
 }
 
 @Composable
+private fun DashboardActions(
+    refreshing: Boolean,
+    fullscreen: Boolean,
+    landscape: Boolean,
+    onRefresh: () -> Unit,
+    onFullscreen: (Boolean) -> Unit,
+    onLandscape: (Boolean) -> Unit,
+    modifier: Modifier,
+) {
+    val strings = LocalAppStrings.current
+    Row(modifier.background(Color.White, RoundedCornerShape(14.dp))
+        .border(1.dp, Color(0xFFE5EAF2), RoundedCornerShape(14.dp)).padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        TextButton(enabled = !refreshing, onClick = onRefresh, modifier = Modifier.weight(1f),
+            colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF4F607A)), contentPadding = PaddingValues(4.dp)) {
+            Text(strings.reliability(if (refreshing) "Refreshing..." else "Refresh", if (refreshing) "刷新中…" else "刷新"),
+                maxLines = 1, style = MaterialTheme.typography.labelMedium)
+        }
+        TextButton(onClick = { onLandscape(!landscape) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF4F607A),
+                containerColor = if (landscape) Color(0xFFE6EDFA) else Color.Transparent), contentPadding = PaddingValues(4.dp)) {
+            Text(strings.reliability(if (landscape) "Auto rotate" else "Landscape", if (landscape) "自动旋转" else "横屏"),
+                maxLines = 1, style = MaterialTheme.typography.labelMedium)
+        }
+        FilledTonalButton(onClick = { onFullscreen(!fullscreen) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.filledTonalButtonColors(containerColor = Color(0xFF2F518C), contentColor = Color.White),
+            contentPadding = PaddingValues(4.dp)) {
+            Text(strings.reliability(if (fullscreen) "Exit fullscreen" else "Fullscreen", if (fullscreen) "退出全屏" else "全屏"),
+                maxLines = 1, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+@Composable
 private fun DashboardTile(item: DashboardChat, modifier: Modifier, onClick: () -> Unit) {
     val strings = LocalAppStrings.current
     val status = item.status(strings)
     val activity = when {
-        item.stale -> status
+        item.stale -> strings.reliability("Offline", "离线")
         item.chat.backgroundWork -> "$status · " + strings.reliability("Background", "后台")
         item.chat.scheduledTasks > 0 -> "$status · " + strings.reliability(
             "Schedules ${item.chat.scheduledTasks}", "定时 ${item.chat.scheduledTasks}")
         else -> status
     }
-    val accent = when {
-        item.stale -> MaterialTheme.colorScheme.outline
-        item.chat.agentStatus == "busy" -> Color(0xFF399AFF)
-        item.chat.agentStatus == "waitingApproval" -> Color(0xFFF2A900)
-        item.chat.agentStatus in setOf("failed", "interrupted") -> MaterialTheme.colorScheme.error
-        item.chat.agentStatus == "idle" -> Color(0xFF26A77B)
-        else -> MaterialTheme.colorScheme.outline
+    val (background, accent) = when {
+        item.stale -> Color(0xFFECEFF3) to Color(0xFF647287)
+        item.chat.agentStatus == "busy" -> Color(0xFFE7F1FF) to Color(0xFF2864AC)
+        item.chat.agentStatus == "waitingApproval" -> Color(0xFFFFF3D6) to Color(0xFF976412)
+        item.chat.agentStatus == "idle" -> Color(0xFFE4F5EB) to Color(0xFF277052)
+        item.chat.agentStatus == "failed" -> Color(0xFFFCE6E9) to Color(0xFFAE414E)
+        item.chat.agentStatus == "interrupted" -> Color(0xFFFFECDF) to Color(0xFFA95E34)
+        else -> Color(0xFFEEE9FA) to Color(0xFF72589B)
     }
-    val foreground = if (item.changed) Color(0xFF211B00) else MaterialTheme.colorScheme.onSurface
-    val shape = RoundedCornerShape(10.dp)
+    val foreground = Color(0xFF233047)
+    val shape = RoundedCornerShape(18.dp)
+    val highlight = Color(0xFFFFC400)
     val updated = strings.reliability("Updated", "有更新")
     BoxWithConstraints(modifier.clip(shape)
-        .background(if (item.changed) Color(0xFFFFD740) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-        .border(1.dp, if (item.changed) Color(0xFFFFC400) else accent.copy(alpha = 0.3f), shape)
+        .background(Brush.linearGradient(listOf(lerp(background, Color.White, 0.3f), background)))
+        .border(if (item.changed) 2.dp else 1.dp, if (item.changed) highlight else Color.White.copy(alpha = 0.85f), shape)
         .clickable(role = Role.Button, onClick = onClick)
         .testTag("dashboard-chat-${item.chat.machineId}-${item.chat.id}")
         .semantics(mergeDescendants = true) {
@@ -208,19 +294,40 @@ private fun DashboardTile(item: DashboardChat, modifier: Modifier, onClick: () -
                 strings.reliability("Schedules: ${item.chat.scheduledTasks}", "定时任务：${item.chat.scheduledTasks}")
                     .takeIf { item.chat.scheduledTasks > 0 }).joinToString(", ")
         }) {
-        val inset = min(12f, min(maxWidth.value, maxHeight.value) / 10).dp
+        val inset = min(18f, min(maxWidth.value, maxHeight.value) / 7).dp
         val fontScale = LocalDensity.current.fontScale
-        val titleSize = (min(maxWidth.value / 9, maxHeight.value / 4).coerceIn(7f, 24f) / fontScale).sp
-        val detailSize = (min(13f, titleSize.value * fontScale * 0.8f) / fontScale).sp
+        val titleSize = (min(maxWidth.value / 8, maxHeight.value / 4).coerceIn(7f, 26f) / fontScale).sp
+        val detailSize = (min(12f, titleSize.value * fontScale * 0.72f) / fontScale).sp
         val tileHeight = maxHeight
-        Box(Modifier.width(3.dp).fillMaxHeight().background(accent))
-        Column(Modifier.fillMaxSize().padding(inset), verticalArrangement = Arrangement.Center) {
+        val tileWidth = maxWidth
+        val gap = min(8f, maxHeight.value / 18).dp
+        val chipPadding = PaddingValues(horizontal = min(7f, maxWidth.value / 24).dp,
+            vertical = min(3f, maxHeight.value / 50).dp)
+        Column(Modifier.fillMaxSize().padding(inset), verticalArrangement = if (tileHeight >= 125.dp) {
+            Arrangement.SpaceBetween
+        } else Arrangement.spacedBy(gap, Alignment.CenterVertically)) {
+            if (tileHeight >= 125.dp) Text(item.chat.machineName, color = foreground.copy(alpha = 0.65f),
+                fontSize = detailSize, lineHeight = detailSize * 1.2f, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(item.chat.title, color = foreground, fontSize = titleSize, lineHeight = titleSize * 1.15f,
-                fontWeight = FontWeight.SemiBold, maxLines = if (tileHeight >= 110.dp) 2 else 1, overflow = TextOverflow.Ellipsis)
-            Text(if (item.changed) "$updated · $activity" else activity, color = foreground.copy(alpha = 0.85f),
-                fontSize = detailSize, lineHeight = detailSize * 1.2f, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (tileHeight >= 88.dp) Text(item.chat.machineName, color = foreground.copy(alpha = 0.65f),
-                fontSize = detailSize, lineHeight = detailSize * 1.2f, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                fontWeight = FontWeight.SemiBold, maxLines = if (tileHeight >= 125.dp) 2 else 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(gap)) {
+                Row(Modifier.weight(1f, fill = false).background(Color.White.copy(alpha = 0.65f), RoundedCornerShape(7.dp))
+                    .padding(chipPadding), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(min(5f, tileHeight.value / 20).dp)) {
+                    Box(Modifier.size(min(5f, tileHeight.value / 15).dp).background(accent, CircleShape))
+                    Text(activity, color = accent, fontSize = detailSize, lineHeight = detailSize * 1.2f,
+                        fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (item.changed) {
+                    if (tileHeight >= 110.dp && tileWidth >= 180.dp) {
+                        Text(updated, Modifier.background(highlight, RoundedCornerShape(7.dp)).padding(chipPadding),
+                            color = foreground, fontSize = detailSize, lineHeight = detailSize * 1.2f,
+                            fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    } else {
+                        Box(Modifier.size(min(7f, tileHeight.value / 10).dp).background(highlight, CircleShape))
+                    }
+                }
+            }
         }
     }
 }

@@ -25,13 +25,20 @@ stay awake, online, and running the bridge while you use it.
 ## Dashboard
 
 Open **Dashboard** for a single-screen status wall that automatically fits all
-chats to the screen in portrait, landscape or fullscreen. Dense walls shorten
+chats to the screen in portrait, landscape or fullscreen. The page follows device
+rotation even with system auto-rotate locked. **Landscape** selects landscape
+directly; **Auto rotate** returns to sensor-driven rotation. Dense walls shorten
 labels; tap a tile to see its full details or open the chat. It checks all saved machines
 on entry and every **3 minutes**; **Refresh** starts a check immediately.
-New/updated chats are highlighted bright yellow until you tap the tile and dismiss the highlight.
+Pastel blocks show working in blue, approval in amber, ready in mint, failed in
+rose, interrupted in peach, unconfirmed in lavender and stale in gray.
+New/updated chats have a bright yellow outline and an Updated label until you tap
+the tile and dismiss the highlight; dense tiles use a yellow dot in place of the
+label, and the status color remains visible.
 Offline computers show stale cached status, not a confirmed idle state.
 The page keeps the screen awake while visible. Use **Fullscreen** to hide bars,
-and **Exit fullscreen** or Back to return; leaving the page restores normal sleep.
+and **Exit fullscreen** or Back to return; leaving the page restores normal sleep
+and the previous rotation policy.
 
 ## Add instructions while Copilot works
 

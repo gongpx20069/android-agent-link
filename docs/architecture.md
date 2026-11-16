@@ -34,7 +34,9 @@ the normal five-second loop only on that tab. `refreshDashboard` combines the
 existing authenticated/paginated `chat.list` calls into a single snapshot with
 per-machine failures and bounded concurrency. It compares revision/generation
 and visible metadata without fetching transcripts or registering/resuming chats.
-Fullscreen/keep-awake window changes are scoped to the visible foreground page.
+Fullscreen/keep-awake and sensor/landscape orientation changes are scoped to the
+visible foreground page. The landscape choice and original orientation policy
+are saved across Activity recreation; the prior policy is restored on exit.
 The status wall measures the available viewport, chooses rows/columns by tile
 aspect ratio and fits every Chat without scrolling. Compact tiles open a detail
 dialog rather than reserving space for repeated buttons.

@@ -693,6 +693,7 @@ fun AgentLinkApp(
     var transferOpen by remember { mutableStateOf(false) }
     var transferLink by remember { mutableStateOf<String?>(null) }
     var dashboardFullscreen by rememberSaveable { mutableStateOf(false) }
+    var dashboardLandscape by rememberSaveable { mutableStateOf(false) }
     var dashboardSnapshot by remember { mutableStateOf(DashboardSnapshot()) }
     var dashboardRefreshing by remember { mutableStateOf(false) }
     var dashboardRefreshRevision by remember { mutableStateOf(0) }
@@ -2256,6 +2257,7 @@ fun AgentLinkApp(
         DashboardWindow(
             active = selectedTab == AppTab.Dashboard && appInForeground.value && !scannerOpen && !transferOpen,
             fullscreen = dashboardFullscreen,
+            landscape = dashboardLandscape,
         )
         if (transferOpen && storesLoaded) androidx.compose.runtime.key(transferLink) {
         TransferDialog(
@@ -2427,7 +2429,7 @@ fun AgentLinkApp(
                 Scaffold(
                     snackbarHost = { SnackbarHost(snackbar) },
                     topBar = {
-                        if (selectedTab != AppTab.Dashboard || !dashboardFullscreen) {
+                        if (selectedTab != AppTab.Dashboard) {
                             TopAppBar(
                                 actions = {
                                     if (pendingDeletions.isNotEmpty()) TextButton(onClick = { deletionDetailsOpen = true }) {
@@ -2483,8 +2485,9 @@ fun AgentLinkApp(
                 ) { padding ->
                     when (selectedTab) {
                         AppTab.Dashboard -> DashboardScreen(
-                            padding, dashboardSnapshot, dashboardRefreshing, dashboardFullscreen,
+                            padding, dashboardSnapshot, dashboardRefreshing, dashboardFullscreen, dashboardLandscape,
                             onFullscreen = { dashboardFullscreen = it },
+                            onLandscape = { dashboardLandscape = it },
                             onRefresh = { dashboardRefreshRevision++ },
                             onAcknowledge = { machineId, chatId ->
                                 dashboardSnapshot = dashboardSnapshot.copy(chats = dashboardSnapshot.chats.map {

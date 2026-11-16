@@ -22,6 +22,18 @@ Rows, columns, spacing and text density adapt to the available width/height and
 Chat count, including landscape and fullscreen. All tiles stay in the viewport;
 very dense walls abbreviate labels, and tapping a tile shows readable details,
 highlight acknowledgement and an Open action (disabled for stale states).
+While visible, the page follows the device sensor even when system auto-rotate is
+locked. Landscape explicitly selects either landscape orientation; Auto rotate
+returns to sensor-driven rotation. This selection survives Activity recreation,
+and leaving/backgrounding the page restores the previous orientation policy.
+Pastel block backgrounds distinguish working (blue), approval (amber), ready
+(mint), failed (rose), interrupted (peach), unconfirmed (lavender) and stale (gray).
+Status text remains visible; color is not the only indicator.
+The page uses its own compact header instead of the repeated AgentLink app bar,
+with a neutral canvas, grouped controls and softly shaded cards. Chat names take
+priority; larger tiles add a machine label and status badges. Dense tiles replace
+the Updated badge with a yellow dot while retaining the outline and accessible
+update label.
 Dashboard, navigation, Settings and Data migration use the selected app language.
 Entering it
 checks the shared catalogs immediately, then refreshes all saved machines every
@@ -32,7 +44,8 @@ Checks are read-only, paginated, and limited to four concurrent machines.
 One completed refresh updates the cards together. Unavailable computers retain
 explicitly stale cached cards and show an error instead of appearing idle.
 Changes to catalog revision/generation or displayed state, and newly discovered
-chats after the first snapshot, receive bright yellow cards with an Updated label.
+chats after the first snapshot, receive a bright yellow outline and an Updated
+label (or a dot on dense tiles) without replacing the status background.
 Highlights remain until dismissed; dashboard viewing does not mark chat messages read.
 
 The page keeps the screen awake only while visible in the foreground. Fullscreen

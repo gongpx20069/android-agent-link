@@ -1,8 +1,10 @@
 package com.gongpx.androidacpclient.ui
 
 import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.view.View
 import androidx.compose.foundation.background
 import android.view.WindowManager
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -43,24 +46,39 @@ class DashboardScreenTest {
     @Test fun screenKeepsAwakeOnlyWhileVisibleAndFullscreenCanBeExited() {
         val active = mutableStateOf(true)
         val fullscreen = mutableStateOf(false)
+        val landscape = mutableStateOf(false)
         lateinit var activity: Activity
         compose.setContent {
             activity = requireNotNull(LocalContext.current.activity())
-            DashboardWindow(active.value, fullscreen.value)
+            DashboardWindow(active.value, fullscreen.value, landscape.value)
             MaterialTheme {
-                DashboardScreen(PaddingValues(), DashboardSnapshot(), false, fullscreen.value,
-                    { fullscreen.value = it }, {}, { _, _ -> }, {})
+                DashboardScreen(PaddingValues(), DashboardSnapshot(), false, fullscreen.value, landscape.value,
+                    { fullscreen.value = it }, { landscape.value = it }, {}, { _, _ -> }, {})
             }
         }
         compose.runOnIdle {
             assertTrue(activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0)
+            assertEquals(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR, activity.requestedOrientation)
+        }
+        compose.onNodeWithText("Landscape").performClick()
+        compose.runOnIdle {
+            assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE, activity.requestedOrientation)
         }
         compose.onNodeWithText("Fullscreen").performClick()
         compose.onNodeWithText("Exit fullscreen").assertExists().performClick()
+        compose.runOnIdle {
+            assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE, activity.requestedOrientation)
+        }
+        compose.onNodeWithText("Auto rotate").performClick()
+        compose.runOnIdle { assertEquals(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR, activity.requestedOrientation) }
+        compose.onNodeWithText("Landscape").performClick()
         compose.runOnIdle { active.value = false }
         compose.runOnIdle {
             assertEquals(0, activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, activity.requestedOrientation)
         }
+        compose.runOnIdle { active.value = true }
+        compose.runOnIdle { assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE, activity.requestedOrientation) }
     }
 
     @Test fun changedAndStaleStatesHaveExplicitLabelsAndAcknowledgement() {
@@ -70,16 +88,77 @@ class DashboardScreenTest {
             MaterialTheme {
                 DashboardScreen(PaddingValues(),
                     DashboardSnapshot(listOf(DashboardChat(chat, 2, "server", changed = true, stale = true))),
-                    false, false, {}, {}, { machineId, chatId ->
+                    false, false, false, {}, {}, {}, { machineId, chatId ->
                         acknowledged = machineId == "m" && chatId == "c"
                     }, {})
             }
         }
         compose.onNodeWithTag("dashboard-chat-m-c").performClick()
-        compose.onNodeWithText("Offline / stale").assertExists()
+        compose.onNode(hasText("Offline / stale") and hasAnyAncestor(isDialog())).assertExists()
         compose.onNodeWithText("Open chat").assertIsNotEnabled()
         compose.onNodeWithText("Dismiss highlight").performClick()
         assertTrue(acknowledged)
+    }
+
+    @Test fun leavingCompositionRestoresExistingOrientationPolicy() {
+        val visible = mutableStateOf(true)
+        lateinit var activity: Activity
+        compose.setContent {
+            activity = requireNotNull(LocalContext.current.activity())
+            remember(activity) { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT }
+            if (visible.value) DashboardWindow(active = true, fullscreen = true, landscape = true)
+        }
+        compose.runOnIdle { assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE, activity.requestedOrientation) }
+        compose.runOnIdle { visible.value = false }
+        compose.runOnIdle {
+            assertEquals(ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT, activity.requestedOrientation)
+            assertEquals(0, activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h600dp")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun statusColorsStayDistinctAndLightEvenWhenUpdated() {
+        val changed = mutableStateOf(false)
+        val chat = Chat("c", "Example chat", "m", "Computer", "w", "Project", "C:\\repo", "agent", "Agent", 1)
+        val statuses = listOf("busy", "waitingApproval", "idle", "failed", "interrupted", "unknown", "busy")
+        lateinit var previewView: View
+        compose.setContent {
+            MaterialTheme {
+                CompositionLocalProvider(LocalDensity provides Density(1f)) {
+                    previewView = LocalView.current
+                    Box(Modifier.requiredSize(800.dp, 600.dp).testTag("dashboard-preview")) {
+                        DashboardScreen(PaddingValues(), DashboardSnapshot(statuses.mapIndexed { index, status ->
+                            DashboardChat(chat.copy(id = "$index", agentStatus = status), 1, "s",
+                                changed = changed.value, stale = index == statuses.lastIndex)
+                        }), false, false, false, {}, {}, {}, { _, _ -> }, {})
+                    }
+                }
+            }
+        }
+        fun tileColors(): List<Int> {
+            val root = compose.onNodeWithTag("dashboard-preview").fetchSemanticsNode().boundsInRoot
+            val tiles = statuses.indices.map {
+                compose.onNodeWithTag("dashboard-chat-m-$it").fetchSemanticsNode().boundsInRoot
+            }
+            val bitmap = capturePreview(previewView)
+            return try {
+                tiles.map { bounds ->
+                    bitmap.getPixel((bounds.center.x - root.left).toInt(), (bounds.bottom - root.top - 6).toInt())
+                }
+            } finally {
+                bitmap.recycle()
+            }
+        }
+        val colors = tileColors()
+        assertEquals("Each status, including stale, has its own block color", statuses.size, colors.toSet().size)
+        colors.forEach { color ->
+            assertTrue("Blocks use light backgrounds", Color.red(color) >= 180 && Color.green(color) >= 180 && Color.blue(color) >= 180)
+        }
+        compose.runOnIdle { changed.value = true }
+        assertEquals("Update highlights must not replace status colors", colors, tileColors())
+        compose.onAllNodesWithText("Updated", useUnmergedTree = true).assertCountEquals(statuses.size)
     }
 
     @Test
@@ -101,10 +180,10 @@ class DashboardScreenTest {
                         DashboardScreen(PaddingValues(),
                             DashboardSnapshot(List(count.value) {
                                 DashboardChat(chat.copy(id = "$it", title = "Project ${it + 1}",
-                                    agentStatus = listOf("idle", "busy", "waitingApproval", "failed")[it % 4]),
+                                    agentStatus = listOf("idle", "busy", "waitingApproval", "failed", "interrupted", "unknown")[it % 6]),
                                     1, "s", changed = it % 5 == 0, stale = it % 11 == 10)
                             }),
-                            false, false, {}, {}, { _, _ -> }, {})
+                            false, false, false, {}, {}, {}, { _, _ -> }, {})
                     }
                 }
             }
@@ -133,25 +212,32 @@ class DashboardScreenTest {
         compose.onNodeWithText("看板").assertDoesNotExist()
         for ((name, dimensions, total) in listOf(
             Triple("portrait", 360.dp to 640.dp, 12),
+            Triple("portrait-roomy", 360.dp to 640.dp, 6),
             Triple("landscape", 800.dp to 360.dp, 24),
+            Triple("landscape-english", 800.dp to 360.dp, 24),
         )) {
             compose.runOnIdle {
-                language.value = AppStrings.Chinese
+                language.value = if (name.endsWith("english")) AppStrings.English else AppStrings.Chinese
                 size.value = dimensions
                 count.value = total
                 fontScale.value = 1f
             }
-            val bounds = compose.onNodeWithTag("dashboard-preview").fetchSemanticsNode().boundsInRoot
-            compose.runOnIdle {
-                val bitmap = Bitmap.createBitmap(bounds.width.toInt(), bounds.height.toInt(), Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bitmap)
-                canvas.translate(-bounds.left, -bounds.top)
-                previewView.draw(canvas)
-                val folder = File(File("build", "reports"), "dashboard")
-                folder.mkdirs()
-                File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                bitmap.recycle()
-            }
+            val bitmap = capturePreview(previewView)
+            val folder = File(File("build", "reports"), "dashboard")
+            folder.mkdirs()
+            File(folder, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap.recycle()
+        }
+    }
+
+    private fun capturePreview(view: View): Bitmap {
+        val bounds = compose.onNodeWithTag("dashboard-preview").fetchSemanticsNode().boundsInRoot
+        return compose.runOnIdle {
+            val bitmap = Bitmap.createBitmap(bounds.width.toInt(), bounds.height.toInt(), Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            canvas.translate(-bounds.left, -bounds.top)
+            view.draw(canvas)
+            bitmap
         }
     }
 }
