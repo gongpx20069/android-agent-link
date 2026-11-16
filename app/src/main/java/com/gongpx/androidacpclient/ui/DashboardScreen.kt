@@ -122,6 +122,17 @@ internal fun DashboardScreen(
 ) {
     val strings = LocalAppStrings.current
     var selected by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val orderedChats = remember(snapshot.chats) {
+        snapshot.chats.sortedBy { item ->
+            if (item.stale) 2 else when (item.chat.agentStatus) {
+                "waitingApproval" -> 0
+                "failed", "interrupted" -> 1
+                "idle" -> 3
+                "busy" -> 4
+                else -> 2
+            }
+        }
+    }
     BackHandler(fullscreen) { onFullscreen(false) }
     Column(Modifier.fillMaxSize().background(Color(0xFFF6F8FC)).padding(padding)
         .padding(horizontal = 16.dp, vertical = 10.dp)) {
@@ -170,7 +181,7 @@ internal fun DashboardScreen(
                 Text(strings.reliability("No chats to display.", "暂无可显示的聊天。"), Modifier.align(Alignment.Center))
             } else {
                 val columns = dashboardColumns(snapshot.chats.size, maxWidth.value, maxHeight.value)
-                val rows = snapshot.chats.chunked(columns)
+                val rows = orderedChats.chunked(columns)
                 val gap = min(10f, min(maxWidth.value / columns, maxHeight.value / rows.size) / 12f).dp
                 Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(gap)) {
                     rows.forEach { row ->
@@ -303,6 +314,10 @@ private fun DashboardTile(item: DashboardChat, modifier: Modifier, onClick: () -
         val gap = min(8f, maxHeight.value / 18).dp
         val chipPadding = PaddingValues(horizontal = min(7f, maxWidth.value / 24).dp,
             vertical = min(3f, maxHeight.value / 50).dp)
+        Box(Modifier.align(Alignment.BottomCenter).padding(horizontal = inset, vertical = min(4f, tileHeight.value / 30).dp)
+            .fillMaxWidth().height(min(3f, tileHeight.value / 15).dp)
+            .background(accent.copy(alpha = 0.7f), RoundedCornerShape(2.dp))
+            .testTag("dashboard-status-${item.chat.machineId}-${item.chat.id}"))
         Column(Modifier.fillMaxSize().padding(inset), verticalArrangement = if (tileHeight >= 125.dp) {
             Arrangement.SpaceBetween
         } else Arrangement.spacedBy(gap, Alignment.CenterVertically)) {

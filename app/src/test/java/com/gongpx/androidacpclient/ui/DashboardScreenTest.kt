@@ -118,6 +118,37 @@ class DashboardScreenTest {
 
     @Test
     @Config(qualifiers = "w800dp-h600dp")
+    fun attentionStatesSortFirstAndRefreshKeepsEqualPriorityOrder() {
+        val chat = Chat("c", "Example chat", "m", "Computer", "w", "Project", "C:\\repo", "agent", "Agent", 1)
+        val snapshot = mutableStateOf(DashboardSnapshot(
+            listOf("busy", "idle", "interrupted", "failed", "waitingApproval", "idle", "unknown", "waitingApproval", "waitingApproval")
+                .mapIndexed { index, status ->
+                    DashboardChat(chat.copy(id = "$index", agentStatus = status), 1, "s", stale = index == 7)
+                }
+        ))
+        compose.setContent {
+            MaterialTheme {
+                DashboardScreen(PaddingValues(), snapshot.value, false, false, false, {}, {}, {}, { _, _ -> }, {})
+            }
+        }
+        fun displayedOrder() = compose.onAllNodes(SemanticsMatcher("dashboard tiles") {
+            it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("dashboard-chat-") == true
+        }).fetchSemanticsNodes().sortedWith(compareBy({ it.boundsInRoot.top }, { it.boundsInRoot.left }))
+            .map { it.config[SemanticsProperties.TestTag].removePrefix("dashboard-chat-m-") }
+
+        assertEquals(listOf("4", "8", "2", "3", "6", "7", "1", "5", "0"), displayedOrder())
+        compose.runOnIdle {
+            snapshot.value = snapshot.value.copy(chats = snapshot.value.chats.map {
+                if (it.chat.id == "0") it.copy(chat = it.chat.copy(agentStatus = "waitingApproval")) else it
+            })
+        }
+        assertEquals(listOf("0", "4", "8", "2", "3", "6", "7", "1", "5"), displayedOrder())
+        compose.onAllNodes(SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo), useUnmergedTree = true)
+            .assertCountEquals(0)
+    }
+
+    @Test
+    @Config(qualifiers = "w800dp-h600dp")
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun statusColorsStayDistinctAndLightEvenWhenUpdated() {
         val changed = mutableStateOf(false)
@@ -137,15 +168,17 @@ class DashboardScreenTest {
                 }
             }
         }
-        fun tileColors(): List<Int> {
+        fun tileColors(strips: Boolean = false): List<Int> {
             val root = compose.onNodeWithTag("dashboard-preview").fetchSemanticsNode().boundsInRoot
             val tiles = statuses.indices.map {
-                compose.onNodeWithTag("dashboard-chat-m-$it").fetchSemanticsNode().boundsInRoot
+                compose.onNodeWithTag("dashboard-${if (strips) "status" else "chat"}-m-$it", useUnmergedTree = strips)
+                    .fetchSemanticsNode().boundsInRoot
             }
             val bitmap = capturePreview(previewView)
             return try {
                 tiles.map { bounds ->
-                    bitmap.getPixel((bounds.center.x - root.left).toInt(), (bounds.bottom - root.top - 6).toInt())
+                    bitmap.getPixel(((if (strips) bounds.center.x else bounds.left + 5) - root.left).toInt(),
+                        (bounds.center.y - root.top).toInt())
                 }
             } finally {
                 bitmap.recycle()
@@ -156,8 +189,14 @@ class DashboardScreenTest {
         colors.forEach { color ->
             assertTrue("Blocks use light backgrounds", Color.red(color) >= 180 && Color.green(color) >= 180 && Color.blue(color) >= 180)
         }
+        val stripColors = tileColors(strips = true)
+        assertEquals("Status strips use distinct state colors", statuses.size, stripColors.toSet().size)
+        colors.zip(stripColors).forEach { (background, strip) ->
+            assertNotEquals("The status strip must be visible against the block", background, strip)
+        }
         compose.runOnIdle { changed.value = true }
         assertEquals("Update highlights must not replace status colors", colors, tileColors())
+        assertEquals("Update highlights must not replace status strips", stripColors, tileColors(strips = true))
         compose.onAllNodesWithText("Updated", useUnmergedTree = true).assertCountEquals(statuses.size)
     }
 

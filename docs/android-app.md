@@ -34,6 +34,11 @@ with a neutral canvas, grouped controls and softly shaded cards. Chat names take
 priority; larger tiles add a machine label and status badges. Dense tiles replace
 the Updated badge with a yellow dot while retaining the outline and accessible
 update label.
+Each tile has a static, equal-length status strip in its state color, never a
+percentage or animated progress indicator. Tiles sort by attention priority:
+approval, failed/interrupted, stale/unconfirmed, ready, then working. Stale cached
+states never rank as live approvals. Equal-priority tiles keep their catalog
+order; each unified refresh reorders the wall when statuses change.
 Dashboard, navigation, Settings and Data migration use the selected app language.
 Entering it
 checks the shared catalogs immediately, then refreshes all saved machines every

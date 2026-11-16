@@ -22,6 +22,9 @@
   landscape action. Restore the prior orientation policy outside the foreground
   Dashboard. Use distinct pastel status blocks with readable status labels;
   update highlights must preserve the status background color.
+  Use static status strips, not invented progress percentages. Sort approval
+  first, then failed/interrupted, stale/unconfirmed, idle and finally working;
+  preserve catalog order within each priority group.
   Dashboard, navigation, Settings and Data migration follow the selected language.
 - Highlight updated/new chats in a bright color plus a text label, retain that
   highlight until acknowledged, and distinguish offline/stale from confirmed idle.

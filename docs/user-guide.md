@@ -35,6 +35,10 @@ rose, interrupted in peach, unconfirmed in lavender and stale in gray.
 New/updated chats have a bright yellow outline and an Updated label until you tap
 the tile and dismiss the highlight; dense tiles use a yellow dot in place of the
 label, and the status color remains visible.
+Each tile's thin bottom strip indicates status, not completion percentage.
+Approval-needed chats appear first, followed by failed/interrupted,
+offline/unconfirmed, ready and finally working chats. Equal-priority chats retain
+their catalog order; status changes take effect together after refresh.
 Offline computers show stale cached status, not a confirmed idle state.
 The page keeps the screen awake while visible. Use **Fullscreen** to hide bars,
 and **Exit fullscreen** or Back to return; leaving the page restores normal sleep
