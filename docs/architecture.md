@@ -13,6 +13,24 @@ ACP Agent CLI
 
 The Android app is the control surface. Remote machines run the bridge, agent process, shell commands, Git operations, and repository workspaces.
 
+### Dashboard and portable references
+
+Dashboard owns a lifecycle-cancelled three-minute catalog polling loop, replacing
+the normal five-second loop only on that tab. `refreshDashboard` combines the
+existing authenticated/paginated `chat.list` calls into a single snapshot with
+per-machine failures and bounded concurrency. It compares revision/generation
+and visible metadata without fetching transcripts or registering/resuming chats.
+Fullscreen/keep-awake window changes are scoped to the visible foreground page.
+
+Transfer links are a bounded, versioned, explicitly whitelisted projection of
+machine credentials and Chat references. AES-GCM encrypts the payload using a
+PBKDF2-derived transfer-password key; OAuth account state and pending actions are
+excluded. Decryption/preview never contacts a Bridge. Confirmed imports validate
+identity collisions and deletion tombstones, persist machine credentials through
+MachineStore and new references through ChatStore, then let normal synchronization
+recover history. The two stores are not a cross-store transaction: failures report
+incomplete imports, preserve existing chats, and permit idempotent retry.
+
 ### Shared deletion and terminal creation
 
 Bridge chat deletion is an authenticated control action serialized against chat

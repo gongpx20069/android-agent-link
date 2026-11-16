@@ -22,6 +22,31 @@ from your phone. Your projects and agent processes stay on your computer.
 AgentLink is a remote control, not an on-phone agent runtime. Your computer must
 stay awake, online, and running the bridge while you use it.
 
+## Dashboard
+
+Open **Dashboard** for compact chat status cards. It checks all saved machines
+on entry and every **3 minutes**; **Refresh** starts a check immediately.
+New/updated chats are highlighted bright yellow until you dismiss the highlight.
+Offline computers show stale cached status, not a confirmed idle state.
+The page keeps the screen awake while visible. Use **Fullscreen** to hide bars,
+and **Exit fullscreen** or Back to return; leaving the page restores normal sleep.
+
+## Move chats and machines to another phone
+
+1. Tap **Transfer → Export**, choose machines and optionally include their Chat
+   references, then enter a strong transfer password of at least 12 characters.
+2. Generate and copy the encrypted link. Send the password separately: anyone with
+   both can access the selected computers.
+3. On the other phone open the link, or paste it into **Transfer → Import**.
+   Enter the password, review names/endpoints/counts, then confirm the import.
+
+Device and current tunnel authorization are included. OAuth account logins are not:
+when tunnel authorization expires, pair again via QR or account discovery on that
+phone. Both phones initially share the same device token and revocation.
+Existing local history is retained. The link carries chat references, not a
+transcript backup; history is recovered from the Server where supported.
+Drafts, queued prompts, approvals and images are never migrated or replayed.
+
 ## Send an image
 
 In the compact composer, open the **+** actions menu and choose **Attach image**.

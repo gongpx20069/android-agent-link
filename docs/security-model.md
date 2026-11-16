@@ -6,6 +6,33 @@ The Android app must let users control powerful remote coding agents without acc
 
 ## Trust Boundaries
 
+### Cross-phone transfer links
+
+Transfer is an explicit user-authorized export of Bridge device credentials and
+current relay-connect authorization. Both receiving and sending phones use the
+same device token; revoking it invalidates both. The link plus password grants
+the recipient the same Bridge access, not a narrower read-only capability.
+Do not post either publicly; send a strong unique password separately.
+GitHub/Microsoft OAuth access/refresh tokens, IPC grants, provider credentials,
+transcripts, images, approvals and queued actions are excluded.
+
+The link fragment contains a version, random 128-bit salt, random 96-bit nonce,
+and AES-256-GCM ciphertext/tag. The key is derived with PBKDF2-HMAC-SHA256 at
+210,000 iterations; version-specific AAD is authenticated. Payloads are limited
+to 128,000 UTF-8 bytes, 200 machines and 200 Chat references; links are limited to
+180,000 characters before decoding. No network download, public link host,
+compression, or automatic credential import occurs. Reject invalid endpoints,
+public cleartext transports, unapproved headers and identity conflicts.
+Decryption errors never echo the link or credentials.
+
+The dialog uses secure-window flags and in-memory-only secret UI state.
+Explicit copying marks the clipboard sensitive, but cannot prevent another app
+chosen by the user from retaining the encrypted link. Decryption first presents
+names/endpoints/counts; only confirmation writes credentials to existing encrypted
+stores. Current tunnel authorization is time-limited, not a transferable account
+login. Dashboard polling is read-only and does not approve, send, resume or
+cancel tasks.
+
 ### Offline chat removal
 
 Explicit confirmation authorizes local removal plus durable retries of `chat.delete`

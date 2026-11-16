@@ -1,5 +1,20 @@
 # Product Requirements
 
+## Status dashboard and cross-phone transfer
+
+- Offer a compact Dashboard tab with optional fullscreen and foreground-only
+  keep-screen-on. Refresh shared chat status immediately on entry and every
+  three minutes thereafter, as a unified snapshot; allow manual refresh.
+- Highlight updated/new chats in a bright color plus a text label, retain that
+  highlight until acknowledged, and distinguish offline/stale from confirmed idle.
+- Provide encrypted link export for selected machines and optional Chat
+  references, including device/tunnel authorization. Require a separate transfer
+  password and explicit import preview/confirmation; never silently replace a
+  different computer or restore locally deleted chats.
+- Preserve existing local history. Never export/replay queued actions or copy
+  provider/account OAuth credentials. Explain shared device revocation and tunnel
+  authorization expiry; a second phone may need account login for renewal.
+
 ## Shared chat lifecycle
 
 - Android deletion must remove the shared Server Chat after explicit confirmation,

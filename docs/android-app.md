@@ -2,6 +2,45 @@
 
 This document describes the current AgentLink Android client implementation.
 
+## Dashboard and phone transfer
+
+The Dashboard tab displays compact Chat name/computer/status cards. Entering it
+checks the shared catalogs immediately, then refreshes all saved machines every
+three minutes while the page is in the foreground. It replaces the regular
+five-second foreground catalog poll on that page; existing task/approval sockets
+are not cancelled. No transcript or model prompt is fetched for the dashboard.
+Checks are read-only, paginated, and limited to four concurrent machines.
+One completed refresh updates the cards together. Unavailable computers retain
+explicitly stale cached cards and show an error instead of appearing idle.
+Changes to catalog revision/generation or displayed state, and newly discovered
+chats after the first snapshot, receive bright yellow cards with an Updated label.
+Highlights remain until dismissed; dashboard viewing does not mark chat messages read.
+
+The page keeps the screen awake only while visible in the foreground. Fullscreen
+hides app/system bars; its exit button or Back restores them. Leaving the page or
+backgrounding the app restores normal screen timeout. This is not a wake lock,
+screen-unlock mechanism, or a guarantee against OS battery/thermal restrictions.
+
+The top-bar Transfer action exports selected machines, optionally with their
+chat references, as a password-encrypted `acpclient://transfer#...` link. The
+password must contain 12–256 characters and should be sent separately. The
+dialog explains that both together grant computer access. Copy uses sensitive
+clipboard metadata; the dialog blocks screenshots and does not save passwords
+or links in recreation state. Open the link on another phone, or paste it into
+Transfer > Import (the Machines pairing-link input also routes transfer links).
+Unlocking shows the machine names/endpoints and counts before explicit import.
+
+Transfer includes device bearer tokens and freshly resolved tunnel-connect
+authorization, not GitHub/Microsoft access/refresh tokens. Account bindings are
+not copied to a new phone. Imported tunnel authorization expires: pair again via
+QR or signed-in account discovery to renew it. Both phones share the exported device identity and revocation.
+Chat references include IDs, titles, workspace/agent and native session binding,
+not transcripts, image bytes, drafts, queued prompts, approvals or IPC grants.
+History comes from the existing Server recovery path where supported.
+Matching machines update credentials; identity/endpoint conflicts and locally
+deleted chats are rejected. Existing chats/history are preserved. Storage failures
+are explicit; a partially saved import can safely be retried.
+
 ## Compact chat composer
 
 The default composer is one 48dp-high row (it accommodates larger accessibility

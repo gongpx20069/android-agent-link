@@ -185,12 +185,16 @@ import com.gongpx.androidacpclient.data.bridge.deleteSharedChat
 import com.gongpx.androidacpclient.data.bridge.retryPendingChatDeletions
 import com.gongpx.androidacpclient.data.bridge.renameSharedChat
 import com.gongpx.androidacpclient.data.bridge.applySharedTitle
+import com.gongpx.androidacpclient.data.bridge.DashboardSnapshot
+import com.gongpx.androidacpclient.data.bridge.pollDashboard
+import com.gongpx.androidacpclient.data.bridge.refreshDashboard
 import com.gongpx.androidacpclient.data.model.Workspace
 import com.gongpx.androidacpclient.integration.IntegrationGrantsActivity
 import com.gongpx.androidacpclient.data.notification.ChatNotificationManager
 import com.gongpx.androidacpclient.data.notification.chatCompletionAttention
 import com.gongpx.androidacpclient.data.notification.chatCompletionPreview
 import com.gongpx.androidacpclient.data.pairing.PairingLinkParser
+import com.gongpx.androidacpclient.data.pairing.TransferLink
 import com.gongpx.androidacpclient.data.store.AppLanguageMode
 import com.gongpx.androidacpclient.data.store.AppSettingsStore
 import com.gongpx.androidacpclient.data.store.ChatStore
@@ -217,6 +221,7 @@ import org.json.JSONObject
 
 internal enum class AppTab(val icon: String) {
     Chats("✦"),
+    Dashboard("▦"),
     Approvals("✓"),
     Machines("▣"),
     Settings("⚙"),
@@ -372,6 +377,7 @@ internal data class AppStrings(
     val agentFinished: String,
 ) {
     fun tabLabel(tab: AppTab): String = when (tab) {
+        AppTab.Dashboard -> reliability("Dashboard", "看板")
         AppTab.Chats -> chats
         AppTab.Approvals -> approvals
         AppTab.Machines -> machines
@@ -681,6 +687,12 @@ fun AgentLinkApp(
     var deletionDetailsOpen by remember { mutableStateOf(false) }
     var deletionRetryRevision by remember { mutableStateOf(0) }
     var scannerOpen by remember { mutableStateOf(false) }
+    var transferOpen by remember { mutableStateOf(false) }
+    var transferLink by remember { mutableStateOf<String?>(null) }
+    var dashboardFullscreen by rememberSaveable { mutableStateOf(false) }
+    var dashboardSnapshot by remember { mutableStateOf(DashboardSnapshot()) }
+    var dashboardRefreshing by remember { mutableStateOf(false) }
+    var dashboardRefreshRevision by remember { mutableStateOf(0) }
     var resumeDialogState by remember { mutableStateOf<ResumeDialogState?>(null) }
     var modelDialogState by remember { mutableStateOf<ModelDialogState?>(null) }
     var updateState by remember { mutableStateOf(UpdateUiState()) }
@@ -1473,6 +1485,11 @@ fun AgentLinkApp(
     }
 
     fun pairFromLink(link: String) {
+        if (link.trim().startsWith("acpclient://transfer")) {
+            transferLink = link.trim()
+            transferOpen = true
+            return
+        }
         val payload = parser.parse(link).getOrElse {
             statusMessage = it.message ?: strings.invalidPairingLink
             return
@@ -1969,8 +1986,9 @@ fun AgentLinkApp(
             foregroundJobs.remove(job)
         }
     }
-    LaunchedEffect(machineConnectionKeys, appInForeground.value, uiOwnsConnections, storesLoaded) {
-        if (!appInForeground.value || !uiOwnsConnections || !storesLoaded || storageError != null) return@LaunchedEffect
+    LaunchedEffect(machineConnectionKeys, appInForeground.value, uiOwnsConnections, storesLoaded, selectedTab) {
+        if (!appInForeground.value || !uiOwnsConnections || !storesLoaded || storageError != null ||
+            selectedTab == AppTab.Dashboard) return@LaunchedEffect
         val revisions = mutableMapOf<String, Long>()
         val catalogFailures = mutableSetOf<String>()
         while (true) {
@@ -2048,8 +2066,8 @@ fun AgentLinkApp(
             delay(5_000)
         }
     }
-    LaunchedEffect(chatConnectionKeys, machineConnectionKeys, statusSynchronizedChatIds.toList(), sessionLoadingChatIds.toList(), appInForeground.value, uiOwnsConnections, storesLoaded) {
-        if (!appInForeground.value || !uiOwnsConnections || !storesLoaded) return@LaunchedEffect
+    LaunchedEffect(chatConnectionKeys, machineConnectionKeys, statusSynchronizedChatIds.toList(), sessionLoadingChatIds.toList(), appInForeground.value, uiOwnsConnections, storesLoaded, selectedTab) {
+        if (!appInForeground.value || !uiOwnsConnections || !storesLoaded || selectedTab == AppTab.Dashboard) return@LaunchedEffect
         var retryDelayMillis = 1_000L
         while (true) {
             val unsynchronizedChats = chats.filter { it.id !in statusSynchronizedChatIds && it.id !in authenticationRequiredChatIds }
@@ -2065,7 +2083,24 @@ fun AgentLinkApp(
         }
     }
 
-    LaunchedEffect(incomingPairingLink.value) {
+    LaunchedEffect(selectedTab, appInForeground.value, uiOwnsConnections, storesLoaded, machineConnectionKeys, dashboardRefreshRevision) {
+        if (selectedTab != AppTab.Dashboard || !appInForeground.value || !uiOwnsConnections ||
+            !storesLoaded || storageError != null) return@LaunchedEffect
+        try {
+            pollDashboard(refresh = {
+                dashboardRefreshing = true
+                dashboardSnapshot = refreshDashboard(
+                    machines.toList(), chats.toList(), dashboardSnapshot, chatStore::isRemoved, bridgeClient::listSharedChats,
+                )
+                dashboardRefreshing = false
+            })
+        } finally {
+            dashboardRefreshing = false
+        }
+    }
+
+    LaunchedEffect(incomingPairingLink.value, storesLoaded) {
+        if (!storesLoaded) return@LaunchedEffect
         incomingPairingLink.value?.let { link ->
             selectedTab = AppTab.Machines
             pairFromLink(link)
@@ -2215,6 +2250,48 @@ fun AgentLinkApp(
 
     MaterialTheme {
         CompositionLocalProvider(LocalAppStrings provides strings) {
+        DashboardWindow(
+            active = selectedTab == AppTab.Dashboard && appInForeground.value && !scannerOpen && !transferOpen,
+            fullscreen = dashboardFullscreen,
+        )
+        if (transferOpen && storesLoaded) androidx.compose.runtime.key(transferLink) {
+        TransferDialog(
+            machines = machines.toList(),
+            chats = chats.toList(),
+            initialLink = transferLink,
+            relayHeaders = tunnelAccounts::relayHeaders,
+            onClose = { transferOpen = false; transferLink = null },
+            onImport = { bundle ->
+                check(storageError == null) { "Storage is unavailable." }
+                TransferLink.validateImport(
+                    bundle, machines.toList(), chats.toList(), chatStore::isRemoved,
+                )
+                val importedIds = bundle.machines.map { it.id }.toSet()
+                val nextMachines = machines.filterNot { it.id in importedIds } + bundle.machines.map { incoming ->
+                    machines.firstOrNull { it.id == incoming.id }?.copy(
+                        deviceToken = incoming.deviceToken, connectionHeaders = incoming.connectionHeaders,
+                    ) ?: incoming
+                }
+                machineStore.replaceAll(nextMachines)
+                machines.clear()
+                machines.addAll(nextMachines)
+                for (chat in bundle.chats) {
+                    if (chats.none { it.id == chat.id }) {
+                        val saved = chatStore.upsert(chat)
+                        chats.add(saved)
+                    }
+                }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { chatStore.awaitDurable() }
+                chats.filter { it.machineId in importedIds }.forEach {
+                    authenticationRequiredChatIds.remove(it.id)
+                    statusSynchronizedChatIds.remove(it.id)
+                    chatConnections.remove(it.id)?.close()
+                }
+                statusMessage = strings.reliability("Import saved. Connecting to the imported machines.", "导入已保存，正在连接导入的电脑。")
+                selectedTab = AppTab.Machines
+            },
+        )
+        }
         renameDialogChatId?.let { id ->
             val target = chats.firstOrNull { it.id == id }
             if (target != null) {
@@ -2347,57 +2424,82 @@ fun AgentLinkApp(
                 Scaffold(
                     snackbarHost = { SnackbarHost(snackbar) },
                     topBar = {
-                        TopAppBar(
-                            actions = {
-                                if (pendingDeletions.isNotEmpty()) TextButton(onClick = { deletionDetailsOpen = true }) {
-                                    Text(strings.reliability("Pending deletes: ${pendingDeletions.size}", "待删除：${pendingDeletions.size}"))
-                                }
-                            },
-                            title = {
-                                Column {
-                                    Text("AgentLink", fontWeight = FontWeight.SemiBold)
-                                    Text(
-                                        strings.mobileControlSubtitle,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    if (!notificationsEnabled) {
-                                        Text(
-                                            strings.reliability("Background alerts disabled - see Settings", "后台提醒未启用，请前往设置"),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.error,
-                                        )
+                        if (selectedTab != AppTab.Dashboard || !dashboardFullscreen) {
+                            TopAppBar(
+                                actions = {
+                                    TextButton(enabled = storesLoaded && storageError == null, onClick = {
+                                        transferLink = null
+                                        transferOpen = true
+                                    }) { Text(strings.reliability("Transfer", "迁移")) }
+                                    if (pendingDeletions.isNotEmpty()) TextButton(onClick = { deletionDetailsOpen = true }) {
+                                        Text(strings.reliability("Pending deletes: ${pendingDeletions.size}", "待删除：${pendingDeletions.size}"))
                                     }
-                                }
-                            },
-                        )
+                                },
+                                title = {
+                                    Column {
+                                        Text("AgentLink", fontWeight = FontWeight.SemiBold)
+                                        Text(
+                                            strings.mobileControlSubtitle,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        if (!notificationsEnabled) {
+                                            Text(
+                                                strings.reliability("Background alerts disabled - see Settings", "后台提醒未启用，请前往设置"),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.error,
+                                            )
+                                        }
+                                    }
+                                },
+                            )
+                        }
                     },
                     bottomBar = {
-                        NavigationBar {
-                            AppTab.entries.forEach { tab ->
-                                NavigationBarItem(
-                                    selected = selectedTab == tab,
-                                    onClick = { selectedTab = tab },
-                                    label = null,
-                                    icon = {
-                                        Column(
-                                            horizontalAlignment = Alignment.CenterHorizontally,
-                                            verticalArrangement = Arrangement.spacedBy(0.dp),
-                                        ) {
-                                            Text(tab.icon, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                                            Text(strings.tabLabel(tab), style = MaterialTheme.typography.labelSmall)
-                                            if (tab == AppTab.Approvals) {
-                                                val pending = approvals.count { it.status.isActionable() }
-                                                if (pending > 0) Text("$pending", color = MaterialTheme.colorScheme.error)
+                        if (selectedTab != AppTab.Dashboard || !dashboardFullscreen) {
+                            NavigationBar {
+                                AppTab.entries.forEach { tab ->
+                                    NavigationBarItem(
+                                        selected = selectedTab == tab,
+                                        onClick = { selectedTab = tab },
+                                        label = null,
+                                        icon = {
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally,
+                                                verticalArrangement = Arrangement.spacedBy(0.dp),
+                                            ) {
+                                                Text(tab.icon, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                                                Text(strings.tabLabel(tab), style = MaterialTheme.typography.labelSmall)
+                                                if (tab == AppTab.Approvals) {
+                                                    val pending = approvals.count { it.status.isActionable() }
+                                                    if (pending > 0) Text("$pending", color = MaterialTheme.colorScheme.error)
+                                                }
                                             }
-                                        }
-                                    },
-                                )
+                                        },
+                                    )
+                                }
                             }
                         }
                     },
                 ) { padding ->
                     when (selectedTab) {
+                        AppTab.Dashboard -> DashboardScreen(
+                            padding, dashboardSnapshot, dashboardRefreshing, dashboardFullscreen,
+                            onFullscreen = { dashboardFullscreen = it },
+                            onRefresh = { dashboardRefreshRevision++ },
+                            onAcknowledge = { machineId, chatId ->
+                                dashboardSnapshot = dashboardSnapshot.copy(chats = dashboardSnapshot.chats.map {
+                                    if (it.chat.id == chatId && it.chat.machineId == machineId) it.copy(changed = false) else it
+                                })
+                            },
+                            onOpen = { chat ->
+                                if (!chatStore.isRemoved(chat.id) && chats.none { it.id == chat.id && it.machineId != chat.machineId }) {
+                                    if (chats.none { it.id == chat.id }) upsertChat(chat)
+                                    dashboardFullscreen = false
+                                    openChat(chat.id)
+                                }
+                            },
+                        )
                         AppTab.Chats -> chatUiStateHolder.SaveableStateProvider("chats") { ChatsScreen(
                             padding = padding,
                             machines = machines,
