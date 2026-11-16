@@ -13,6 +13,38 @@ ACP Agent CLI
 
 The Android app is the control surface. Remote machines run the bridge, agent process, shell commands, Git operations, and repository workspaces.
 
+### Lightweight browser workspace
+
+The stdlib `start` command adds a loopback `ThreadingHTTPServer` by default to the existing Python
+process and serves three packaged HTML/CSS/JavaScript assets. There is no second
+agent runtime, Node service, frontend build, Web Dashboard, or new dependency.
+`--no-web` disables that listener; the optional FastAPI backend remains Web-free.
+The gateway calls the existing shared-control executor for local chats; it proxies
+authenticated `POST /control` to each explicitly configured remote stdlib Server.
+Every action captures its machine/chat identity. Each VM owns its processes,
+workspace, shared journal, queue, operation receipts and approval arbitration.
+
+The plain-JavaScript client polls catalogs about every ten seconds with at most
+four computers concurrently, and the selected chat's bounded event pages about
+every 1.2 seconds. Hidden tabs pause journal polling and reduce catalog polling.
+Failures retain clearly stale cached rows and disable affected execution/approval
+controls; a failed VM does not stop other computers. Generation changes reset the
+cursor with a visible history boundary. Journal truncation is explicit.
+Catalogs consume deletion tombstones; absence from an offset page is not treated
+as deletion while other clients may be changing the catalog.
+The browser retains up to eight chat histories, each bounded to 1000 blocks/about
+two million characters; individual message tails are bounded to 200000 characters.
+These are page-cache limits, not Server-history deletion. Catalogs stop explicitly
+at 5000 chats per computer; the visible list asks for filtering beyond 1000 rows.
+
+Manual ordering stores composite machine/chat keys in localStorage, preserves
+hidden positions during filtered reorders, and does not sort by status. Drafts
+are separate in-memory values per composite key. Pending send IDs use
+sessionStorage, never automatic retries; missing/unknown receipts cannot unlock
+uncertain sends. Delivery-only receipts remain distinct from task completion.
+Remote credentials remain in the gateway's owner-private registry, never returned
+to the browser after onboarding. Closing the page does not stop tasks.
+
 ### Copilot immediate input
 
 Native Copilot text supplements use a separate ordered delivery lane belonging

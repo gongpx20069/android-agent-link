@@ -89,7 +89,7 @@ class DeviceTokenRecoveryTests(unittest.TestCase):
                 patch("android_acp_bridge.main.render_terminal_qr", return_value=""),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
-                self.assertEqual(main(["start", "--transport", "local", "--device-token-store", str(path)]), 0)
+                self.assertEqual(main(["start", "--transport", "local", "--device-token-store", str(path), "--no-web"]), 0)
             self.assertTrue(runtime(path).is_device_token_valid(issued[0]))
             self.assertEqual(default_device_token_store().name, "device-tokens.json")
 

@@ -94,6 +94,13 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
         return {"chat": chat}
 
     chat_id = required_text(payload.get("chatId"), "chatId", 256)
+    if action == "approval.decide":
+        runtime.shared.chat(chat_id)
+        result = next(event for event in runtime.websocket_responses({**payload, "type": "approval.decide"})
+                      if event["type"] == "approval.decide.result")
+        if not result["resolved"]:
+            raise ControlError("CONFLICT", "Approval was not applied. Refresh its state; it may be expired, already handled, or require valid answers.")
+        return result
     if action == "chat.delete":
         return runtime.delete_shared_chat(chat_id)
     if action == "chat.rename":

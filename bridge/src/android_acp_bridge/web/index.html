@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AgentLink Web</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="sidebar">
+    <header class="brand"><span class="logo">▦</span><div><strong>AgentLink</strong><small>多电脑工作台</small></div></header>
+    <button class="primary" id="new-chat">＋ 新建聊天</button>
+    <label class="field">电脑范围<select id="machine-filter"><option value="all">全部电脑</option></select></label>
+    <input id="search" type="search" aria-label="搜索聊天" placeholder="搜索聊天或电脑 · Ctrl K">
+    <div class="list-label">聊天 · 自定义顺序 <span id="chat-count">0</span></div>
+    <small id="order-note">拖动排序，或 Alt + ↑ / ↓；状态变化不重排。</small>
+    <nav id="chat-list" aria-label="聊天列表"></nav>
+    <footer class="sidebar-footer"><button id="machines-button">电脑与连接</button><button id="logout">退出登录</button></footer>
+  </aside>
+  <main>
+    <header class="topbar"><div><h1 id="chat-title">选择一个聊天</h1><div id="chat-subtitle" class="muted"></div></div><span id="chat-status" class="badge"></span><button id="rename" disabled>重命名</button><button id="details-toggle">详情</button></header>
+    <div id="error" role="alert" hidden></div>
+    <div id="history-notice" class="notice" hidden></div>
+    <section id="timeline" aria-label="聊天记录"><p class="empty">选择聊天，或创建一个新会话。</p></section>
+    <button id="new-messages" hidden>有新消息 ↓</button>
+    <footer class="composer-area">
+      <div id="pending-notice" class="notice" hidden><span id="pending-text"></span><button id="check-send">检查发送结果</button><button id="unlock-send">我已核对，解除发送锁</button></div>
+      <div id="queue-list"></div>
+      <div class="composer"><textarea id="composer" aria-label="输入消息" placeholder="发送消息，或补充当前任务…" disabled></textarea><div class="composer-toolbar"><small id="composer-target">仅连接本机 Web 入口</small><button id="cancel-task" disabled>停止当前任务</button><button class="primary" id="send" disabled>发送 ↑</button></div></div>
+      <small>Enter 发送 · Shift + Enter 换行 · 关闭页面不会取消任务 · 首版文字交互</small>
+    </footer>
+  </main>
+  <aside id="details" class="details"><header><strong>审批与工具详情</strong><button id="details-close" aria-label="关闭详情">×</button></header><div id="detail-content"><p class="muted">选择聊天后查看详情。</p></div></aside>
+</div>
+<dialog id="login-dialog" aria-labelledby="login-title">
+  <form id="login-form"><h2 id="login-title">连接本机 Server</h2><p class="muted">输入启动 Server 时显示的 Web access code。访问码不会放进网址。</p><label class="field">访问码<input id="access-code" type="password" autocomplete="off" required></label><p id="login-error" class="error-text" role="alert"></p><button class="primary" type="submit">进入工作台</button></form>
+</dialog>
+<dialog id="new-dialog" aria-labelledby="new-title">
+  <form id="new-form"><header><h2 id="new-title">新建聊天</h2><button type="button" data-close="new-dialog" aria-label="关闭新建聊天">×</button></header>
+    <label class="field">执行电脑<select id="new-machine" required></select></label>
+    <label class="field">工作目录<select id="new-workspace" required></select></label>
+    <label class="field" id="register-field" hidden>注册已有目录（必须在 Server 的 --workspace-root 内）<input id="register-path" placeholder="已有目录的绝对路径"></label>
+    <label class="field">助手<select id="new-agent" required></select></label>
+    <label class="field">聊天名称<input id="new-name" required maxlength="256"></label>
+    <p id="new-info" class="muted" role="status"></p><button id="create-chat" class="primary" type="submit">创建聊天</button>
+  </form>
+</dialog>
+<dialog id="machines-dialog" aria-labelledby="machines-title">
+  <header><h2 id="machines-title">电脑与连接</h2><button data-close="machines-dialog" aria-label="关闭电脑管理">×</button></header>
+  <p class="muted">每台 VM 独立运行更新后的 stdlib Server。浏览器只连接本机，远程授权保存在本机用户私有目录。</p>
+  <div id="machine-rows"></div>
+  <form id="pair-form" autocomplete="off"><h3>用 VM 的配对链接连接</h3><label class="field">配对链接<textarea id="pair-link" required placeholder="acpclient://pair?data=…"></textarea></label><p id="pair-preview" class="muted"></p><p class="muted">请先核对来源；提交后需要在 VM 上确认。授权不会发送给其他电脑。</p><button class="primary" type="submit">连接并请求配对</button><p id="pair-result" role="status"></p></form>
+  <details><summary>已有设备凭据 / 更新过期凭据</summary><form id="machine-form" autocomplete="off">
+    <label class="field">连接<select id="edit-machine"><option value="">新增连接</option></select></label>
+    <label class="field">名称<input id="machine-name" required maxlength="100"></label>
+    <label class="field">Server 地址<input id="machine-endpoint" required placeholder="https://… 或私网 http://…"></label>
+    <label class="field">设备 Token<input id="machine-token" type="password" required autocomplete="off"></label>
+    <label class="field">X-Tunnel-Authorization（可选）<input id="machine-relay" type="password" autocomplete="off"></label>
+    <p class="muted">不会显示已保存的凭据。到期时重新配对，或输入新的设备／隧道凭据。</p><button class="primary" type="submit">验证并保存</button><p id="machine-result" role="status"></p>
+  </form></details>
+</dialog>
+</body>
+</html>

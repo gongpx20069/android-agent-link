@@ -22,6 +22,37 @@ from your phone. Your projects and agent processes stay on your computer.
 AgentLink is a remote control, not an on-phone agent runtime. Your computer must
 stay awake, online, and running the bridge while you use it.
 
+## Browser workspace
+
+The stdlib Server's `start` command now includes Web by default; no extra flag is
+needed. Use `start --no-web` to disable the browser listener. After existing tasks
+finish, deliberately restart your Server. Do not start another runtime against the same
+conversation database. Open the printed `http://127.0.0.1:4318` URL and enter its
+Web access code. `--web-port 0` chooses a free port. Sessions expire after eight
+hours or a Server restart. Never publish or tunnel this loopback Web port.
+
+The unified chat list labels each computer and supports search, filtering,
+drag ordering and Alt+Up/Down. Order is saved per browser, not sorted by status;
+filtered moves preserve hidden positions. Android Dashboard sorting is separate.
+Each chat has its own in-memory draft, and the composer/approval panel identifies
+the target computer. The first Web version supports text, basic text/code
+formatting, tool details, rename, queue removal and guarded cancellation.
+Images and native session picking remain in Android/the terminal. History comes
+from the retained shared journal, with explicit cache limits and gap/reset notices.
+
+In computer management, paste the VM's current pairing link, verify its target
+and confirm the request on the VM. Remote stdlib Servers need the updated
+`/control` API; they can use `--no-web` if no local browser is needed. Credentials stay in the gateway's
+owner-private `web-machines.json`, **recoverable and not encrypted at rest**.
+Removing a connection does not delete VM chats or revoke its device credential.
+Renew expired tunnel credentials/re-pair explicitly; Web has no OAuth renewal.
+
+New chat selects a computer, existing workspace and installed agent. To permit
+registration of existing subdirectories, start with `--workspace-root C:\Repos`.
+Offline computers cannot receive sends/approvals; other computers remain usable.
+Check operation receipts after an uncertain send instead of sending it again.
+Delivered input is not task completion. Closing the page does not cancel work.
+
 ## Dashboard
 
 Open **Dashboard** for a single-screen status wall that automatically fits all

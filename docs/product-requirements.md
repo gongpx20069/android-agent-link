@@ -1,5 +1,25 @@
 # Product Requirements
 
+## Lightweight Web workspace
+
+- Start a polished browser control surface by default with the existing Python
+  Server without Node services or a heavy frontend framework. No Web Dashboard.
+  Allow opting out with `--no-web`; preserve the optional FastAPI backend without Web.
+- Unify local and VM chats with computer labels/filtering, separate drafts and
+  explicit targets for creation, sending and approvals. Remote processes remain
+  on their own VM; browser traffic goes only through the local gateway.
+- Use persistent manual drag/keyboard ordering, not status priority. Filtered
+  moves preserve hidden rows' global positions. Android Dashboard sorting is unchanged.
+- Support text conversation streaming through bounded shared-journal polling,
+  tool details, rename, queue removal, guarded cancellation, exact permission
+  choices and question answers. Images and native session picking remain in the
+  existing clients for this first Web version.
+- Keep uncertain sends visibly locked, never auto-resend, and distinguish input
+  delivery from completion. Surface offline, stale, truncated and reset history.
+  Retain independent operation and approval ownership across client switches.
+- Require startup-code login and explicit VM onboarding. Keep remote credentials
+  owner-private on the gateway; explain that this storage is not encrypted at rest.
+
 ## Additional input during execution
 
 - Send human text supplements to a running native Copilot task through the

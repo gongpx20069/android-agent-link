@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>Your coding agents. Your computer. Now on your phone.</strong><br>
-  Start a task on Android, follow its progress, and continue the same chat in your terminal.
+  Start a task on Android, follow its progress, and continue the same chat in your browser or terminal.
 </p>
 
 <p align="center">
@@ -16,9 +16,9 @@
 
 **GitHub Copilot CLI · Claude Code · Kimi Code · Qwen Code · DeepSeek Harness · OpenCode**
 
-One Android app for multiple agents, projects and computers.
+Multiple agents, projects and computers — connected through Android, a lightweight Web workspace, and an optional terminal.
 
-**Image input (0.0.39+):** attach one screenshot/photo with optional text, preview
+**Android image input (0.0.39+):** attach one screenshot/photo with optional text, preview
 it and send it to an image-capable agent/model. Requires updated App **and** Bridge;
 see [image input](docs/user-guide.md#send-an-image) for limits.
 
@@ -50,6 +50,8 @@ Follow the Dev Tunnels sign-in prompt if shown. The default connection is privat
 and authenticated: **no inbound firewall ports or extra VPN app on your phone**.
 Keep the computer awake and this terminal running.
 
+- `start` also enables the local Web workspace. Open its printed loopback URL
+  and enter the Web access code. Use `start --no-web` for Server-only operation.
 - The server prints a pairing QR code. On Android, open **Machines → Scan QR**.
   Check the matching confirmation code, then enter **`y`** at the server's pairing prompt.
 - On Android, open **Chats → New Chat**. Choose the computer, agent, and a project
@@ -75,6 +77,33 @@ If pairing is needed in this mode, use **`/qrcode`**, then Esc to return and
 Phone and terminal share the same agent session, messages, task queue and approvals.
 This is AgentLink's terminal UI, not a second independent agent-CLI conversation.
 
+## Browser workspace
+
+The updated stdlib Bridge's **`start` command includes Web by default**. Open
+the printed local URL (normally `http://127.0.0.1:4318`) and enter its Web access
+code. No Node service or frontend build is needed: it reuses the Python runtime.
+Use `start --no-web` for Server-only operation, or `--web-port 0` for a free port.
+
+See local and VM chats in one list, with computer labels, search and filters.
+Drag to arrange chats, or use Alt+Up/Down; status updates do not reorder them.
+Each chat keeps its own draft. Read replies and tool details, answer approvals,
+rename chats, remove queued inputs or request task cancellation.
+
+Add a VM in **computer management** using its current pairing link, check the
+target and confirm on the VM. Each VM needs an updated stdlib Bridge. The browser
+talks only to the local gateway; do not expose its Web port through a tunnel.
+Remote credentials are stored in an owner-private file on that computer,
+**not encrypted at rest**. An offline VM does not block the others.
+For a first workspace, `--workspace-root C:\Repos` allows registering existing
+subdirectories from New chat.
+
+This first Web version supports text and retained shared-journal history. Images
+remain in Android; native session picking remains in Android/the terminal.
+Uncertain sends are never automatically retried, and closing the browser does
+not cancel tasks. Update and deliberately restart the Bridge after existing work
+finishes; updating the APK alone does not add Web.
+[Full browser guide](docs/user-guide.md#browser-workspace).
+
 ## Built for moving between screens
 
 | Stay in control | Pick up where you left off |
@@ -83,6 +112,7 @@ This is AgentLink's terminal UI, not a second independent agent-CLI conversation
 | Approve agent requests from your phone | Resume sessions offered by your agent |
 | Long-press on Android to copy selected text | Drag-select and scroll in the terminal |
 | Keep queued messages compact; tap to expand | Read older history without loading it all at once |
+| Answer approval requests in the browser too | Arrange local and VM chats manually in Web |
 
 ## Supported coding agents
 

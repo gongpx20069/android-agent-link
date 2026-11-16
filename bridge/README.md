@@ -4,6 +4,53 @@ Connect your computer's coding agents to the AgentLink Android app.
 For the shortest setup path, start with the [AgentLink quick start](../README.md).
 This guide covers additional installation and connection options.
 
+## Lightweight Web workspace
+
+`start` enables the Web workspace alongside the stdlib Server by default; no
+extra `--web` flag is needed. After active tasks finish, deliberately restart that
+Server; do not launch a second runtime against its shared database. For example,
+from the repository root:
+
+```powershell
+python .\bridge\run.py start --workspace-root C:\Repos
+```
+
+Open the printed `http://127.0.0.1:4318` address and enter the private Web access
+code printed at startup. `--web-port 0` selects a free port. The optional
+`--workspace-root` permits registering existing subdirectories in New chat.
+No Node service, frontend build, additional runtime package, or model migration
+is needed. `--interactive` can coexist with Web. Use `start --no-web` for a
+Server without a browser listener; `--web` remains accepted for compatibility.
+The optional FastAPI backend keeps Web disabled and rejects explicit `--web`.
+
+The first Web version supports text chats, live shared journal updates, folded
+tool details, exact permission options/question forms, rename, queue removal,
+and guarded cancellation. Image upload/viewing and native session picking remain
+in Android/the terminal. Basic text/code formatting is rendered without raw HTML
+or automatic external resource loads. It is not a complete provider history viewer.
+
+Computer management accepts a VM's `acpclient://pair?...` link after you verify its
+displayed target. Confirm the request on that VM. The VM needs an updated stdlib
+Server with `/control`; it can use `--no-web` if no browser is needed there. Existing device/tunnel
+credentials can also be entered explicitly. Remote credentials are saved in
+`web-machines.json` beside the device-token store, protected by owner-only
+permissions, **recoverable and not encrypted at rest**. Keep the directory and
+backups private. Removing a connection does not delete remote chats or revoke
+the remote device token. Expired tunnel credentials require renewal/re-pairing;
+the Web workspace does not perform account discovery/OAuth renewal.
+
+The browser connects only to the loopback gateway. Never tunnel/expose port 4318.
+Saved browser sessions expire after eight hours or a Server restart. VM failures
+are isolated. Chat ordering is manual and persisted per browser; filtered drag
+and Alt+Up/Down preserve hidden positions. Status changes never reorder Web chats.
+An uncertain send stays locked until you inspect its operation receipt or
+explicitly acknowledge checking the target; it is never automatically resent.
+
+Optional Windows browser checks use an existing Edge installation and isolated
+fake peers (no real provider calls):
+`.\bridge\tests\verify_web_browser.ps1`. Python integration checks are in
+`bridge\tests\test_web_gateway.py`.
+
 ## Session renaming
 
 Use `/rename <new name>` in the AgentLink terminal or Android chat. Android's

@@ -55,6 +55,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/control":
+            from .web_gateway import serve_control
+            serve_control(self, self.server.runtime)
+            return
         if parsed.path == "/attachments":
             self._attachment_request(parsed)
             return

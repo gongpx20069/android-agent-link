@@ -202,7 +202,7 @@ class ConsoleLogTests(unittest.TestCase):
                 patch("android_acp_bridge.main.render_terminal_qr", return_value="QR"), \
                 patch("sys.stdout", new_callable=io.StringIO):
             with self.assertRaises(OSError):
-                main(["start", "--transport", "local", "--log-level", "debug"])
+                main(["start", "--transport", "local", "--log-level", "debug", "--no-web"])
         self.assertEqual(len(consoles), 1)
         self.assertIsNone(consoles[0]._worker)
 

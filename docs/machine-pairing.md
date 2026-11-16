@@ -8,6 +8,24 @@ Starting the bridge on a developer machine should lead the user to a scannable Q
 
 The QR code does not create network connectivity by itself. It transfers endpoint metadata and a short-lived pairing credential. Connectivity still depends on Tailscale, another private network, LAN, or an explicitly configured tunnel.
 
+## Pairing a VM with the Web workspace
+
+On the gateway computer, `start` enables Web with the stdlib Server; sign in
+at its printed loopback URL using the startup access code. In computer management,
+paste the VM's current `acpclient://pair?...` link, check the displayed name/address,
+and explicitly request pairing. Confirm on the VM as for Android pairing.
+The VM must run an updated stdlib Server supporting `/control`, but need not enable
+its own Web listener (use `--no-web` on that VM if preferred). Do not forward the
+gateway Web port to the VM or internet.
+
+Successful pairing saves the remote device/tunnel credentials only on the gateway,
+in owner-private `web-machines.json` (recoverable, not encrypted at rest). A fresh
+link for the same endpoint updates that connection rather than duplicating its ID.
+The Web workspace does not renew OAuth/tunnel credentials automatically; use a new
+link or explicitly replace expired credentials. Failed/ambiguous pairing may
+already have consumed the link: check the VM before retrying. Removing a gateway
+connection removes neither VM chats nor the device grant on that VM.
+
 ## Recommended Flow
 
 Account discovery is an alternative to scanning. Phone and bridge must use the

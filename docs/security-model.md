@@ -6,6 +6,45 @@ The Android app must let users control powerful remote coding agents without acc
 
 ## Trust Boundaries
 
+### Loopback Web gateway
+
+The stdlib `start` command enables Web by default; `--no-web` disables it.
+Web binds only `127.0.0.1`; its port must not be forwarded through a tunnel.
+All requests require the exact loopback Host. Mutations additionally require the
+same Origin and `X-AgentLink-Web: 1`. A random startup access code creates an
+HttpOnly/SameSite=Strict, eight-hour browser session; codes are not placed in URLs
+or static assets. Logout invalidates the session; restarting invalidates all
+sessions. Login attempts and active session counts are bounded. HTTP is used only
+on loopback, so the cookie is not marked Secure. This is a trusted single-user
+control surface, not a multi-user authorization boundary against local processes,
+browser extensions or other services sharing the loopback cookie host.
+
+The gateway reuses local runtime permissions and remote revocable device-token
+authorization; it does not bypass approvals or expose an independent shell API.
+`POST /control` on remote stdlib Servers requires the existing device bearer token,
+not a browser cookie. Only explicitly configured targets are contacted. Pairing
+links require a displayed target and user confirmation before network access.
+Plain HTTP targets must resolve exclusively to non-public, non-link-local
+addresses; the request pins the checked address while retaining the original Host.
+HTTPS uses normal certificate validation. Proxies and redirects are disabled;
+only `X-Tunnel-Authorization` is accepted as an additional relay header.
+
+Unlike the hashed incoming-device token store, `web-machines.json` contains
+**recoverable remote device/tunnel credentials, not encrypted-at-rest values**.
+Its directory/files use owner-only ACLs/modes and atomic replacement. Do not share
+the directory or its backups. Tokens and headers are excluded from public
+connection responses and request logs. Removing a connection does not revoke the
+credential on the VM; a partially failed pairing may already have consumed the
+link/issued a device grant. Check the target before trying a fresh link.
+
+Agent output, names and tool details are rendered as text/DOM nodes, never raw
+HTML. CSP forbids external scripts and embedding; there are no external image
+loads. Browser storage holds only ordering keys and pending operation IDs, not
+saved credentials or transcripts. Ambiguous sends are not replayed automatically;
+corrupt pending state blocks sending until explicitly reviewed. Approval options,
+form validation, expiration and first-decision-wins remain owned by BridgeRuntime.
+Clients display the actual resolved result, including an earlier different decision.
+
 ### Immediate input delivery
 
 Immediate input uses the existing authenticated Chat prompt path and the active

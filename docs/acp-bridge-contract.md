@@ -4,6 +4,38 @@ This document describes the Android-to-bridge contract. It is intentionally sepa
 
 ## Transport
 
+### HTTP shared control and loopback Web API
+
+The stdlib Server additionally accepts `POST /control`, with
+`Authorization: Bearer <device-token>` and a bounded JSON control request.
+It returns the existing single `control.result` envelope
+`{type, requestId, status: "ok", data}` or `{type, requestId, status: "error", code, message}`;
+no WebSocket `bridge.done` frame is needed. Business errors retain that envelope;
+authentication/transport errors use HTTP errors with `{error}`. Request bodies
+are JSON objects of at most 512000 bytes, with Content-Length and no chunked body.
+Existing WebSocket/Android contracts are unchanged.
+
+Shared control now supports `approval.decide` with `chatId`, `approvalId`,
+`decision` (`approved`/`denied`), optional exact `optionId`, or question `answers`.
+Its data is the existing `approval.decide.result`, including `resolved`, actual
+`status` and optional `optionId`. A previously resolved approval returns its
+original result, not permission to override it. Unresolved/invalid requests report
+`CONFLICT`. Existing runtime option, answer, chat and expiry validation applies.
+
+A separate loopback listener, enabled by stdlib `start` unless `--no-web` is set,
+serves `/`, `/app.js`, `/style.css`.
+Its browser API uses same-origin checks and an HttpOnly session cookie:
+`POST /api/login {code}`, `POST /api/logout {}`, `GET /api/machines`,
+`POST /api/control {machineId, request}`, `POST /api/machines/save
+{id?, name, endpoint, token, headers?}`, `POST /api/machines/pair {link}`,
+and `POST /api/machines/remove {id}`. `local` is reserved for this runtime.
+Public machine rows contain only `id`, `name`, `endpoint`; credentials are never
+returned. Successful registry/login mutations return `{ok: true}`. Pairing the
+same normalized endpoint replaces that connection's credential while retaining
+its ID; ambiguous duplicate endpoints are rejected. Registry saves verify remote
+control before persistence. Remote Servers must be upgraded before onboarding.
+The browser API is not exposed on the remote Bridge listener.
+
 ### Single-image attachments (version 1)
 
 Images are separate from event JSON. All `/attachments` endpoints require the

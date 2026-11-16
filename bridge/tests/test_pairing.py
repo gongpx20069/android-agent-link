@@ -25,7 +25,7 @@ class PairingTests(unittest.TestCase):
                 patch("android_acp_bridge.main._run_fastapi") as fastapi,
                 patch("android_acp_bridge.terminal.run_interactive") as terminal,
             ):
-                args = ["start", "--transport", "local"]
+                args = ["start", "--transport", "local", "--no-web"]
                 args += ["--interactive"] if mode == "interactive" else ["--server", mode]
                 with patch.object(output, "isatty", return_value=True):
                     self.assertEqual(main(args), 0)

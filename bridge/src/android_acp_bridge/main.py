@@ -40,6 +40,9 @@ def main(argv: list[str] | None = None) -> int:
     start_parser.add_argument("--copilot-transport", choices=("sdk", "acp"), default="sdk",
                               help="Copilot backend. SDK waits for session idle including background work; ACP is compatibility-only.")
     start_parser.add_argument("--interactive", action="store_true", help="Enable AgentLink terminal chat alongside Android (stdlib backend; requires interactive extra and a terminal).")
+    start_parser.add_argument("--web", action=argparse.BooleanOptionalAction, default=None,
+                              help="Loopback browser workspace, enabled by default with stdlib; --no-web disables it.")
+    start_parser.add_argument("--web-port", type=int, default=4318, help="Loopback Web port; 0 chooses a free port.")
     start_parser.add_argument("--workspace-root", action="append", default=[], help="Allow controlled workspace creation/registration beneath this existing directory (repeatable).")
     start_parser.add_argument("--connection-header", action="append", default=[], metavar="NAME=VALUE", help="Header Android must send when connecting through a relay, e.g. X-Tunnel-Authorization='tunnel <token>'.")
 
@@ -60,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         machine_name = args.machine_name or config.machine_name
         return _print_pairing(machine_name, args.endpoint, config.bridge_fingerprint, args.no_qr, _parse_connection_headers(args.connection_header))
     if args.command == "start":
+        if args.web is None:
+            args.web = args.server == "stdlib"
         return _start(args)
 
     parser.error("unknown command")
@@ -80,6 +85,14 @@ def _print_tailscale_status() -> int:
 
 def _start(args: argparse.Namespace) -> int:
     terminal_client = None
+    web_server = None
+    web_thread = None
+    if args.web and args.server != "stdlib":
+        print("--web requires --server stdlib.", file=sys.stderr)
+        return 1
+    if args.web and not 0 <= args.web_port <= 65535:
+        print("--web-port must be between 0 and 65535.", file=sys.stderr)
+        return 1
     if args.interactive:
         if args.server != "stdlib":
             print("--interactive requires --server stdlib; the optional FastAPI backend does not run ACP chat.", file=sys.stderr)
@@ -178,6 +191,20 @@ def _start(args: argparse.Namespace) -> int:
         )
         if terminal_client is None:
             console.start()
+        if args.web:
+            import threading
+            from .web_gateway import WebServer
+            try:
+                web_server = WebServer(runtime, args.web_port, args.device_token_store.with_name("web-machines.json"))
+            except OSError:
+                print("Cannot bind the loopback Web entry. Choose another --web-port; the existing Server was not replaced.", file=sys.stderr)
+                return 1
+            web_thread = threading.Thread(target=web_server.serve_forever, name="agentlink-web", daemon=True)
+            web_thread.start()
+            web_info = f"Web workspace: {web_server.origin}\nWeb access code (private): {web_server.access_code}"
+            print(web_info, flush=True)
+            if terminal_client is not None:
+                terminal_client.pairing_display += "\n" + web_info
         console.message("info", "server.starting", backend=args.server, port=config.port)
         if terminal_client is not None:
             run_interactive(runtime, terminal_client)
@@ -193,6 +220,12 @@ def _start(args: argparse.Namespace) -> int:
         print("Shared conversation storage is unavailable. Repair or restore its private database before starting.", file=sys.stderr)
         return 1
     finally:
+        if web_server is not None:
+            if web_thread is not None and web_thread.is_alive():
+                web_server.shutdown()
+            web_server.server_close()
+            if web_thread is not None:
+                web_thread.join(timeout=3)
         if runtime is not None and not runtime._active_prompts:
             runtime.shared.close()
         console.close()
