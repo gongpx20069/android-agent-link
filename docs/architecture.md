@@ -13,6 +13,20 @@ ACP Agent CLI
 
 The Android app is the control surface. Remote machines run the bridge, agent process, shell commands, Git operations, and repository workspaces.
 
+### Copilot immediate input
+
+Native Copilot text supplements use a separate ordered delivery lane belonging
+to the active foreground operation, not a second prompt runner. It calls
+`send(mode="immediate")` without changing the session's output/permission sink.
+Task completion closes input admission and waits for reserved deliveries; an
+old idle event cannot finish a task before its newly submitted input is echoed.
+Foreground yield additionally waits for a user turn after that echo, while
+session-wide cancellation still releases the task. SDK receipt is represented
+by `operation.delivered`, not `operation.done`, and remains a delivery-only
+durable receipt. Ambiguous sends never fall back or retry. Before-send startup/
+idle races, images, automated Mochi inputs and ACP providers use the original
+FIFO; pending input reservations retain their FIFO positions on fallback.
+
 ### Dashboard and portable references
 
 Dashboard owns a lifecycle-cancelled three-minute catalog polling loop, replacing
@@ -21,11 +35,16 @@ existing authenticated/paginated `chat.list` calls into a single snapshot with
 per-machine failures and bounded concurrency. It compares revision/generation
 and visible metadata without fetching transcripts or registering/resuming chats.
 Fullscreen/keep-awake window changes are scoped to the visible foreground page.
+The status wall measures the available viewport, chooses rows/columns by tile
+aspect ratio and fits every Chat without scrolling. Compact tiles open a detail
+dialog rather than reserving space for repeated buttons.
 
 Transfer links are a bounded, versioned, explicitly whitelisted projection of
-machine credentials and Chat references. AES-GCM encrypts the payload using a
-PBKDF2-derived transfer-password key; OAuth account state and pending actions are
-excluded. Decryption/preview never contacts a Bridge. Confirmed imports validate
+machine credentials and Chat references. Settings owns the Data migration entry.
+v2 AES-GCM links carry a fresh random key with the ciphertext and are bearer
+capabilities, not password-protected secrets. Legacy v1 PBKDF2/password decoding
+remains supported. OAuth account state and pending actions are excluded.
+Decryption/preview never contacts a Bridge. Confirmed imports validate
 identity collisions and deletion tombstones, persist machine credentials through
 MachineStore and new references through ChatStore, then let normal synchronization
 recover history. The two stores are not a cross-store transaction: failures report

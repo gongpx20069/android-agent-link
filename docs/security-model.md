@@ -6,19 +6,35 @@ The Android app must let users control powerful remote coding agents without acc
 
 ## Trust Boundaries
 
+### Immediate input delivery
+
+Immediate input uses the existing authenticated Chat prompt path and the active
+native Copilot session. It neither grants permissions nor cancels tools. It
+preserves the originating task's output and approval ownership; scheduled work
+remains session-scoped. Operation ID and content-digest deduplication are written
+before attempting delivery. If the SDK fails after a send might have occurred,
+the input is marked delivery-unknown, never requeued automatically. Restart
+marks unresolved sending receipts interrupted; it cannot prove provider
+consumption. A confirmed delivery receipt is not a successful task result.
+
 ### Cross-phone transfer links
 
 Transfer is an explicit user-authorized export of Bridge device credentials and
 current relay-connect authorization. Both receiving and sending phones use the
-same device token; revoking it invalidates both. The link plus password grants
-the recipient the same Bridge access, not a narrower read-only capability.
-Do not post either publicly; send a strong unique password separately.
+same device token; revoking it invalidates both. A new v2 link alone grants the
+recipient the same Bridge access, not a narrower read-only capability, even when
+only a subset of Chat references is selected. Share only with trusted devices;
+never post a link publicly. The export screen warns before copying credentials.
 GitHub/Microsoft OAuth access/refresh tokens, IPC grants, provider credentials,
 transcripts, images, approvals and queued actions are excluded.
 
-The link fragment contains a version, random 128-bit salt, random 96-bit nonce,
-and AES-256-GCM ciphertext/tag. The key is derived with PBKDF2-HMAC-SHA256 at
-210,000 iterations; version-specific AAD is authenticated. Payloads are limited
+The v2 link fragment contains a version, random 256-bit AES key, random 96-bit
+nonce, and AES-256-GCM ciphertext/tag. The embedded key removes manual passwords;
+encryption does NOT protect against anyone holding the link, nor authenticate
+the sender. Import remains an explicit trust decision. Older v1 links use a random
+128-bit salt and PBKDF2-HMAC-SHA256 at 210,000 iterations with the original
+12–256 character password, which is still required to import them.
+Version-specific AAD is authenticated. Payloads are limited
 to 128,000 UTF-8 bytes, 200 machines and 200 Chat references; links are limited to
 180,000 characters before decoding. No network download, public link host,
 compression, or automatic credential import occurs. Reject invalid endpoints,
@@ -27,8 +43,8 @@ Decryption errors never echo the link or credentials.
 
 The dialog uses secure-window flags and in-memory-only secret UI state.
 Explicit copying marks the clipboard sensitive, but cannot prevent another app
-chosen by the user from retaining the encrypted link. Decryption first presents
-names/endpoints/counts; only confirmation writes credentials to existing encrypted
+chosen by the user from retaining and using the bearer link. Decryption first presents
+names/endpoints/Chat titles/counts; only confirmation writes credentials to existing encrypted
 stores. Current tunnel authorization is time-limited, not a transferable account
 login. Dashboard polling is read-only and does not approve, send, resume or
 cancel tasks.

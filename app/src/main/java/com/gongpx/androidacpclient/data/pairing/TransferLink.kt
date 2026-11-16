@@ -21,10 +21,10 @@ internal object TransferLink {
     const val MAX_LINK_CHARS = 180_000
     private const val MAX_ITEMS = 200
     private const val MAX_BYTES = 128_000
-    private val aad = "AgentLink transfer v1".toByteArray(Charsets.UTF_8)
+    fun requiresPassword(link: String): Boolean = link.startsWith(PREFIX + "1.")
 
-    fun encrypt(bundle: TransferBundle, password: String): String {
-        require(password.length in 12..256) { "Use a transfer password with 12–256 characters." }
+    fun encrypt(bundle: TransferBundle, password: String? = null): String {
+        require(password == null || password.length in 12..256) { "Use a transfer password with 12–256 characters." }
         val json = JSONObject().put("version", 1)
             .put("machines", JSONArray(bundle.machines.map { machine ->
                 JSONObject().put("id", machine.id).put("name", machine.displayName)
@@ -42,26 +42,32 @@ internal object TransferLink {
         decodeBundle(json)
         val plain = json.toString().toByteArray(Charsets.UTF_8)
         require(plain.size <= MAX_BYTES) { "Too much data for a transfer link. Select fewer machines/chats." }
-        val salt = ByteArray(16).also(SecureRandom()::nextBytes)
+        val version = if (password == null) "2" else "1"
+        // v2 is a bearer link: its random key travels with it, not a separate password.
+        val material = ByteArray(if (password == null) 32 else 16).also(SecureRandom()::nextBytes)
         val iv = ByteArray(12).also(SecureRandom()::nextBytes)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key(password, salt), GCMParameterSpec(128, iv))
-        cipher.updateAAD(aad)
-        return PREFIX + listOf("1", encode(salt), encode(iv), encode(cipher.doFinal(plain))).joinToString(".")
+        cipher.init(Cipher.ENCRYPT_MODE, if (password == null) SecretKeySpec(material, "AES") else key(password, material),
+            GCMParameterSpec(128, iv))
+        cipher.updateAAD("AgentLink transfer v$version".toByteArray(Charsets.UTF_8))
+        return PREFIX + listOf(version, encode(material), encode(iv), encode(cipher.doFinal(plain))).joinToString(".")
     }
 
-    fun decrypt(link: String, password: String): TransferBundle {
+    fun decrypt(link: String, password: String = ""): TransferBundle {
         require(link.length <= MAX_LINK_CHARS && link.startsWith(PREFIX)) { "Invalid or oversized AgentLink transfer link." }
-        require(password.length in 12..256) { "Enter the 12–256 character transfer password." }
         val parts = link.removePrefix(PREFIX).split('.')
-        require(parts.size == 4 && parts[0] == "1") { "Unsupported transfer link version." }
-        val salt = Base64.getUrlDecoder().decode(parts[1])
+        require(parts.size == 4 && parts[0] in setOf("1", "2")) { "Unsupported transfer link version." }
+        val legacy = parts[0] == "1"
+        require(!legacy || password.length in 12..256) { "Enter the 12–256 character transfer password." }
+        val material = Base64.getUrlDecoder().decode(parts[1])
         val iv = Base64.getUrlDecoder().decode(parts[2])
         val encrypted = Base64.getUrlDecoder().decode(parts[3])
-        require(salt.size == 16 && iv.size == 12 && encrypted.size in 16..MAX_BYTES + 16) { "Invalid transfer link." }
+        require(material.size == (if (legacy) 16 else 32) && iv.size == 12 &&
+            encrypted.size in 16..MAX_BYTES + 16) { "Invalid transfer link." }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key(password, salt), GCMParameterSpec(128, iv))
-        cipher.updateAAD(aad)
+        cipher.init(Cipher.DECRYPT_MODE, if (legacy) key(password, material) else SecretKeySpec(material, "AES"),
+            GCMParameterSpec(128, iv))
+        cipher.updateAAD("AgentLink transfer v${parts[0]}".toByteArray(Charsets.UTF_8))
         val plain = cipher.doFinal(encrypted)
         return decodeBundle(JSONObject(String(plain, Charsets.UTF_8)))
     }

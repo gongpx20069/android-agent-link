@@ -15,6 +15,30 @@ class TransferLinkTest {
         queuedPrompts = listOf(QueuedPrompt("op", "NEVER replay this queued action", 1)),
         lastBridgeEventId = 987, agentStatus = "busy")
 
+    @Test fun selfContainedLinksNeedNoPasswordAndRetainAuthorizationWithoutPendingActions() {
+        val bundle = TransferBundle(listOf(machine), listOf(chat))
+        val link = TransferLink.encrypt(bundle)
+        assertFalse(TransferLink.requiresPassword(link))
+        val restored = TransferLink.decrypt(link)
+        assertEquals(machine.deviceToken, restored.machines.single().deviceToken)
+        assertEquals(machine.connectionHeaders, restored.machines.single().connectionHeaders)
+        assertEquals(chat.acpSessionId, restored.chats.single().acpSessionId)
+        assertTrue(restored.chats.single().messages.isEmpty())
+        assertTrue(restored.chats.single().queuedPrompts.isEmpty())
+        assertNotEquals(link, TransferLink.encrypt(bundle))
+        assertThrows(AEADBadTagException::class.java) {
+            val parts = link.removePrefix(TransferLink.PREFIX).split('.').toMutableList()
+            parts[2] = (if (parts[2][0] == 'A') "B" else "A") + parts[2].substring(1)
+            TransferLink.decrypt(TransferLink.PREFIX + parts.joinToString("."))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            TransferLink.decrypt(link.replace("#2.", "#3."))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            TransferLink.decrypt(TransferLink.PREFIX + "2." + "a".repeat(TransferLink.MAX_LINK_CHARS))
+        }
+    }
+
     @Test fun encryptedRoundTripTransfersAuthorizationAndReferencesButNoActionsOrHistory() {
         val bundle = TransferBundle(listOf(machine), listOf(chat))
         val link = TransferLink.encrypt(bundle, password)

@@ -127,7 +127,7 @@ fun Chat.acceptPrompt(
     nowMillis: Long,
 ): Chat {
     return when (state) {
-        "queued" -> {
+        "queued", "sending" -> {
             if (
                 content.isBlank() ||
                 messages.any { it.operationId == operationId } ||
@@ -145,6 +145,11 @@ fun Chat.acceptPrompt(
             }
         }
         "cancelled" -> removeQueuedPrompt(operationId)
+        "delivered", "delivery_unknown" -> startQueuedPrompt(operationId, content, nowMillis).let { started ->
+            started.copy(messages = started.messages.map {
+                if (it.role == MessageRole.User && it.operationId == operationId) it.copy(inputDelivery = state) else it
+            })
+        }
         "completed", "failed", "interrupted" -> startQueuedPrompt(operationId, content, nowMillis).let {
             it.copy(activePromptImages = it.activePromptImages - operationId)
         }

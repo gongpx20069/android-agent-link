@@ -84,7 +84,7 @@ class SharedState:
                     self._put_chat(chat)
             for chat, identity, raw in self.db.execute("SELECT chat,id,data FROM tasks").fetchall():
                 task = json.loads(raw)
-                if task["state"] in {"starting", "running", "queued", "waitingApproval", "background"}:
+                if task["state"] in {"starting", "running", "queued", "sending", "waitingApproval", "background"}:
                     task["state"] = "interrupted"
                     task["revision"] = task.get("revision", 0) + 1
                     task["updatedAt"] = int(time.time() * 1000)
@@ -304,13 +304,13 @@ class SharedState:
                 chat.update(chatTitle=event["chatTitle"], titleRevision=event["titleRevision"],
                             titleGeneration=self.generation)
                 self._save_session_title(chat)
-            elif kind == "operation.accepted" and event.get("source") != "mochi":
+            elif kind == "operation.accepted" and event.get("source") != "mochi" and not event.get("duplicate"):
                 chat["humanRevision"] += 1
             elif kind == "session/update" and event.get("update", {}).get("sessionUpdate") == "config_option_update":
                 chat["configOptions"] = event["update"].get("configOptions", [])
             self._put_chat(chat)
             self._update_active_receipts(chat_id, event)
-            if kind in {"operation.accepted", "operation.started", "operation.background", "operation.done", "chat.prompt.remove.result"}:
+            if kind in {"operation.accepted", "operation.started", "operation.delivered", "operation.background", "operation.done", "chat.prompt.remove.result"}:
                 identity = event.get("operationId")
                 if identity:
                     task = self.task(chat_id, identity) or {"taskId": identity, "chatId": chat_id}
@@ -322,6 +322,9 @@ class SharedState:
                         task["source"] = event["source"]
                     if "batchOperationId" in event:
                         task["batchOperationId"] = event["batchOperationId"]
+                    for key in ("parentOperationId", "messageId"):
+                        if key in event:
+                            task[key] = event[key]
                     if kind == "operation.accepted":
                         task["contentDigest"] = prompt_digest(str(event.get("content", "")), event.get("image"))
                     self.db.execute("INSERT OR REPLACE INTO tasks VALUES(?,?,?)", (chat_id, identity, json.dumps(task)))

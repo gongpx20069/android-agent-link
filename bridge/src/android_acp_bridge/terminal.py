@@ -303,6 +303,7 @@ class TerminalClient:
                 if event.get("image"):
                     item["content"] = "[Image attached]\n" + item["content"]
                 item["state"] = event.get("state")
+                item["duplicate"] = bool(event.get("duplicate"))
                 if not chat.preview:
                     chat.preview = " ".join(display_text(item["content"]).split())[:64]
             elif kind == "session/update":
@@ -343,7 +344,7 @@ class TerminalClient:
                         self._dropped += 1
                 elif self.event_sink is not None:
                     item["fields"], item["truncated"] = project_tool(update)
-            elif kind not in {"operation.done", "operation.background", "approval.requested", "approval.resolved", "chat.session.error"}:
+            elif kind not in {"operation.done", "operation.delivered", "operation.background", "approval.requested", "approval.resolved", "chat.session.error"}:
                 return
             try:
                 self._events.put_nowait(item)
@@ -444,11 +445,17 @@ class TerminalClient:
             if kind == "operation.accepted":
                 if selected and self.event_sink is None:
                     source = "You" if str(item["operationId"]).startswith("terminal_") else "Phone"
-                    self.say(f"\n{source} > {item.get('content', '')}")
+                    if not item.get("duplicate"):
+                        self.say(f"\n{source} > {item.get('content', '')}")
                     if item.get("state") == "queued":
                         self.say("Queued behind the active task.")
                 elif not selected:
                     self.say(f"[{label}] New task. /chats to switch.")
+            elif kind == "operation.delivered":
+                if self.event_sink is None:
+                    self.say("Additional input sent to Copilot; processing is not yet confirmed."
+                             if item.get("status") == "delivered" else
+                             "Input delivery is unconfirmed. Inspect the conversation before resending.")
             elif kind == "operation.background":
                 if self.event_sink is None:
                     self.say("Ready for another message; background work continues.")

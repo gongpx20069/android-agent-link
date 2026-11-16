@@ -589,7 +589,28 @@ Android sends a chat prompt over the attached chat WebSocket:
 ```
 
 The bridge starts or reuses the agent session for `chatId`, uses `workspacePath`
-as its working directory, and serializes work through a per-chat FIFO. Copilot's
+as its working directory. Native Copilot accepts human text supplements during
+an active foreground task via SDK `send(mode="immediate")`. These are additions
+to that task, not independent turns with their own answer/completion receipts.
+ACP backends, images, automated Mochi follow-ups, and startup/idle races retain
+the per-chat FIFO. Inputs never leapfrog an already queued operation.
+
+Immediate delivery first persists `operation.accepted` with `state: "sending"`.
+An ordered sender then emits `operation.delivered`, carrying `operationId`,
+`parentOperationId`, `content`, `status: "delivered"` and the SDK `messageId`.
+This confirms SDK receipt, NOT model consumption or task completion. It must not
+replace the active task ID, finish tools, mark idle or notify task completion.
+The native output and approvals stay attached to the original active task.
+If sending was not attempted because that task already yielded, a duplicate
+`operation.accepted` changes the input to `queued`. An attempted send with an
+unconfirmed outcome emits `operation.delivered` with `status: "delivery_unknown"`
+and an explicit warning; it is never silently retried or put back into the FIFO.
+Operation IDs/content digests cover both paths. Sending receipts become
+`interrupted` on restart; delivered receipts remain delivered.
+Unsent reserved inputs cannot be removed as ordinary queued prompts; removal
+returns `already_started`, never aborting the parent task.
+
+Update both Server and Android for immediate delivery. Copilot's
 default native SDK backend releases the foreground FIFO on root `assistant.idle`
 after the submitted user turn starts (excluding autopilot pauses). If the whole
 session is not idle, it emits `operation.background` with `status: "background"`

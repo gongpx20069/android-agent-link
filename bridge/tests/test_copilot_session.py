@@ -46,7 +46,7 @@ class FakeNative:
             ),
         )
 
-    async def _send(self, prompt, attachments=None):
+    async def _send(self, prompt, attachments=None, mode=None):
         self.emit("user.message", content=prompt)
         self.emit("assistant.turn_start", turnId="1")
         self.sent.set()
@@ -99,6 +99,189 @@ class NativeSessionTests(unittest.TestCase):
         thread.start()
         self.assertTrue(self.native.sent.wait(3))
         return thread, result
+
+    def immediate_runtime(self):
+        manager = AcpAgentManager(copilot_transport="sdk")
+        manager._set_session("chat", self.session)
+        runtime = BridgeRuntime(BridgeConfig(), PairingStore(), agent_manager=manager)
+        self.addCleanup(runtime.shared.close)
+        emitted = []
+        def send(identity, content=None, **extra):
+            return runtime.websocket_responses({
+                "type": "chat.prompt", "chatId": "chat", "operationId": identity,
+                "agentId": "copilot-cli", "workspacePath": str(Path.cwd()),
+                "content": content or identity, **extra,
+            }, emitted.append)
+        send("original")
+        wait_until(lambda: self.session._accepting_inputs and self.session._started)
+        return runtime, emitted, send
+
+    def test_busy_runtime_delivers_supplements_once_without_completing_or_reowning_task(self):
+        runtime, emitted, send = self.immediate_runtime()
+        original = runtime._active_prompts["chat"]
+        for identity in ("extra-one", "extra-two"):
+            send(identity)
+            self.assertTrue(runtime._prompt_operations[("chat", identity)].completed.wait(3))
+            self.assertEqual(runtime.shared.task("chat", identity)["state"], "delivered")
+            self.assertEqual(runtime.shared.task("chat", identity)["parentOperationId"], "original")
+        self.assertEqual([call.args[0] for call in self.native.send.await_args_list],
+                         ["original", "extra-one", "extra-two"])
+        self.assertTrue(all(call.kwargs == {"mode": "immediate"} for call in self.native.send.await_args_list[1:]))
+        self.assertIs(runtime._active_prompts["chat"], original)
+        self.assertFalse(original.completed.is_set())
+        self.assertFalse(any(e["type"] == "operation.done" for e in emitted))
+        send("extra-one")
+        self.assertEqual(self.native.send.await_count, 3)
+        conflict = send("extra-one", "different content")
+        self.assertTrue(any(e.get("status") == "failed" for e in conflict))
+        self.assertEqual(self.native.send.await_count, 3)
+        self.native.emit("assistant.message", messageId="answer", content="Combined response")
+        wait_until(lambda: any(e.get("update", {}).get("content", {}).get("text") == "Combined response" for e in emitted))
+        answer = next(e for e in emitted if e.get("update", {}).get("content", {}).get("text") == "Combined response")
+        self.assertEqual(answer["operationId"], "original")
+        self.assertEqual(runtime.shared.task_receipt("chat", "extra-one")["resultText"], "")
+        self.native.emit("session.idle")
+        self.assertTrue(original.completed.wait(3))
+        self.assertEqual(runtime.shared.task("chat", "extra-one")["state"], "delivered")
+        self.assertEqual(runtime.shared.chat("chat")["humanRevision"], 3)
+
+    def test_old_idle_cannot_finish_task_before_supplement_echo_and_new_turn(self):
+        runtime, emitted, send = self.immediate_runtime()
+        attempted, release = threading.Event(), threading.Event()
+        async def delayed(prompt, **kwargs):
+            self.native.emit("session.idle")
+            attempted.set()
+            while not release.is_set():
+                await asyncio.sleep(0.005)
+            return "supplement-id"
+        self.native.send.side_effect = delayed
+        send("extra")
+        self.assertTrue(attempted.wait(3))
+        original = runtime._active_prompts["chat"]
+        self.native.emit("user.message", content="extra")
+        self.native.emit("assistant.idle")
+        wait_until(lambda: self.session._user_messages == 2)
+        release.set()
+        self.assertTrue(runtime._prompt_operations[("chat", "extra")].completed.wait(3))
+        self.assertFalse(original.completed.is_set())
+        self.assertFalse(any(e["type"] == "operation.background" for e in emitted))
+        self.native.emit("assistant.turn_start", turnId="supplement-turn")
+        self.native.emit("assistant.idle")
+        wait_until(lambda: original.state == "background")
+        self.native.emit("session.idle")
+        self.assertTrue(original.completed.wait(3))
+
+    def test_immediate_input_preserves_pending_approval_and_original_owner(self):
+        runtime, emitted, send = self.immediate_runtime()
+        original = runtime._active_prompts["chat"]
+        self.native.emit("tool.execution_start", toolCallId="protected", toolName="shell")
+        wait_until(lambda: "protected" in self.session._tool_owners)
+        requested = SimpleNamespace(to_dict=lambda: {"kind": "shell", "toolCallId": "protected"})
+        future = asyncio.run_coroutine_threadsafe(self.permission(requested, {}), self.session._loop)
+        wait_until(lambda: runtime.local_approval_count() == 1)
+        send("extra")
+        self.assertTrue(runtime._prompt_operations[("chat", "extra")].completed.wait(3))
+        self.assertEqual(runtime.local_approval_count(), 1)
+        self.assertEqual(runtime._chat_status["chat"], "waitingApproval")
+        self.assertIs(runtime._active_prompts["chat"], original)
+        self.native.abort.assert_not_awaited()
+        approval = runtime.local_approvals()[0]
+        runtime._resolve_approval(approval["approvalId"], "denied", "chat")
+        future.result(3)
+        self.native.emit("session.idle")
+        self.assertTrue(original.completed.wait(3))
+
+    def test_failed_send_is_unknown_and_never_requeued_or_retried(self):
+        runtime, emitted, send = self.immediate_runtime()
+        original = runtime._active_prompts["chat"]
+        self.native.send.side_effect = RuntimeError("connection lost after write")
+        send("extra")
+        self.assertTrue(runtime._prompt_operations[("chat", "extra")].completed.wait(3))
+        self.assertTrue(original.completed.wait(3))
+        self.assertEqual(runtime.shared.task("chat", "extra")["state"], "delivery_unknown")
+        self.assertEqual(original.state, "failed")
+        self.assertFalse(runtime._prompt_queues["chat"])
+        send("extra")
+        self.assertEqual(self.native.send.await_count, 2)
+        self.assertTrue(any(e["type"] == "operation.delivered" and "Do not resend" in e.get("error", "") for e in emitted))
+
+    def test_fallback_preserves_reserved_input_order_before_later_queued_followup(self):
+        runtime, emitted, send = self.immediate_runtime()
+        original = runtime._active_prompts["chat"]
+        attempted, release = threading.Event(), threading.Event()
+        def not_ready(prompt):
+            attempted.set()
+            self.assertTrue(release.wait(3))
+            return None
+        with patch.object(self.session, "send_immediate", side_effect=not_ready) as immediate:
+            send("extra-one")
+            self.assertTrue(attempted.wait(3))
+            send("extra-two")
+            send("followup", source="mochi")
+            removal = runtime._remove_queued_prompt({"chatId": "chat", "operationId": "extra-one"}, None)
+            self.assertEqual(removal[0]["status"], "already_started")
+            release.set()
+            self.assertTrue(original.input_idle.wait(3))
+            self.assertEqual(immediate.call_count, 1)
+            self.assertEqual([op.content for op in runtime._prompt_queues["chat"]], ["extra-one", "extra-two", "followup"])
+        self.native.emit("session.idle")
+        self.assertTrue(original.completed.wait(3))
+        wait_until(lambda: self.native.send.await_count == 2 and self.session._started)
+        self.assertEqual(self.native.send.await_args.args[0], "extra-one\n\nextra-two\n\nfollowup")
+        self.native.emit("session.idle")
+        self.assertTrue(runtime._prompt_operations[("chat", "followup")].completed.wait(3))
+
+    def test_cancel_during_unacknowledged_input_cannot_leave_foreground_stuck(self):
+        runtime, emitted, send = self.immediate_runtime()
+        attempted, release = threading.Event(), threading.Event()
+        async def delayed(prompt, **kwargs):
+            attempted.set()
+            while not release.is_set():
+                await asyncio.sleep(0.005)
+            return "cancelled-input"
+        self.native.send.side_effect = delayed
+        original = runtime._active_prompts["chat"]
+        send("extra")
+        self.assertTrue(attempted.wait(3))
+        self.session.cancel_prompt()
+        release.set()
+        self.assertTrue(original.completed.wait(3))
+        self.assertEqual(original.state, "cancelled")
+
+    def test_new_prompt_resets_cancelled_unconsumed_input_boundaries(self):
+        runtime, emitted, send = self.immediate_runtime()
+        original = runtime._active_prompts["chat"]
+        self.native.send.side_effect = None
+        self.native.send.return_value = "received-not-consumed"
+        for identity in ("extra-one", "extra-two"):
+            send(identity)
+            self.assertTrue(runtime._prompt_operations[("chat", identity)].completed.wait(3))
+        self.session.cancel_prompt()
+        self.assertTrue(original.completed.wait(3))
+        self.native.send.side_effect = self.native._send
+        send("next")
+        wait_until(lambda: self.native.send.await_count == 4 and self.session._started)
+        self.native.emit("session.idle")
+        self.assertTrue(runtime._prompt_operations[("chat", "next")].completed.wait(3))
+
+    def test_delivery_callback_failure_cannot_become_successful_foreground_yield(self):
+        runtime, emitted, send = self.immediate_runtime()
+        original = runtime._active_prompts["chat"]
+        publish = runtime._publish_prompt_event
+        def fail_delivery(operation, value):
+            if value["type"] == "operation.delivered":
+                raise RuntimeError("receipt publication failed")
+            publish(operation, value)
+        with patch.object(runtime, "_publish_prompt_event", side_effect=fail_delivery):
+            send("extra")
+            self.assertTrue(original.input_idle.wait(3))
+            self.assertTrue(runtime._prompt_operations[("chat", "extra")].completed.is_set())
+            self.native.emit("assistant.idle")
+            self.assertTrue(original.completed.wait(3))
+        self.assertEqual(original.state, "failed")
+        self.assertFalse(runtime._prompt_queues["chat"])
+        send("extra")
+        self.assertEqual(self.native.send.await_count, 2)
 
     def test_vision_model_receives_native_blob_attachment(self):
         self.client.list_models.return_value[0].capabilities = SimpleNamespace(
@@ -425,7 +608,7 @@ class NativeSessionTests(unittest.TestCase):
         def send(identity):
             runtime.websocket_responses(
                 {"type": "chat.prompt", "chatId": "chat", "operationId": identity, "agentId": "copilot-cli",
-                 "workspacePath": str(Path.cwd()), "content": identity}, emit=emitted.append)
+                 "workspacePath": str(Path.cwd()), "content": identity, "source": "mochi"}, emit=emitted.append)
         send("first")
         self.assertTrue(self.native.sent.wait(3))
         self.native.emit("assistant.message", messageId="waiting", content="Waiting.", phase="final_answer")
@@ -485,10 +668,11 @@ class NativeSessionTests(unittest.TestCase):
         self.assertTrue(self.native.sent.wait(3))
         self.native.emit("tool.execution_start", toolCallId="old-tool", toolName="shell")
         self.native.emit("assistant.message", messageId="answer-1", content="First answer")
-        send("second")
         self.native.emit("assistant.idle")
-        wait_until(lambda: self.native.send.await_count == 2)
         first = runtime._prompt_operations[("chat", "first")]
+        wait_until(lambda: first.state == "background")
+        send("second")
+        wait_until(lambda: self.native.send.await_count == 2 and self.session._started)
         self.assertEqual(first.state, "background")
         self.assertFalse(first.completed.is_set())
         self.assertFalse(any(e["type"] == "operation.done" for e in emitted))

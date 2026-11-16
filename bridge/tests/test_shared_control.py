@@ -22,6 +22,30 @@ from test_runtime import BlockingAgentManager, FakeAgentManager
 
 
 class SharedControlTests(unittest.TestCase):
+    def test_immediate_delivery_receipts_survive_restart_without_reexecution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "input.sqlite3"
+            state = SharedState(path)
+            state.register({"chatId": "chat", "workspacePath": str(Path.cwd())})
+            for index, (identity, delivered) in enumerate((("sent", True), ("uncertain", False))):
+                state.append("chat", {"type": "operation.accepted", "eventId": index * 2 + 1, "timestamp": 1,
+                    "operationId": identity, "content": identity, "state": "sending", "source": "human"})
+                if delivered:
+                    state.append("chat", {"type": "operation.delivered", "eventId": index * 2 + 2, "timestamp": 2,
+                        "operationId": identity, "status": "delivered", "parentOperationId": "original", "messageId": "native"})
+            state.close()
+            runtime = BridgeRuntime(BridgeConfig(shared_state_store=path), PairingStore(), agent_manager=FakeAgentManager())
+            try:
+                self.assertEqual(runtime.shared.task("chat", "sent")["state"], "delivered")
+                self.assertEqual(runtime.shared.task("chat", "uncertain")["state"], "interrupted")
+                for identity in ("sent", "uncertain"):
+                    result = runtime.websocket_responses({"type": "chat.prompt", "chatId": "chat",
+                        "operationId": identity, "content": identity, "workspacePath": str(Path.cwd())})
+                    self.assertTrue(result[0]["duplicate"])
+                    self.assertFalse(runtime._active_prompts)
+            finally:
+                runtime.shared.close()
+
     def test_rename_persists_broadcasts_and_overlays_scoped_session_names_after_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "names.sqlite3"

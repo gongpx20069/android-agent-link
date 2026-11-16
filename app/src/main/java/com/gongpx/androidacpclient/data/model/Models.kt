@@ -152,6 +152,7 @@ data class ChatMessage(
     val localId: String = java.util.UUID.randomUUID().toString(),
     val isToolSnapshot: Boolean = false,
     val image: ImageAttachment? = null,
+    val inputDelivery: String? = null,
 )
 
 enum class MessageRole {

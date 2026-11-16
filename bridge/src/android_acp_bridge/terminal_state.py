@@ -119,7 +119,11 @@ class Transcript:
             self.revision += 1
         elif kind == "operation.accepted":
             role = "You" if operation.startswith("terminal_") else "Phone"
-            self.add(chat, operation, role, item.get("content", "") + ("\n[Queued]" if item.get("state") == "queued" else ""))
+            if not item.get("duplicate"):
+                self.add(chat, operation, role, item.get("content", "") + ("\n[Queued]" if item.get("state") == "queued" else ""))
+        elif kind == "operation.delivered":
+            self.add(chat, operation, "Notice", "Additional input sent to Copilot; processing is not yet confirmed."
+                     if item.get("status") == "delivered" else "Input delivery unconfirmed; do not resend automatically.")
         elif kind == "operation.done":
             self.add(chat, operation, "Notice", "Task " + str(item.get("status", "finished")) + ".")
         elif kind == "operation.background":

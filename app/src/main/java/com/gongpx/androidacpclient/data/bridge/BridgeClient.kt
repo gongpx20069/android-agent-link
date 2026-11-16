@@ -277,6 +277,9 @@ class BridgeClient(
                             onPromptStarted(event.optString("operationId"), event.optString("content"))
                         }
                     }
+                    "operation.delivered" -> mainHandler.post {
+                        onPromptAccepted(event.optString("operationId"), event.optString("status"), event.optString("content"))
+                    }
                     "operation.done" -> mainHandler.post {
                         onOperationDone(
                             event.optString("operationType"),
@@ -740,6 +743,9 @@ class BridgeClient(
                                 onPromptStarted(event.optString("operationId"), event.optString("content"), isReplay)
                             }
                         }
+                        "operation.delivered" -> postApplied {
+                            onPromptAccepted(event.optString("operationId"), event.optString("status"), event.optString("content"), isReplay)
+                        }
                         "operation.done", "operation.background" -> {
                             if (event.optString("operationType") == "chat.prompt" &&
                                 event.optString("status") in setOf("completed", "failed")
@@ -1052,6 +1058,7 @@ class BridgeClient(
                 "chat.title",
                 "operation.accepted",
                 "operation.started",
+                "operation.delivered",
                 "operation.done",
                 "approval.snapshot",
                 "approval.resolved",

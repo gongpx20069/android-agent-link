@@ -21,6 +21,49 @@ import org.robolectric.Shadows.shadowOf
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], manifest = Config.NONE)
 class BridgeDurabilityTest {
+    @Test fun immediateDeliveryIsAReceiptNotACompletionOrNewActiveOperation() {
+        val server = MockWebServer()
+        val received = mutableListOf<String>()
+        var messages = 0
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                listOf(
+                    """{"type":"operation.started","operationId":"original","content":"work"}""",
+                    """{"type":"operation.accepted","operationType":"chat.prompt","operationId":"extra","state":"sending","content":"extra"}""",
+                    """{"type":"operation.delivered","operationId":"extra","status":"delivered","content":"extra","parentOperationId":"original","messageId":"native"}""",
+                    """{"type":"chat.status","status":"busy","operationId":"original","queuedCount":0}""",
+                    """{"type":"operation.delivered","operationId":"uncertain","status":"delivery_unknown","content":"uncertain"}""",
+                    """{"type":"operation.done","operationType":"chat.prompt","operationId":"original","status":"completed"}""",
+                ).forEachIndexed { index, json ->
+                    webSocket.send(JSONObject(json).put("chatId", "chat").put("eventId", index + 1).toString())
+                }
+            }
+        }))
+        server.start()
+        val connection = BridgeClient().openChatConnection(
+            machine = Machine("m", "M", server.url("/").toString(), "token", "f"),
+            chatId = "chat", agentId = "copilot-cli", workspacePath = "workspace", lastEventId = 0,
+            onPromptStarted = { id, _, _ -> received.add("start:$id") },
+            onPromptAccepted = { id, status, _, _ -> received.add("$id:$status") },
+            onStatus = { status, _, _, id, _ -> received.add("$id:$status") },
+            onOperationDone = { _, status, id, _, _ -> received.add("done:$id:$status") },
+            onMessage = { _, _ -> messages++ },
+        )
+        try {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4)
+            while (received.size < 6 && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(40))
+                Thread.sleep(10)
+            }
+            assertEquals(listOf("start:original", "extra:sending", "extra:delivered", "original:busy",
+                "uncertain:delivery_unknown", "done:original:completed"), received)
+            assertEquals(0, messages)
+        } finally {
+            connection.close()
+            server.shutdown()
+        }
+    }
+
     @Test fun foregroundYieldKeepsBackgroundEventsAndLaterCompletionOrdered() {
         val server = MockWebServer()
         val received = mutableListOf<String>()

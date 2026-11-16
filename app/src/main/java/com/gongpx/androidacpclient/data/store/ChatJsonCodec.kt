@@ -117,6 +117,7 @@ internal object ChatJsonCodec {
             .put("activityId", activityId)
             .put("operationId", operationId)
             .put("image", image?.toJson())
+            .put("inputDelivery", inputDelivery)
     }
 
     fun JSONObject.toChatMessage(): ChatMessage {
@@ -131,6 +132,7 @@ internal object ChatJsonCodec {
             operationId = optString("operationId").ifBlank { null },
             localId = optString("localId").ifBlank { java.util.UUID.randomUUID().toString() },
             image = optJSONObject("image")?.let(ImageAttachment::fromJson),
+            inputDelivery = optString("inputDelivery").takeIf { it in setOf("delivered", "delivery_unknown") },
         )
     }
 

@@ -397,7 +397,7 @@ internal data class AppStrings(
             language = "Language",
             languageSystem = "System",
             languageEnglish = "English",
-            languageChinese = "中文",
+            languageChinese = "Chinese",
             languageDescription = "System uses Chinese when the device language is Chinese; otherwise it uses English.",
             sessionLoadHistory = "Session load history",
             sessionLoadHistoryDescription = "Maximum number of recent messages to append when opening or resuming an existing ACP session.",
@@ -505,29 +505,32 @@ internal data class AppStrings(
         )
 
         val Chinese = English.copy(
-            mobileControlSubtitle = "远程 coding agents 的移动控制端",
+            mobileControlSubtitle = "远程编程助手的移动控制端",
             settings = "设置",
+            chats = "聊天",
+            approvals = "审批",
+            machines = "电脑",
             updates = "更新",
             language = "语言",
             languageSystem = "跟随系统",
-            languageEnglish = "English",
+            languageEnglish = "英语",
             languageChinese = "中文",
-            languageDescription = "跟随系统时，系统语言为中文则使用中文，其他语言使用 English。",
-            sessionLoadHistory = "Session load 历史",
-            sessionLoadHistoryDescription = "打开或恢复已有 ACP session 时，最多追加最近 N 条消息。",
+            languageDescription = "跟随系统时，系统语言为中文则使用中文，其他语言使用英语。",
+            sessionLoadHistory = "会话历史加载",
+            sessionLoadHistoryDescription = "打开或恢复已有会话时，最多加载指定数量的最近消息。",
             sessionLoadHistoryLabel = "最近消息数量",
-            manageSettings = "管理 AgentLink app 行为和版本更新。",
+            manageSettings = "管理应用偏好、数据迁移和版本更新。",
             currentVersion = { "当前版本：$it" },
             checking = "检查中...",
             checkForUpdates = "检查更新",
             downloadVersion = { "下载 $it" },
-            updateInstallNote = "APK 下载会通过浏览器或系统安装器打开。配置签名密钥后，signed release APK 可以原地升级。",
+            updateInstallNote = "安装包通过浏览器或系统安装器打开。使用相同签名的版本可直接升级，无需卸载。",
             feedback = "反馈",
-            feedbackDescription = "无论是希望新增功能、报告 Bug，还是想一起参与开发 AgentLink，都欢迎通过 GitHub Issues 或邮件联系。",
-            openGitHubIssue = "打开 GitHub Issue",
+            feedbackDescription = "无论是希望新增功能、报告问题，还是想一起参与开发，都欢迎通过 GitHub 问题页面或邮件联系。",
+            openGitHubIssue = "打开 GitHub 问题页面",
             developerContact = "开发者联系方式",
             emailDeveloper = "发送邮件",
-            noReleasesFound = "未找到 release。",
+            noReleasesFound = "未找到已发布版本。",
             updateAvailable = { "发现更新 $it。" },
             latestVersion = "当前已是最新版本。",
             updateCheckFailed = { "更新检查失败：${it.orUnknownErrorZh()}" },
@@ -1181,7 +1184,7 @@ fun AgentLinkApp(
         val wasActivePrompt = activePromptOperationIds[chatId] == operationId
         when (state) {
             "", "starting", "running" -> activePromptOperationIds[chatId] = operationId
-            "completed", "failed", "cancelled", "interrupted", "background" -> {
+            "completed", "failed", "cancelled", "interrupted", "background", "delivered", "delivery_unknown" -> {
                 if (activePromptOperationIds[chatId] == operationId) {
                     activePromptOperationIds.remove(chatId)
                 }
@@ -2427,10 +2430,6 @@ fun AgentLinkApp(
                         if (selectedTab != AppTab.Dashboard || !dashboardFullscreen) {
                             TopAppBar(
                                 actions = {
-                                    TextButton(enabled = storesLoaded && storageError == null, onClick = {
-                                        transferLink = null
-                                        transferOpen = true
-                                    }) { Text(strings.reliability("Transfer", "迁移")) }
                                     if (pendingDeletions.isNotEmpty()) TextButton(onClick = { deletionDetailsOpen = true }) {
                                         Text(strings.reliability("Pending deletes: ${pendingDeletions.size}", "待删除：${pendingDeletions.size}"))
                                     }
@@ -2620,6 +2619,11 @@ fun AgentLinkApp(
                             onOpenFeedbackIssue = ::openFeedbackIssue,
                             onEmailDeveloper = ::emailDeveloper,
                             notificationsEnabled = notificationsEnabled,
+                            transferEnabled = storesLoaded && storageError == null,
+                            onDataTransfer = {
+                                transferLink = null
+                                transferOpen = true
+                            },
                             onNotificationSettings = {
                                 context.startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                                     .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
@@ -2651,7 +2655,7 @@ fun AgentLinkApp(
 }
 
 @Composable
-private fun SettingsScreen(
+internal fun SettingsScreen(
     padding: PaddingValues,
     updateState: UpdateUiState,
     languageMode: AppLanguageMode,
@@ -2664,6 +2668,8 @@ private fun SettingsScreen(
     onEmailDeveloper: () -> Unit,
     notificationsEnabled: Boolean,
     onNotificationSettings: () -> Unit,
+    transferEnabled: Boolean,
+    onDataTransfer: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
     val settingsContext = LocalContext.current
@@ -2681,6 +2687,18 @@ private fun SettingsScreen(
                 subtitle = strings.manageSettings,
                 metric = "v${BuildConfig.VERSION_NAME}",
             )
+        }
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(strings.reliability("Move selected chats and machines to another phone.",
+                        "选择聊天和电脑，通过链接迁移到另一台手机。"),
+                        style = MaterialTheme.typography.bodyMedium)
+                    Button(enabled = transferEnabled, onClick = onDataTransfer) {
+                        Text(strings.reliability("Data migration", "数据迁移"))
+                    }
+                }
+            }
         }
         item {
             OutlinedButton(onClick = {
@@ -3757,6 +3775,17 @@ internal fun ChatTimelineItem(item: ChatMessage) {
                     } else {
                         MarkdownMessageText(item.text, textColor)
                     }
+                }
+                if (isUser && item.inputDelivery != null) {
+                    val strings = LocalAppStrings.current
+                    Text(
+                        if (item.inputDelivery == "delivered") strings.reliability(
+                            "Sent to Copilot · receipt only", "已发送给 Copilot（仅确认接收）")
+                        else strings.reliability(
+                            "Delivery unconfirmed · do not resend automatically", "发送结果未确认 · 请勿直接重发"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = textColor.copy(alpha = 0.8f),
+                    )
                 }
             }
         }
@@ -5010,14 +5039,14 @@ internal data class ModelDialogState(
     val option: ConfigOption,
 )
 
-private data class UpdateUiState(
+internal data class UpdateUiState(
     val checking: Boolean = false,
     val update: AppUpdate? = null,
     val status: UpdateStatus = UpdateStatus.Idle,
     val errorMessage: String? = null,
 )
 
-private enum class UpdateStatus {
+internal enum class UpdateStatus {
     Idle,
     Checking,
     NoReleases,

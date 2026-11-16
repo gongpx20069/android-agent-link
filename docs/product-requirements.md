@@ -1,15 +1,31 @@
 # Product Requirements
 
+## Additional input during execution
+
+- Send human text supplements to a running native Copilot task through the
+  SDK immediate mode without waiting for the task to finish or cancelling it.
+- Keep images, automated follow-ups and non-native providers on the existing
+  queue. Preserve ordering if an earlier input is already queued.
+- Distinguish pending inputs, confirmed delivery and uncertain delivery. A
+  delivery receipt must never imply model consumption, start a separate task,
+  complete the current task, dismiss approvals or trigger completion alerts.
+- Keep operation-ID deduplication and restart/reconnect recovery. Never resend
+  an input whose delivery outcome is uncertain.
+
 ## Status dashboard and cross-phone transfer
 
-- Offer a compact Dashboard tab with optional fullscreen and foreground-only
+- Offer a single-screen adaptive Dashboard status wall with optional fullscreen and foreground-only
   keep-screen-on. Refresh shared chat status immediately on entry and every
   three minutes thereafter, as a unified snapshot; allow manual refresh.
+  Fit all Chats into the viewport without scrolling; show details on tile tap.
+  Dashboard, navigation, Settings and Data migration follow the selected language.
 - Highlight updated/new chats in a bright color plus a text label, retain that
   highlight until acknowledged, and distinguish offline/stale from confirmed idle.
-- Provide encrypted link export for selected machines and optional Chat
-  references, including device/tunnel authorization. Require a separate transfer
-  password and explicit import preview/confirmation; never silently replace a
+- Put Data migration in Settings, with individual machine/Chat selection and a
+  single Export and copy action, including device/tunnel authorization.
+  New self-contained links need no password; clearly warn that anyone with the
+  link gains machine access. Preserve old password-link import compatibility.
+  Require explicit import preview/confirmation; never silently replace a
   different computer or restore locally deleted chats.
 - Preserve existing local history. Never export/replay queued actions or copy
   provider/account OAuth credentials. Explain shared device revocation and tunnel

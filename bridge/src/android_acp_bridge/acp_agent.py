@@ -126,6 +126,22 @@ class AcpAgentManager:
         session = self._get_session(chat_id)
         return session is not None and session.image_input_supported
 
+    def supports_immediate_input(self, agent_id: str) -> bool:
+        return agent_id == "copilot-cli" and self._copilot_transport == "sdk"
+
+    def send_immediate(self, request: AcpPromptRequest) -> str | None:
+        if not self.supports_immediate_input(request.agent_id) or request.image is not None:
+            return None
+        from .copilot_session import CopilotAgentSession
+        session = self._get_session(request.chat_id)
+        if not isinstance(session, CopilotAgentSession):
+            return None
+        # The foreground prompt owns the chat lock. Do not replace its session
+        # or overwrite its output/permission callbacks when delivering a supplement.
+        if session._workspace != str(_resolve_workspace(request.workspace_path)):
+            raise AcpAgentError("Immediate input does not match the active workspace.")
+        return session.send_immediate(request.prompt)
+
     def rename_session(self, chat_id: str, agent_id: str, workspace_path: str,
                        session_id: str | None, title: str) -> bool:
         # The other supported baselines have no ACP/SDK naming RPC. Never send

@@ -2,9 +2,28 @@
 
 This document describes the current AgentLink Android client implementation.
 
+## Immediate Copilot input
+
+The existing Add action sends text to native Copilot during active foreground
+work. A `sending` acceptance stays in the pending list. `operation.delivered`
+moves it into the user timeline with a localized receipt-only label, without
+replacing the original active operation or notifying completion. The same path
+handles live events, replay and background monitoring. `delivery_unknown`
+removes the item from automatic retries and shows an explicit do-not-resend
+warning. Per-message delivery labels persist in encrypted Chat storage.
+Other providers, image inputs, automatic follow-ups and startup/yield races keep
+the queue; a previously queued operation is not overtaken. Update and restart
+the Server as well as updating Android to enable native immediate input.
+
 ## Dashboard and phone transfer
 
-The Dashboard tab displays compact Chat name/computer/status cards. Entering it
+The Dashboard tab displays a single-screen status wall, not a scrolling list.
+Rows, columns, spacing and text density adapt to the available width/height and
+Chat count, including landscape and fullscreen. All tiles stay in the viewport;
+very dense walls abbreviate labels, and tapping a tile shows readable details,
+highlight acknowledgement and an Open action (disabled for stale states).
+Dashboard, navigation, Settings and Data migration use the selected app language.
+Entering it
 checks the shared catalogs immediately, then refreshes all saved machines every
 three minutes while the page is in the foreground. It replaces the regular
 five-second foreground catalog poll on that page; existing task/approval sockets
@@ -21,14 +40,18 @@ hides app/system bars; its exit button or Back restores them. Leaving the page o
 backgrounding the app restores normal screen timeout. This is not a wake lock,
 screen-unlock mechanism, or a guarantee against OS battery/thermal restrictions.
 
-The top-bar Transfer action exports selected machines, optionally with their
-chat references, as a password-encrypted `acpclient://transfer#...` link. The
-password must contain 12–256 characters and should be sent separately. The
-dialog explains that both together grant computer access. Copy uses sensitive
-clipboard metadata; the dialog blocks screenshots and does not save passwords
-or links in recreation state. Open the link on another phone, or paste it into
-Transfer > Import (the Machines pairing-link input also routes transfer links).
-Unlocking shows the machine names/endpoints and counts before explicit import.
+Settings > Data migration opens a full-height picker for individual machines and
+Chat references. Selecting a Chat includes its machine authorization; toggling a
+machine selects/deselects its Chats. Export and copy link is one explicit action,
+without a password field. The v2 `acpclient://transfer#...` link carries its random
+encryption key: possession alone grants computer access, as the warning explains.
+Copy uses sensitive clipboard metadata; the dialog blocks screenshots and does
+not save links in recreation state. Both phones need a v2-capable app. Open the
+link on another phone to preview it automatically, or paste it into Settings >
+Data migration > Import and preview (the Machines pairing-link input also routes
+transfer links). Names/endpoints/Chat titles and counts precede explicit import.
+Older v1 links still require the original user-set export password; the UI offers
+re-exporting with the updated app as the alternative.
 
 Transfer includes device bearer tokens and freshly resolved tunnel-connect
 authorization, not GitHub/Microsoft access/refresh tokens. Account bindings are

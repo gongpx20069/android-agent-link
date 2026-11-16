@@ -2,8 +2,27 @@ package com.gongpx.androidacpclient.data.model
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import com.gongpx.androidacpclient.data.store.ChatJsonCodec.toChatMessage
+import com.gongpx.androidacpclient.data.store.ChatJsonCodec.toJson
 
 class PromptQueueStateTest {
+    @Test fun immediateReceiptRemovesOutboxOnceWithoutCompletingTheActiveTask() {
+        val original = testChat().copy(agentStatus = "busy")
+        val sending = original.acceptPrompt("extra", "sending", "Change the approach", 1)
+        assertEquals(1, sending.queuedPrompts.size)
+        for (status in listOf("delivered", "delivery_unknown")) {
+            val received = sending.acceptPrompt("extra", status, "Change the approach", 2)
+            assertEquals(0, received.queuedPrompts.size)
+            assertEquals("busy", received.agentStatus)
+            assertEquals(status, received.messages.single().inputDelivery)
+            assertEquals(status, received.messages.single().toJson().toChatMessage().inputDelivery)
+            val replayed = received.acceptPrompt("extra", status, "Change the approach", 3)
+            assertEquals(received.messages, replayed.messages)
+            assertEquals(false, isTerminalPromptStatus(status))
+            assertEquals(false, isFinalPromptCompletion(status, 0))
+        }
+    }
+
     @Test
     fun recoveryPreservesActivityAndPlanRowsBetweenMessages() {
         val recent = listOf(

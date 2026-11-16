@@ -4,6 +4,7 @@ import secrets
 import threading
 import time
 import sqlite3
+import logging
 from copy import deepcopy
 from collections import deque
 from dataclasses import dataclass
@@ -69,6 +70,11 @@ class PromptOperation:
     image: dict[str, Any] | None = None
     digest: str = ""
     background_result: str | None = None
+    accepts_input: bool = True
+    input_queue: deque["PromptOperation"] | None = None
+    input_idle: threading.Event | None = None
+    parent_operation_id: str | None = None
+    input_failed: bool = False
 
 
 class AgentManager(Protocol):
@@ -575,8 +581,15 @@ class BridgeRuntime:
                     if queued.source == "mochi":
                         self._remove_queued_prompt({"chatId": chat_id, "operationId": queued.operation_id}, None)
             starts_immediately = chat_id not in self._active_prompts
+            parent = self._active_prompts.get(chat_id)
+            immediate_input = bool(
+                parent and parent.accepts_input and all(item.state == "sending" for item in queue_for_chat) and image is None and
+                operation.source != "mochi" and parent.agent_id == agent_id and
+                parent.workspace_path == workspace_path and
+                getattr(self.agent_manager, "supports_immediate_input", lambda _: False)(agent_id)
+            )
             queue_position = 0 if starts_immediately else len(queue_for_chat) + 1
-            operation.state = "starting" if starts_immediately else "queued"
+            operation.state = "starting" if starts_immediately else "sending" if immediate_input else "queued"
             self._prompt_operations[(chat_id, operation_id)] = operation
             if starts_immediately:
                 self._active_prompts[chat_id] = operation
@@ -600,7 +613,9 @@ class BridgeRuntime:
                 active_operation_id = self._active_prompts[chat_id].operation_id
                 self._publish_prompt_event(
                     operation,
-                    self._chat_status_event(chat_id, "busy", active_operation_id, queued_count=queue_position),
+                    self._chat_status_event(chat_id,
+                        "waitingApproval" if immediate_input and self._chat_status.get(chat_id) == "waitingApproval" else "busy",
+                        active_operation_id, queued_count=queue_position),
                 )
             except sqlite3.Error:
                 self.attachments.release(chat_id, image)
@@ -611,12 +626,86 @@ class BridgeRuntime:
                     queue_for_chat.remove(operation)
                 operation.completed.set()
                 raise
+            if immediate_input:
+                operation.parent_operation_id = parent.operation_id
+                if parent.input_queue is None:
+                    parent.input_queue = deque()
+                parent.input_queue.append(operation)
+                if parent.input_idle is None or parent.input_idle.is_set():
+                    parent.input_idle = threading.Event()
+                    threading.Thread(target=self._send_immediate_inputs, args=(parent,), daemon=True).start()
         if starts_immediately:
             threading.Thread(target=self._run_prompt_queue, args=(chat_id,), daemon=True).start()
 
         if emit is None:
             operation.completed.wait(timeout=310)
         return responses
+
+    def _send_immediate_inputs(self, parent: PromptOperation) -> None:
+        try:
+            self._drain_immediate_inputs(parent)
+        except Exception:
+            logging.getLogger(__name__).exception("Immediate input delivery failed; outcome is unconfirmed")
+            with self._prompt_lock:
+                parent.input_failed = True
+                pending = self._prompt_queues.get(parent.chat_id, deque())
+                for operation in self._prompt_operations.values():
+                    if (operation.chat_id == parent.chat_id and operation.parent_operation_id == parent.operation_id
+                            and not operation.completed.is_set() and operation.state in {"sending", "delivered", "delivery_unknown"}):
+                        if operation in pending:
+                            pending.remove(operation)
+                        if operation.state == "sending":
+                            operation.state = "delivery_unknown"
+                        operation.completed.set()
+                parent.input_queue.clear()
+                parent.input_idle.set()
+
+    def _drain_immediate_inputs(self, parent: PromptOperation) -> None:
+        falling_back = False
+        while True:
+            with self._prompt_lock:
+                if not parent.input_queue:
+                    parent.input_idle.set()
+                    return
+                operation = parent.input_queue.popleft()
+            try:
+                message_id = None if falling_back else self.agent_manager.send_immediate(AcpPromptRequest(
+                    chat_id=operation.chat_id, agent_id=operation.agent_id,
+                    workspace_path=operation.workspace_path, prompt=operation.content,
+                ))
+                status, error = "delivered", None
+            except AcpAgentError:
+                message_id, status = "", "delivery_unknown"
+                error = "Additional input delivery could not be confirmed. Do not resend; inspect the conversation before continuing."
+            with self._prompt_lock:
+                if message_id is None:
+                    falling_back = True
+                    operation.state = "queued"
+                    self._publish_prompt_event(operation, {
+                        "type": "operation.accepted", "operationType": "chat.prompt",
+                        "chatId": operation.chat_id, "operationId": operation.operation_id,
+                        "state": "queued", "content": operation.content, "source": operation.source, "duplicate": True,
+                    })
+                    continue
+                self._prompt_queues[operation.chat_id].remove(operation)
+                operation.state = status
+                self._publish_prompt_event(operation, {
+                    "type": "operation.delivered", "operationType": "chat.prompt",
+                    "chatId": operation.chat_id, "operationId": operation.operation_id,
+                    "parentOperationId": parent.operation_id, "content": operation.content,
+                    "status": status, **({"messageId": message_id} if message_id else {}),
+                    **({"error": error} if error else {}),
+                })
+                self._publish_prompt_event(operation, self._chat_status_event(
+                    operation.chat_id, self._chat_status.get(operation.chat_id, "busy"),
+                    parent.operation_id, queued_count=len(self._prompt_queues[operation.chat_id]),
+                ))
+                self._finish_prompt_transport(operation)
+                operation.completed.set()
+                operation.emit = None
+                operation.content = ""
+                operation.waiters = []
+                self._evict_prompt_operation_history()
 
     def _run_prompt_queue(self, chat_id: str) -> None:
         while True:
@@ -708,6 +797,17 @@ class BridgeRuntime:
                 ]
                 operation_status = "failed"
 
+            # Close admission before waiting, outside the prompt lock: SDK events
+            # and input delivery callbacks also need that lock to make progress.
+            with self._prompt_lock:
+                operation.accepts_input = False
+                input_idle = operation.input_idle
+            if input_idle is not None:
+                input_idle.wait()
+            if operation.input_failed:
+                updates.append({"type": "bridge.error", "chatId": chat_id,
+                                "error": "Immediate input delivery failed; completion could not be confirmed. Do not resend."})
+
             for update in updates:
                 if update.get("type") == "copilot.foreground_idle":
                     operation_status = "background"
@@ -718,6 +818,8 @@ class BridgeRuntime:
                 update.setdefault("operationId", operation.operation_id)
                 self._publish_prompt_event(operation, update)
 
+            if operation.input_failed:
+                operation_status = "failed"
             with self._prompt_lock:
                 if operation_status == "background" and operation.background_result is not None:
                     operation_status = operation.background_result
@@ -830,7 +932,7 @@ class BridgeRuntime:
             pre_cancelled = operation_key in self._pre_cancelled_prompt_ids
             cancelled = operation_key in self._cancelled_prompt_ids
             for operation in queue_for_chat:
-                if operation.operation_id == operation_id:
+                if operation.operation_id == operation_id and operation.state == "queued":
                     removed = operation
                     break
             if removed is not None:
@@ -912,7 +1014,7 @@ class BridgeRuntime:
         targets = self._subscribers(operation.chat_id)
         if operation.emit is not None and not _same_emitter(operation.emit, targets):
             targets.append(operation.emit)
-        if event.get("type") == "operation.done":
+        if event.get("type") in {"operation.done", "operation.delivered"}:
             for waiter in operation.waiters or []:
                 if not _same_emitter(waiter, targets):
                     targets.append(waiter)

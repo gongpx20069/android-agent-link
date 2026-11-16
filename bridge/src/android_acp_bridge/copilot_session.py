@@ -110,6 +110,12 @@ class CopilotAgentSession(AcpAgentSession):
         self._pending_updates: list[dict[str, Any]] = []
         self._condition = threading.Condition()
         self._active = False
+        self._input_lock = threading.Lock()
+        self._accepting_inputs = False
+        self._inputs_inflight = 0
+        self._user_messages = 0
+        self._input_message_boundary = 0
+        self._turn_message_boundary = 0
         self._started = False
         self._idle = False
         self._foreground_idle = False
@@ -261,6 +267,9 @@ class CopilotAgentSession(AcpAgentSession):
                         self._active = True
                         self._started = self._idle = self._cancelled = False
                         self._foreground_idle = False
+                        self._accepting_inputs = False
+                        self._input_message_boundary = self._user_messages
+                        self._turn_message_boundary = self._user_messages
                         self._waiting_on_background = self._work_pending
                         self._sink = event["sink"]
                     event["ready"].set()
@@ -269,6 +278,9 @@ class CopilotAgentSession(AcpAgentSession):
                 with self._condition:
                     if root and kind == "user.message":
                         user = active and data.get("source", "user") == "user"
+                        if user:
+                            self._user_messages += 1
+                            self._idle = self._foreground_idle = False
                         self._next_root = (user, sink if user else None, self.permission_callback)
                         if data.get("agentMode"):
                             self._mode = data["agentMode"]
@@ -289,6 +301,7 @@ class CopilotAgentSession(AcpAgentSession):
                         self._work_pending = True
                         if active and self._root_is_user and self._root_sink is sink:
                             self._started = True
+                            self._turn_message_boundary = self._user_messages
                             self._waiting_on_background = False
                         elif active:
                             self._waiting_on_background = True
@@ -328,11 +341,14 @@ class CopilotAgentSession(AcpAgentSession):
                         self._fault = AcpAgentError("Copilot session failed: " + str(data.get("message", "unknown error")))
                     elif root and kind == "session.shutdown":
                         self._fault = AcpAgentError("Copilot session shut down before completing its work.")
-                    elif root and kind == "session.idle" and active and self._started and data.get("mode") != "autopilot":
+                    elif (root and kind == "session.idle" and active and self._started
+                          and (data.get("aborted") or self._user_messages >= self._input_message_boundary)
+                          and data.get("mode") != "autopilot"):
                         self._cancelled = bool(data.get("aborted")) or self._cancelled
                         self._idle = True
                         self._projection = CopilotEventProjection()
                     if (root and kind == "assistant.idle" and active and self._started
+                            and self._turn_message_boundary >= self._input_message_boundary
                             and self._root_sink is sink and self._mode != "autopilot"):
                         self._foreground_idle = True
                         self._cancelled = bool(data.get("aborted")) or self._cancelled
@@ -405,13 +421,17 @@ class CopilotAgentSession(AcpAgentSession):
                 self._run(self._native.send(prompt))
             else:
                 self._run(self._native.send(prompt, attachments=[image.copilot_blob()]))
+            with self._condition:
+                self._accepting_inputs = True
             while True:
                 with self._condition:
                     self._condition.wait_for(
-                        lambda: self._idle or self._foreground_idle or self._fault or self._closed, timeout=self.HEARTBEAT_SECONDS)
+                        lambda: ((self._idle or self._foreground_idle) and not self._inputs_inflight) or
+                        self._fault or self._closed, timeout=self.HEARTBEAT_SECONDS)
                     if self._fault or self._closed:
                         raise self._fault or AcpAgentError("Copilot session closed during execution.")
-                    if self._idle or self._foreground_idle:
+                    if (self._idle or self._foreground_idle) and not self._inputs_inflight:
+                        self._accepting_inputs = False
                         self._resumable = True
                         updates = self.take_pending_updates()
                         if self._cancelled:
@@ -429,7 +449,35 @@ class CopilotAgentSession(AcpAgentSession):
             raise
         finally:
             with self._condition:
+                self._accepting_inputs = False
                 self._active = False
+
+    def send_immediate(self, prompt: str) -> str | None:
+        with self._input_lock:
+            with self._condition:
+                if self._fault or self._closed:
+                    raise self._fault or AcpAgentError("Copilot session is closed.")
+                if (not self._active or not self._accepting_inputs or not self._started
+                        or self._idle or self._foreground_idle or self._cancelled or self._waiting_on_background):
+                    return None
+                self._inputs_inflight += 1
+                # Old idle events cannot finish work before the new user message
+                # appears. Foreground yield also needs a turn after that message.
+                self._input_message_boundary = max(self._user_messages, self._input_message_boundary) + 1
+            try:
+                message_id = self._run(self._native.send(prompt, mode="immediate"))
+                if not isinstance(message_id, str) or not message_id:
+                    raise AcpAgentError("Copilot did not acknowledge the additional input.")
+                return message_id
+            except AcpAgentError as exc:
+                with self._condition:
+                    self._fault = exc
+                self._report_fault()
+                raise
+            finally:
+                with self._condition:
+                    self._inputs_inflight -= 1
+                    self._condition.notify_all()
 
     def cancel_prompt(self) -> None:
         with self._condition:

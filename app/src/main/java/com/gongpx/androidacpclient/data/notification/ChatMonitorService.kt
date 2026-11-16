@@ -246,6 +246,7 @@ class ChatMonitorService : Service() {
                             state.activeOperations.add(id)
                             next = next.copy(agentStatus = "busy")
                         }
+                        if (status in setOf("delivered", "delivery_unknown")) state.activeOperations.remove(id)
                         persist(state, next)
                     }
                 },

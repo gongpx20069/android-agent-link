@@ -24,21 +24,38 @@ stay awake, online, and running the bridge while you use it.
 
 ## Dashboard
 
-Open **Dashboard** for compact chat status cards. It checks all saved machines
+Open **Dashboard** for a single-screen status wall that automatically fits all
+chats to the screen in portrait, landscape or fullscreen. Dense walls shorten
+labels; tap a tile to see its full details or open the chat. It checks all saved machines
 on entry and every **3 minutes**; **Refresh** starts a check immediately.
-New/updated chats are highlighted bright yellow until you dismiss the highlight.
+New/updated chats are highlighted bright yellow until you tap the tile and dismiss the highlight.
 Offline computers show stale cached status, not a confirmed idle state.
 The page keeps the screen awake while visible. Use **Fullscreen** to hide bars,
 and **Exit fullscreen** or Back to return; leaving the page restores normal sleep.
 
+## Add instructions while Copilot works
+
+Type an extra instruction and tap **Add**. With the native Copilot backend, text
+is delivered through its immediate mode instead of waiting for the current task.
+The bubble's **Sent to Copilot · receipt only** label confirms receipt, not that
+the model has processed it. Work and approvals continue on the existing task.
+If delivery is unconfirmed, inspect the conversation before sending it again.
+Images, other agents, automated follow-ups and inputs behind an existing queue
+still wait their turn. Update/restart the Server and update the Android app.
+
 ## Move chats and machines to another phone
 
-1. Tap **Transfer → Export**, choose machines and optionally include their Chat
-   references, then enter a strong transfer password of at least 12 characters.
-2. Generate and copy the encrypted link. Send the password separately: anyone with
-   both can access the selected computers.
-3. On the other phone open the link, or paste it into **Transfer → Import**.
-   Enter the password, review names/endpoints/counts, then confirm the import.
+1. Open **Settings → Data migration → Export** and select machines and individual
+   chats. Selecting a chat automatically includes its machine authorization.
+2. Tap **Export and copy link**. No password is needed. Anyone with this link can
+   control the included machines: send it only to a trusted device.
+3. On the other phone (also updated), open the link, or paste it into
+   **Settings → Data migration → Import** and tap **Preview import**.
+   Review names/endpoints/chats, then confirm the import.
+
+If your messaging app does not make the link clickable, use the paste path above.
+Older password-protected links require the password you set when exporting;
+alternatively, export a new link with the updated app.
 
 Device and current tunnel authorization are included. OAuth account logins are not:
 when tunnel authorization expires, pair again via QR or account discovery on that
