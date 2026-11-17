@@ -97,8 +97,9 @@ Remote credentials are stored in an owner-private file on that computer,
 For a first workspace, `--workspace-root C:\Repos` allows registering existing
 subdirectories from New chat.
 
-This first Web version supports text and retained shared-journal history. Images
-remain in Android; native session picking remains in Android/the terminal.
+Web supports retained shared-journal history, Markdown tables/links, and pasting
+or uploading one PNG/JPEG (up to 5 MiB / 16 million pixels) with optional text.
+Images require a live image-capable session; native session picking remains in Android/the terminal.
 Uncertain sends are never automatically retried, and closing the browser does
 not cancel tasks. Update and deliberately restart the Bridge after existing work
 finishes; updating the APK alone does not add Web.

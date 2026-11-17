@@ -18,10 +18,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from .control import control_response
+from .attachments import MAX_IMAGE_BYTES, IMAGE_MIME_TYPES, error_status, image_id, image_metadata
 from .device_tokens import DeviceTokenStore, DeviceTokenStoreError
 from .shared_state import ControlError, required_text
 
@@ -36,17 +37,22 @@ class WebError(Exception):
         super().__init__(message)
 
 
-def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+def read_body(handler: BaseHTTPRequestHandler, limit: int) -> bytes:
     try:
         size = int(handler.headers.get("Content-Length", "0"))
     except ValueError:
         raise WebError(400, "Invalid Content-Length.") from None
-    if not 0 < size <= MAX_BODY or handler.headers.get("Transfer-Encoding"):
-        raise WebError(413, "A bounded JSON body with Content-Length is required.")
+    if not 0 < size <= limit or handler.headers.get("Transfer-Encoding"):
+        raise WebError(413, f"A body with Content-Length between 1 and {limit} bytes is required.")
     handler.connection.settimeout(15)
     raw = handler.rfile.read(size)
     if len(raw) != size:
         raise WebError(400, "Incomplete request.")
+    return raw
+
+
+def read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    raw = read_body(handler, MAX_BODY)
     try:
         body = json.loads(raw)
     except (ValueError, UnicodeError):
@@ -124,25 +130,30 @@ def check_transport(endpoint: str) -> str:
     return f"http://{host}:{parsed.port or 80}"
 
 
-def remote_json(machine: dict[str, Any], path: str, body: dict[str, Any], *, pairing: bool = False) -> dict[str, Any]:
+def remote_request(machine: dict[str, Any], path: str, body: bytes | None, mime: str = "application/json",
+                   *, pairing: bool = False, attachment: bool = False) -> tuple[bytes, str]:
     try:
         endpoint = check_transport(machine["endpoint"])
-        headers = {"Content-Type": "application/json", **machine.get("headers", {})}
+        headers = {"Content-Type": mime, **machine.get("headers", {})}
         headers["Host"] = urlsplit(machine["endpoint"]).netloc
         if not pairing:
             headers["Authorization"] = "Bearer " + machine["token"]
-        request = Request(endpoint + path, json.dumps(body).encode(), headers, method="POST")
+        request = Request(endpoint + path, body, headers, method="GET" if body is None else "POST")
         with build_opener(ProxyHandler({}), NoRedirect()).open(request, timeout=60 if pairing else 20) as response:
-            raw = response.read(MAX_RESPONSE + 1)
-            if len(raw) > MAX_RESPONSE:
+            limit = MAX_IMAGE_BYTES if attachment else MAX_RESPONSE
+            raw = response.read(limit + 1)
+            if len(raw) > limit:
                 raise WebError(502, "Remote response exceeds the limit; details are incomplete.")
-        result = json.loads(raw)
-        if not isinstance(result, dict):
-            raise ValueError("Not an object")
-        return result
+            return raw, response.headers.get_content_type()
     except HTTPError as error:
         status = error.code
         error.close()
+        if attachment and status in {400, 404, 409, 413}:
+            messages = {400: "Remote image request was rejected. Check PNG/JPEG format and pixel dimensions.",
+                        404: "Image or chat unavailable, cache cleared, or remote image API needs an update.",
+                        409: "This remote session does not declare image support. Connect a vision-capable model first.",
+                        413: "Remote image limit or cache quota exceeded. Use an image up to 5 MiB / 16 million pixels."}
+            raise WebError(status, messages[status]) from None
         if status == 404:
             raise WebError(502, "Remote API unavailable. Update that computer's stdlib Server.") from None
         if status in {401, 403}:
@@ -150,6 +161,21 @@ def remote_json(machine: dict[str, Any], path: str, body: dict[str, Any], *, pai
         raise WebError(502, f"Remote HTTP {status}; redirects are not followed. Check that computer before retrying.") from None
     except (URLError, OSError, ValueError, HTTPException):
         raise WebError(502, "Remote connection/response failed. If an action was submitted, its outcome is uncertain; do not resend automatically.") from None
+
+
+def json_object(raw: bytes) -> dict[str, Any]:
+    try:
+        result = json.loads(raw)
+        if isinstance(result, dict):
+            return result
+    except (ValueError, UnicodeError):
+        pass
+    raise WebError(502, "Remote Server returned invalid JSON.")
+
+
+def remote_json(machine: dict[str, Any], path: str, body: dict[str, Any], *, pairing: bool = False) -> dict[str, Any]:
+    raw, _ = remote_request(machine, path, json.dumps(body).encode(), pairing=pairing)
+    return json_object(raw)
 
 
 def relay_headers(value: Any) -> dict[str, str]:
@@ -293,21 +319,21 @@ class WebHandler(BaseHTTPRequestHandler):
                                           or self.headers.get("X-AgentLink-Web") != "1"):
                 raise WebError(403, "Same-origin Web requests are required.")
             path = urlsplit(self.path).path
-            if self.command == "GET" and path in {"/", "/app.js", "/style.css"}:
+            if self.command == "GET" and path in {"/", "/app.js", "/style.css", "/agentlink.svg"}:
                 name = "index.html" if path == "/" else path[1:]
                 raw = (ASSETS / name).read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
-                                                  "style.css": "text/css; charset=utf-8"}[name])
+                                                  "style.css": "text/css; charset=utf-8", "agentlink.svg": "image/svg+xml"}[name])
                 self.send_header("Content-Length", str(len(raw)))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Referrer-Policy", "no-referrer")
-                self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+                self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
                 self.end_headers()
                 self.wfile.write(raw)
                 return
-            body = read_json(self) if self.command == "POST" else {}
+            body = read_json(self) if self.command == "POST" and path != "/api/attachments" else {}
             if path == "/api/login" and self.command == "POST":
                 with self.server.lock:
                     now = time.monotonic()
@@ -331,7 +357,9 @@ class WebHandler(BaseHTTPRequestHandler):
             with self.server.lock:
                 if self.server.sessions.get(session, 0) <= time.monotonic():
                     raise WebError(401, "Sign in using the access code printed by this Server.")
-            if path == "/api/machines" and self.command == "GET":
+            if path in {"/api/attachments", "/api/attachments/capabilities"}:
+                self.attachment_request(path)
+            elif path == "/api/machines" and self.command == "GET":
                 send_json(self, 200, {"machines": [{"id": "local", "name": self.server.runtime.config.machine_name,
                     "endpoint": "local"}] + self.server.machines.public()})
             elif path == "/api/control" and self.command == "POST":
@@ -397,10 +425,66 @@ class WebHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             send_json(self, error.status, {"error": str(error)})
         except ControlError as error:
-            send_json(self, 400, {"error": str(error)})
+            self.close_connection = True
+            send_json(self, error_status(error), {"error": str(error), "code": error.code})
         except CookieError:
             send_json(self, 400, {"error": "Invalid browser session cookie."})
         except (DeviceTokenStoreError, sqlite3.Error, OSError):
             self.server.runtime.console.message("error", "web.request_failed")
             self.close_connection = True
             send_json(self, 503, {"error": "Web storage/transport failed. An action may have been accepted; inspect its state before retrying."})
+
+    def attachment_request(self, path: str) -> None:
+        query = parse_qs(urlsplit(self.path).query)
+        machine_id = required_text(query.get("machineId", [""])[0], "machineId", 128)
+        chat_id = required_text(query.get("chatId", [""])[0], "chatId", 256)
+        capability = path.endswith("/capabilities")
+        if capability and self.command != "GET":
+            raise WebError(405, "Image capabilities require GET.")
+        identity = image_id(query.get("id", [""])[0]) if self.command == "GET" and not capability else None
+        mime = self.headers.get("Content-Type", "")
+        data = None
+        runtime = self.server.runtime
+        machine = self.server.machines.get(machine_id) if machine_id != "local" else None
+        if self.command == "POST":
+            if mime not in IMAGE_MIME_TYPES:
+                raise WebError(400, "Only PNG and JPEG images are supported.")
+            if machine is None and not runtime.image_capabilities(chat_id)["imageSupported"]:
+                raise WebError(409, "This session does not declare image support. Send an initial text message to connect, or select a vision-capable model.")
+            data = read_body(self, MAX_IMAGE_BYTES)
+        if machine is None:
+            if capability:
+                send_json(self, 200, runtime.image_capabilities(chat_id))
+                return
+            if data is not None:
+                send_json(self, 200, runtime.attachments.put(chat_id, mime, data))
+                return
+            image = runtime.attachments.get(chat_id, identity)
+            raw, content_type = image.data, image.mime_type
+        else:
+            remote_path = "/attachments/capabilities" if capability else "/attachments"
+            remote_path += "?" + urlencode({"chatId": chat_id, **({"id": identity} if identity else {})})
+            raw, content_type = remote_request(machine, remote_path, data, mime, attachment=True)
+            if capability or data is not None:
+                result = json_object(raw)
+                if capability:
+                    if result.get("version") != 1 or type(result.get("imageSupported")) is not bool:
+                        raise WebError(502, "Remote Server returned invalid image capabilities.")
+                else:
+                    try:
+                        metadata = image_metadata(result)
+                    except ControlError:
+                        raise WebError(502, "Remote Server returned invalid image metadata.") from None
+                    if metadata is None or metadata["id"] != hashlib.sha256(data).hexdigest() or metadata["size"] != len(data) or metadata["mimeType"] != mime:
+                        raise WebError(502, "Remote upload receipt does not match the selected image.")
+                send_json(self, 200, result)
+                return
+            if content_type not in IMAGE_MIME_TYPES or not raw or hashlib.sha256(raw).hexdigest() != identity:
+                raise WebError(502, "Remote image bytes do not match their identifier or MIME type.")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(raw)

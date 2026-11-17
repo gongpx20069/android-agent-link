@@ -23,7 +23,7 @@ original result, not permission to override it. Unresolved/invalid requests repo
 `CONFLICT`. Existing runtime option, answer, chat and expiry validation applies.
 
 A separate loopback listener, enabled by stdlib `start` unless `--no-web` is set,
-serves `/`, `/app.js`, `/style.css`.
+serves `/`, `/app.js`, `/style.css`, and `/agentlink.svg` (the public local brand asset).
 Its browser API uses same-origin checks and an HttpOnly session cookie:
 `POST /api/login {code}`, `POST /api/logout {}`, `GET /api/machines`,
 `POST /api/control {machineId, request}`, `POST /api/machines/save
@@ -35,6 +35,18 @@ same normalized endpoint replaces that connection's credential while retaining
 its ID; ambiguous duplicate endpoints are rejected. Registry saves verify remote
 control before persistence. Remote Servers must be upgraded before onboarding.
 The browser API is not exposed on the remote Bridge listener.
+
+Authenticated browser image routes are `GET /api/attachments/capabilities` and
+`GET|POST /api/attachments`, with URL-encoded `machineId` and `chatId`; image GET
+also requires `id`. Capability and upload responses retain the version-1 shapes
+below; POST is raw PNG/JPEG with Content-Length, bounded to 5242880 bytes and no
+chunked body. Cookie/Host and POST Origin/header checks precede upload reads.
+Local requests reuse runtime capabilities/storage; remote requests proxy the
+fixed `/attachments` routes with server-held device/tunnel credentials and the
+same transport restrictions as control. Receipts must match uploaded SHA-256,
+MIME and size; downloads must match their ID and PNG/JPEG MIME. Images use
+`Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. Missing images,
+unsupported sessions, upload limits and invalid remote responses are explicit errors.
 
 ### Single-image attachments (version 1)
 

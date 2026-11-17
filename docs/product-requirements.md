@@ -12,8 +12,13 @@
   moves preserve hidden rows' global positions. Android Dashboard sorting is unchanged.
 - Support text conversation streaming through bounded shared-journal polling,
   tool details, rename, queue removal, guarded cancellation, exact permission
-  choices and question answers. Images and native session picking remain in the
-  existing clients for this first Web version.
+  choices and question answers. Render Markdown tables/links, lists, quotes and code
+  without executing HTML or fetching external images. Native session picking remains
+  in the existing clients.
+- Allow one PNG/JPEG pasted or selected per message (5 MiB / 16 million pixels),
+  with preview/removal and optional text. Require declared image support, preserve
+  per-chat drafts, upload only on explicit Send, and render retained image history.
+- Treat initial/expired login as a dialog state, not a persistent page warning.
 - Keep uncertain sends visibly locked, never auto-resend, and distinguish input
   delivery from completion. Surface offline, stale, truncated and reset history.
   Retain independent operation and approval ownership across client switches.

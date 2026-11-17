@@ -16,7 +16,8 @@ The Android app is the control surface. Remote machines run the bridge, agent pr
 ### Lightweight browser workspace
 
 The stdlib `start` command adds a loopback `ThreadingHTTPServer` by default to the existing Python
-process and serves three packaged HTML/CSS/JavaScript assets. There is no second
+process and serves packaged HTML/CSS/JavaScript and the AgentLink SVG mark.
+The sidebar, login screen and favicon share this local brand asset. There is no second
 agent runtime, Node service, frontend build, Web Dashboard, or new dependency.
 `--no-web` disables that listener; the optional FastAPI backend remains Web-free.
 The gateway calls the existing shared-control executor for local chats; it proxies
@@ -44,6 +45,19 @@ sessionStorage, never automatic retries; missing/unknown receipts cannot unlock
 uncertain sends. Delivery-only receipts remain distinct from task completion.
 Remote credentials remain in the gateway's owner-private registry, never returned
 to the browser after onboarding. Closing the page does not stop tasks.
+
+Single-image drafts use revocable blob URLs, remain scoped to captured machine/chat
+keys, and are limited to eight chats. PNG/JPEG bytes (at most 5 MiB / 16 million
+pixels, no automatic compression) upload only on explicit Send through the
+authenticated gateway. The existing attachment store and image-aware `chat.send`
+own validation, retention and execution. Upload failure retains the draft without
+claiming a prompt was accepted; ambiguous prompt acceptance retains the send lock.
+History resolves image metadata through the same local/remote attachment route,
+with an explicit unavailable/reload state. Logout releases draft URLs.
+Markdown is a dependency-free DOM-rendered subset including tables, HTTP(S) links,
+lists, quotes, headings, inline formatting and fences; raw HTML and external images
+are not activated. Authentication 401 opens the login dialog rather than creating
+a persistent global error banner; real transport and storage errors remain visible.
 
 ### Copilot immediate input
 

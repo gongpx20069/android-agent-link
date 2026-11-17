@@ -29,6 +29,16 @@ addresses; the request pins the checked address while retaining the original Hos
 HTTPS uses normal certificate validation. Proxies and redirects are disabled;
 only `X-Tunnel-Authorization` is accepted as an additional relay header.
 
+The browser attachment proxy applies these same protections before reading an
+upload and never accepts arbitrary resource URLs. PNG/JPEG bytes are bounded to
+5 MiB and decoded/validated by the existing attachment store (16 million pixels).
+Uploads are explicit Send actions, not paste-time transfers. Remote upload receipts
+are checked against the original SHA-256, MIME and size; downloaded bytes must match
+their ID and declared allowed MIME. History uses authenticated same-origin URLs
+with no-store/nosniff headers; previews use local revocable blob URLs. Markdown
+only creates HTTP(S) links opened with `noopener noreferrer`; raw HTML, executable
+links and external Markdown images remain inert text.
+
 Unlike the hashed incoming-device token store, `web-machines.json` contains
 **recoverable remote device/tunnel credentials, not encrypted-at-rest values**.
 Its directory/files use owner-only ACLs/modes and atomic replacement. Do not share

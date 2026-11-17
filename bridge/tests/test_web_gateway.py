@@ -19,6 +19,8 @@ from android_acp_bridge.pairing import PairingStore, build_pairing_payload, enco
 from android_acp_bridge.runtime import BridgeRuntime
 from android_acp_bridge.stdlib_server import BridgeHTTPServer, BridgeRequestHandler
 from android_acp_bridge.web_gateway import MachineStore, WebError, WebServer, check_transport, endpoint_url, remote_json
+from android_acp_bridge.attachments import MAX_IMAGE_BYTES
+from test_attachments import ImageManager, png
 from test_runtime import FakeAgentManager
 
 
@@ -73,7 +75,7 @@ class WebGatewayTests(unittest.TestCase):
         values.update(headers or {})
         try:
             connection.request("GET" if body is None else "POST", path,
-                               None if body is None else json.dumps(body), values)
+                               body if isinstance(body, bytes) or body is None else json.dumps(body), values)
             response = connection.getresponse()
             raw = response.read()
             return response.status, dict(response.getheaders()), json.loads(raw) if response.getheader("Content-Type", "").startswith("application/json") else raw
@@ -101,6 +103,11 @@ class WebGatewayTests(unittest.TestCase):
     def test_loopback_auth_origin_host_logout_and_static_assets(self):
         self.assertEqual(self.web.server_address[0], "127.0.0.1")
         self.assertEqual(self.request("/api/machines")[0], 401)
+        status, headers, logo = self.request("/agentlink.svg")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/svg+xml")
+        self.assertIn(b'<svg ', logo)
+        self.assertIn(b'viewBox="0 0 64 64"', logo)
         for headers in ({"Host": "attacker.invalid"}, {"Origin": "https://attacker.invalid"}, {"X-AgentLink-Web": ""}):
             self.assertEqual(self.request("/api/login", {"code": self.web.access_code}, headers=headers)[0], 403)
         self.assertEqual(self.request("/api/login", {"code": "wrong"})[0], 401)
@@ -133,6 +140,84 @@ class WebGatewayTests(unittest.TestCase):
             self.assertEqual(status, 502)
             self.assertIn("authorization", result["error"])
         self.assertEqual(self.control("local", "chat.list")["status"], "ok")
+
+    def test_images_roundtrip_send_and_chat_machine_isolation(self):
+        self.connect_remote()
+        data = png()
+        for machine, runtime in (("local", self.local), ("vm", self.remote)):
+            runtime.agent_manager = ImageManager()
+            path = f"/api/attachments?machineId={machine}&chatId=same-id"
+            capabilities = self.request(f"/api/attachments/capabilities?machineId={machine}&chatId=same-id")
+            self.assertTrue(capabilities[2]["imageSupported"])
+            status, _, receipt = self.request(path, data, headers={"Content-Type": "image/png"})
+            self.assertEqual(status, 200, receipt)
+            status, headers, fetched = self.request(path + "&id=" + receipt["id"])
+            self.assertEqual((status, fetched), (200, data))
+            self.assertEqual(headers["Content-Type"], "image/png")
+            self.assertEqual(headers["Cache-Control"], "no-store")
+            self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+            self.assertEqual(self.request(path.replace("same-id", "missing") + "&id=" + receipt["id"])[0], 404)
+            if machine == "local":
+                self.assertEqual(self.request(path.replace("local", "vm") + "&id=" + receipt["id"])[0], 404)
+            sent = self.control(machine, "chat.send", chatId="same-id", content="", image=receipt, operationId="image-only")
+            self.assertEqual(sent["status"], "ok", sent)
+            self.assertTrue(runtime.agent_manager.started.wait(2))
+            self.assertEqual(runtime.agent_manager.calls[0].image.data, data)
+            self.assertEqual(runtime.agent_manager.calls[0].prompt, "")
+
+    def test_image_auth_capabilities_and_limits(self):
+        path = "/api/attachments?machineId=local&chatId=same-id"
+        data = png()
+        early_headers = {"Content-Type": "image/png", "Content-Length": str(len(data))}
+        self.assertEqual(self.request(path, b"", headers=early_headers)[0], 401)
+        self.login()
+        for headers in ({"Origin": "https://attacker.invalid"}, {"X-AgentLink-Web": ""}, {"Host": "attacker.invalid"}):
+            self.assertEqual(self.request(path, b"", headers={**early_headers, **headers})[0], 403)
+        self.assertFalse(self.request("/api/attachments/capabilities?machineId=local&chatId=same-id")[2]["imageSupported"])
+        self.assertEqual(self.request(path, b"", headers=early_headers)[0], 409)
+        self.local.agent_manager = ImageManager()
+        for headers, body, expected in (
+            ({"Content-Type": "image/svg+xml"}, b"<svg/>", 400),
+            ({"Content-Type": "image/jpeg"}, data, 400),
+            ({"Content-Type": "image/png"}, b"not an image", 400),
+            ({"Content-Type": "image/png", "Content-Length": str(MAX_IMAGE_BYTES + 1)}, b"", 413),
+            ({"Content-Type": "image/png", "Transfer-Encoding": "chunked"}, data, 413),
+            ({"Content-Type": "image/png"}, png(size=(4001, 4000)), 400),
+        ):
+            with self.subTest(headers=headers, expected=expected):
+                self.assertEqual(self.request(path, body, headers=headers)[0], expected)
+        self.assertEqual(self.request(path + "&id=../../config")[0], 400)
+
+    def test_remote_image_errors_integrity_and_redirects(self):
+        self.connect_remote()
+        path = "/api/attachments?machineId=vm&chatId=same-id"
+        data = png()
+        self.assertEqual(self.request(path, data, headers={"Content-Type": "image/png"})[0], 409)
+        self.remote.agent_manager = ImageManager()
+        self.assertEqual(self.request(path, b"bad", headers={"Content-Type": "image/png"})[0], 400)
+        receipt = self.remote.attachments.put("same-id", "image/png", data)
+        with patch("android_acp_bridge.web_gateway.remote_request", return_value=(png("blue"), "image/png")):
+            self.assertEqual(self.request(path + "&id=" + receipt["id"])[0], 502)
+        with patch("android_acp_bridge.web_gateway.remote_request", return_value=(data, "text/html")):
+            self.assertEqual(self.request(path + "&id=" + receipt["id"])[0], 502)
+        with patch("android_acp_bridge.web_gateway.remote_request", return_value=(
+                json.dumps({**receipt, "size": len(data) + 1}).encode(), "application/json")):
+            self.assertEqual(self.request(path, data, headers={"Content-Type": "image/png"})[0], 502)
+        with patch("android_acp_bridge.web_gateway.remote_request", return_value=(b'{"version":1,"imageSupported":"yes"}', "application/json")):
+            self.assertEqual(self.request("/api/attachments/capabilities?machineId=vm&chatId=same-id")[0], 502)
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "https://example.invalid/never-follow")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *_):
+                pass
+        peer = self.start(ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler))
+        self.web.machines.update({"id": "redirect", "name": "Redirect", "endpoint": f"http://127.0.0.1:{peer.server_port}",
+                                 "token": self.token, "headers": {}}, "redirect")
+        self.assertEqual(self.request(path.replace("vm", "redirect") + "&id=" + receipt["id"])[0], 502)
 
     def test_local_and_remote_send_deduplicate_and_share_real_journal(self):
         self.connect_remote()

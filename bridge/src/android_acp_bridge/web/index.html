@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>AgentLink Web</title>
+  <link rel="icon" href="/agentlink.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
 <div class="app" id="app">
   <aside class="sidebar">
-    <header class="brand"><span class="logo">▦</span><div><strong>AgentLink</strong><small>多电脑工作台</small></div></header>
+    <header class="brand"><img class="brand-mark" src="/agentlink.svg" width="44" height="44" alt=""><div><strong>AgentLink</strong><small>多电脑工作台</small></div></header>
     <button class="primary" id="new-chat">＋ 新建聊天</button>
     <label class="field">电脑范围<select id="machine-filter"><option value="all">全部电脑</option></select></label>
     <input id="search" type="search" aria-label="搜索聊天" placeholder="搜索聊天或电脑 · Ctrl K">
@@ -28,13 +29,15 @@
     <footer class="composer-area">
       <div id="pending-notice" class="notice" hidden><span id="pending-text"></span><button id="check-send">检查发送结果</button><button id="unlock-send">我已核对，解除发送锁</button></div>
       <div id="queue-list"></div>
-      <div class="composer"><textarea id="composer" aria-label="输入消息" placeholder="发送消息，或补充当前任务…" disabled></textarea><div class="composer-toolbar"><small id="composer-target">仅连接本机 Web 入口</small><button id="cancel-task" disabled>停止当前任务</button><button class="primary" id="send" disabled>发送 ↑</button></div></div>
-      <small>Enter 发送 · Shift + Enter 换行 · 关闭页面不会取消任务 · 首版文字交互</small>
+      <div id="image-draft" class="image-draft" hidden><img id="image-preview" alt="待发送图片预览"><div><span id="image-name"></span><small>仅在点击发送后上传</small></div><button id="remove-image" type="button">移除图片</button></div>
+      <div class="composer"><textarea id="composer" aria-label="输入消息" placeholder="发送消息，或粘贴一张图片…" disabled></textarea><input id="image-file" type="file" accept="image/png,image/jpeg" aria-label="选择图片" hidden><div class="composer-toolbar"><small id="composer-target">仅连接本机 Web 入口</small><button id="attach-image" type="button" disabled>＋ 图片</button><button id="cancel-task" disabled>停止当前任务</button><button class="primary" id="send" disabled>发送 ↑</button></div></div>
+      <small>Enter 发送 · Shift + Enter 换行 · Ctrl/Cmd + V 粘贴图片 · 单张 PNG/JPEG ≤ 5 MiB / 1600 万像素</small>
     </footer>
   </main>
   <aside id="details" class="details"><header><strong>审批与工具详情</strong><button id="details-close" aria-label="关闭详情">×</button></header><div id="detail-content"><p class="muted">选择聊天后查看详情。</p></div></aside>
 </div>
 <dialog id="login-dialog" aria-labelledby="login-title">
+  <div class="brand"><img class="brand-mark" src="/agentlink.svg" width="44" height="44" alt=""><div><strong>AgentLink</strong><small>多电脑工作台</small></div></div>
   <form id="login-form"><h2 id="login-title">连接本机 Server</h2><p class="muted">输入启动 Server 时显示的 Web access code。访问码不会放进网址。</p><label class="field">访问码<input id="access-code" type="password" autocomplete="off" required></label><p id="login-error" class="error-text" role="alert"></p><button class="primary" type="submit">进入工作台</button></form>
 </dialog>
 <dialog id="new-dialog" aria-labelledby="new-title">

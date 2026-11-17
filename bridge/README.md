@@ -23,11 +23,15 @@ is needed. `--interactive` can coexist with Web. Use `start --no-web` for a
 Server without a browser listener; `--web` remains accepted for compatibility.
 The optional FastAPI backend keeps Web disabled and rejects explicit `--web`.
 
-The first Web version supports text chats, live shared journal updates, folded
+The Web workspace supports text chats, live shared journal updates, folded
 tool details, exact permission options/question forms, rename, queue removal,
-and guarded cancellation. Image upload/viewing and native session picking remain
-in Android/the terminal. Basic text/code formatting is rendered without raw HTML
-or automatic external resource loads. It is not a complete provider history viewer.
+and guarded cancellation. Paste or select one PNG/JPEG up to 5 MiB / 16 million
+pixels, preview/remove it, then send it alone or with text to an image-capable
+session. New sessions may require an initial text message to establish capability.
+Uploads happen only on Send; images are not automatically compressed. Native session
+picking remains in Android/the terminal. Markdown tables, HTTP(S) links, lists,
+quotes, headings and code are rendered without raw HTML or automatic external
+resource loads. It is not a complete provider history viewer or full Markdown engine.
 
 Computer management accepts a VM's `acpclient://pair?...` link after you verify its
 displayed target. Confirm the request on that VM. The VM needs an updated stdlib

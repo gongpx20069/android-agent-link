@@ -12,10 +12,22 @@ from android_acp_bridge.pairing import build_pairing_payload, encode_pairing_dee
 from android_acp_bridge.stdlib_server import BridgeHTTPServer
 from test_runtime import FakeAgentManager
 from test_web_gateway import WebGatewayTests
+from test_attachments import png
 
 
 class BrowserAgent(FakeAgentManager):
+    images_supported = True
+
+    def supports_images(self, chat_id):
+        return self.images_supported
+
     def prompt(self, request, permission_callback=None, update_callback=None, session_callback=None):
+        if request.image:
+            return [{"type": "session/update", "update": {"sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": f"Image received: {len(request.image.data)} bytes; text: {request.prompt}"}}}]
+        if request.prompt.startswith("markdown:"):
+            return [{"type": "session/update", "update": {"sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": request.prompt.removeprefix("markdown:")}}}]
         if request.prompt == "needs question":
             result = permission_callback({"method": "elicitation/create", "params": {
                 "mode": "form", "message": "Choose a branch", "requestedSchema": {
@@ -38,7 +50,10 @@ def main():
                               "workspacePath": fixture.directory.name, "chatTitle": "<img src=x onerror=alert(1)>"})
         link = encode_pairing_deep_link(build_pairing_payload(machine_name="VM", endpoint=fixture.endpoint,
             token=fixture.remote.pairing_store.create(), bridge_fingerprint=fixture.remote.config.bridge_fingerprint))
-        print(json.dumps({"url": fixture.web.origin, "code": fixture.web.access_code, "link": link}), flush=True)
+        image_path = Path(fixture.directory.name) / "browser-image.png"
+        image_path.write_bytes(png())
+        print(json.dumps({"url": fixture.web.origin, "code": fixture.web.access_code, "link": link,
+                          "imagePath": str(image_path)}), flush=True)
         for line in sys.stdin:
             command = line.strip()
             if command == "quit":
@@ -52,6 +67,11 @@ def main():
                 fixture.remote.shared.reset_events("same-id")
                 fixture.remote._record_broadcast("same-id", {"type": "session/update", "update": {
                     "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "New generation only"}}})
+            elif command == "expire":
+                with fixture.web.lock:
+                    fixture.web.sessions.clear()
+            elif command in {"images-off", "images-on"}:
+                fixture.local.agent_manager.images_supported = command == "images-on"
             elif command == "delivery":
                 for event in (
                     {"type": "operation.accepted", "operationId": "original", "content": "Original work", "state": "starting"},

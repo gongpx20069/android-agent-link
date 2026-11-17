@@ -93,11 +93,28 @@ try {
     $null = Invoke-Cdp 'Emulation.setDeviceMetricsOverride' @{width=1440;height=960;deviceScaleFactor=1;mobile=$false}
     $null = Invoke-Cdp 'Page.navigate' @{url=$ready.url}
     Wait-Js 'document.querySelector("#login-dialog")?.open'
+    Wait-Js '[...document.querySelectorAll(".brand-mark")].length === 2 && [...document.querySelectorAll(".brand-mark")].every(image => image.complete && image.naturalWidth > 0)'
+    $null = Eval @'
+(async () => {
+  const icon = document.querySelector('link[rel="icon"]');
+  if (!icon || icon.href !== document.querySelector(".brand-mark").src) throw new Error("Favicon must use the AgentLink mark");
+  const response = await fetch(icon.href);
+  if (!response.ok || response.headers.get("Content-Type") !== "image/svg+xml") throw new Error("Logo must load before login");
+  for (const image of document.querySelectorAll(".brand-mark")) {
+    const box = image.getBoundingClientRect();
+    if (box.width !== 44 || box.height !== 44) throw new Error("Logo must preserve square dimensions");
+  }
+})()
+'@
+    Screenshot 'agentlink-web-login.png'
+    $null = Eval 'if(!document.getElementById("error").hidden)throw new Error("Initial authentication must not create a global error");document.getElementById("access-code").value="wrong";document.getElementById("login-form").requestSubmit()'
+    Wait-Js '!!document.getElementById("login-error").textContent'
     $null = Eval @"
 document.getElementById("access-code").value=$($ready.code | ConvertTo-Json -Compress);
 document.getElementById("login-form").requestSubmit();
 "@
     Wait-Js 'document.querySelectorAll("#chat-list .chat").length === 2'
+    $null = Eval 'if(!document.getElementById("error").hidden || document.getElementById("login-error").textContent)throw new Error("Login warning must clear after success")'
     $null = Eval @'
 window.check=(value,message)=>{if(!value)throw new Error(message)};
 window.byId=id=>document.getElementById(id);
@@ -119,6 +136,116 @@ check(!byId("pair-link").value,"Pairing secret cleared after saving");
 byId("machines-dialog").close(); chat("local").click();
 '@
     Wait-Js '!document.getElementById("composer").disabled'
+    $null = Eval @'
+window.originalFetch=window.fetch;window.uploads=0;window.sends=0;
+window.fetch=async(...args)=>{if(String(args[0]).startsWith("/api/attachments?")&&args[1]?.method==="POST")uploads++;
+if(args[0]==="/api/control"&&JSON.parse(args[1]?.body||"{}").request?.action==="chat.send")sends++;return originalFetch(...args)};
+window.pasteImage=async()=>{const canvas=document.createElement("canvas");canvas.width=8;canvas.height=8;
+const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/png"));window.imageFile=new File([blob],"paste.png",{type:"image/png"});
+const data=new DataTransfer();data.items.add(imageFile);byId("composer").dispatchEvent(new ClipboardEvent("paste",{clipboardData:data,bubbles:true,cancelable:true}))};
+window.chooseImage=()=>{const data=new DataTransfer();data.items.add(imageFile);byId("image-file").files=data.files;byId("image-file").dispatchEvent(new Event("change"))};
+pasteImage();
+'@
+    Wait-Js '!document.getElementById("image-draft").hidden && !document.getElementById("send").disabled'
+    $null = Eval 'check(uploads===0&&sends===0,"Pasting does not upload or send");chat(vm).click();check(byId("image-draft").hidden,"Image draft isolated by machine");chat("local").click();check(!byId("image-draft").hidden,"Image draft survives switching");byId("remove-image").click();check(byId("image-draft").hidden&&byId("send").disabled,"Image-only draft removal disables send")'
+    $null = Invoke-Cdp 'Page.setInterceptFileChooserDialog' @{enabled=$true}
+    $null = Eval 'byId("attach-image").click()'
+    $doc = Invoke-Cdp 'DOM.getDocument'
+    $input = Invoke-Cdp 'DOM.querySelector' @{nodeId=$doc.root.nodeId;selector='#image-file'}
+    $null = Invoke-Cdp 'DOM.setFileInputFiles' @{nodeId=$input.nodeId;files=@($ready.imagePath)}
+    Wait-Js '!document.getElementById("image-draft").hidden && !document.getElementById("send").disabled'
+    $null = Eval 'check(byId("image-name").textContent.includes("browser-image.png"),"File picker attaches selected file");byId("send").click()'
+    Wait-Js 'document.getElementById("timeline").textContent.includes("Image received:") && document.getElementById("image-draft").hidden'
+    Wait-Js '[...document.querySelectorAll("#timeline .message-image img")].some(image=>image.complete&&image.naturalWidth===8)'
+    $null = Eval 'check(uploads===1&&sends===1,"Image-only send uploads once");check(!byId("error").textContent,"Image send has no error");pasteImage()'
+    Wait-Js '!document.getElementById("image-draft").hidden && !document.getElementById("send").disabled'
+    $null = Eval @'
+window.trackedFetch=window.fetch;window.fetch=async(...args)=>String(args[0]).startsWith("/api/attachments?")&&args[1]?.method==="POST"?
+new Response(JSON.stringify({error:"test upload failure"}),{status:503,headers:{"Content-Type":"application/json"}}):trackedFetch(...args);
+byId("send").click();
+'@
+    Wait-Js 'document.getElementById("error").textContent.includes("test upload failure")'
+    $null = Eval 'check(!byId("image-draft").hidden&&byId("pending-notice").hidden&&!byId("send").disabled,"Upload failure preserves draft without uncertain-send lock");check(sends===1,"Failed upload never submits prompt");window.fetch=trackedFetch;byId("remove-image").click()'
+    Fixture-Command 'images-off'
+    $null = Eval 'pasteImage()'
+    Wait-Js 'document.getElementById("error").textContent.includes("尚未声明支持图片")'
+    $null = Eval 'check(byId("image-draft").hidden,"Unsupported image is not silently accepted")'
+    Fixture-Command 'images-on'
+    $null = Eval @'
+window.fetch=async(...args)=>{
+if(String(args[0]).startsWith("/api/attachments/capabilities"))await new Promise(resolve=>window.releaseCapabilities=resolve);
+return trackedFetch(...args)};
+pasteImage();
+'@
+    Wait-Js '!!window.releaseCapabilities'
+    $null = Eval 'chat(vm).click();window.releaseCapabilities();window.fetch=trackedFetch'
+    Wait-Js '!document.getElementById("composer").disabled'
+    $null = Eval 'check(byId("image-draft").hidden,"Asynchronous paste cannot move to newly selected chat");chat("local").click()'
+    Wait-Js '!document.getElementById("image-draft").hidden'
+    $null = Eval 'byId("remove-image").click();chat(vm).click()'
+    Wait-Js '!document.getElementById("composer").disabled'
+    $null = Eval 'pasteImage()'
+    Wait-Js '!document.getElementById("image-draft").hidden && !document.getElementById("send").disabled'
+    $null = Eval @'
+window.fetch=async(...args)=>{const response=await trackedFetch(...args);if(args[0]==="/api/control"&&JSON.parse(args[1]?.body||"{}").request?.action==="chat.send")throw new Error("test image acknowledgement lost");return response};
+type("composer","remote image text");byId("send").click();
+'@
+    Wait-Js 'document.getElementById("error").textContent.includes("test image acknowledgement lost")'
+    $null = Eval 'check(byId("send").disabled&&!byId("pending-notice").hidden,"Unknown image send stays locked");window.fetch=trackedFetch;byId("check-send").click()'
+    Wait-Js 'document.getElementById("pending-notice").hidden && document.getElementById("timeline").textContent.includes("remote image text")'
+    Wait-Js '[...document.querySelectorAll("#timeline .message-image img")].some(image=>image.complete&&image.naturalWidth===8)'
+    $null = Eval 'check(document.querySelectorAll("#timeline .message-image").length===1,"Unknown image send is never retried");byId("remove-image").click();type("composer","");chat("local").click()'
+    Wait-Js '!document.getElementById("composer").disabled'
+    $null = Eval @'
+window.markdownSample=`[PR #6024688](https://office.visualstudio.com/Sydney/_git/Sydney/pullrequest/6024688) 目前还有两项合并阻塞：
+| 阻塞项 | 详情 |
+|---|---|
+| 评论未解决 | **Sydgate** 指出 standalone \`v0_top5_noEdge\` 阈值（0.7 → 0.6） |
+| Buddy 构建未完成 | 策略显示 queued，但尚无关联 build ID |
+
+1. 第一项
+2. 第二项
+
+> 引用
+
+| A | B |
+| :--- | ---: |
+| a\\|b | \`x|y\` |
+
+\`\`\`text
+| not | a table |
+|---|---|
+\`\`\`
+<img src=x onerror=alert(1)>
+[bad](javascript:alert)
+![external](https://example.invalid/image.png)`;
+type("composer","markdown:"+markdownSample);byId("send").click();
+'@
+    Wait-Js 'document.querySelectorAll("#timeline .message.assistant table").length === 2'
+    $null = Eval @'
+const rendered=[...document.querySelectorAll("#timeline .message.assistant")].at(-1);
+check(rendered.querySelectorAll("table")[0].querySelectorAll("tbody tr").length===2,"PR blockers form two table rows");
+check(rendered.querySelector("a").textContent==="PR #6024688"&&rendered.querySelector("a").href.endsWith("/6024688"),"PR link rendered");
+check(rendered.querySelector("a").rel.includes("noopener"),"External link does not retain opener");
+check(rendered.querySelector("td strong").textContent==="Sydgate","Table inline bold");
+check(rendered.querySelector("td code").textContent==="v0_top5_noEdge","Table inline code");
+check(rendered.querySelectorAll("ol li").length===2&&!!rendered.querySelector("blockquote"),"Lists and quotes rendered");
+check(rendered.querySelectorAll("table")[1].querySelector("td").textContent==="a|b","Escaped pipe preserved");
+check(rendered.querySelectorAll("table")[1].querySelector("td code").textContent==="x|y","Code pipe preserved");
+check(rendered.querySelector("pre code").textContent.includes("| not | a table |"),"Fence content stays literal");
+check(!rendered.querySelector("img,script,iframe")&&rendered.querySelectorAll("a").length===1,"HTML, unsafe links, and external images are not activated");
+check(document.documentElement.scrollWidth<=1440,"Table does not overflow desktop");
+window.fetch=originalFetch;
+'@
+    Screenshot 'agentlink-web-markdown-images.png'
+    Fixture-Command 'expire'
+    Wait-Js 'document.getElementById("login-dialog").open'
+    $null = Eval 'check(byId("composer").disabled&&byId("send").disabled,"Expired session disables actions");check(!byId("error").textContent.includes("Sign in using"),"Expired authentication never creates global login warning")'
+    $null = Eval @"
+byId("access-code").value=$($ready.code | ConvertTo-Json -Compress);byId("login-form").requestSubmit();
+"@
+    Wait-Js '!document.getElementById("login-dialog").open && !document.getElementById("composer").disabled'
+    $null = Eval 'check(!byId("login-error").textContent,"Expired-session login warning clears");type("composer","")'
     $null = Eval 'type("composer","local draft");chat(vm).click()'
     Wait-Js '!document.getElementById("composer").disabled && document.getElementById("chat-subtitle").textContent.startsWith("VM")'
     $null = Eval 'check(!byId("composer").value,"Draft isolation");type("composer","remote draft");chat("local").click();check(byId("composer").value==="local draft","Local draft preserved");window.before=rows().map(node=>node.dataset.key)'
@@ -200,7 +327,7 @@ const data=await response.json();if(data.status!=="ok")throw new Error("Shared d
     Wait-Js '!document.getElementById("composer").disabled'
     $null = Eval 'document.getElementById("composer").value="should not send";document.getElementById("composer").dispatchEvent(new Event("input"));if(!document.getElementById("send").disabled)throw new Error("Corrupt pending state must block duplicate sends")'
     if ($script:browserErrors.Count) { throw ($script:browserErrors | ConvertTo-Json -Depth 15 -Compress) }
-    Write-Output 'Browser checks passed: pairing, routing, drafts, native drag, filtered ordering, approval/forms, lost receipts, offline/recovery, history reset, delivery semantics, creation, persistence.'
+    Write-Output 'Browser checks passed: login/expiry, logo, image paste/file picker/preview/send/history/isolation/failures, Markdown tables/links, pairing, routing, drafts, native drag, filtered ordering, approvals, lost receipts, offline/recovery, history reset, delivery, creation, persistence.'
 } finally {
     $socket.Dispose()
     if ($fixture -and -not $fixture.HasExited) {

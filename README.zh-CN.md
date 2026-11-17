@@ -92,7 +92,8 @@ python -m venv .venv
 一台 VM 离线不会阻塞其他电脑。首次没有工作目录时，可以在启动命令中增加
 `--workspace-root C:\Repos`，允许通过新聊天界面注册其下的已有目录。
 
-首版 Web 支持文字和 Server 保留的共享日志；图片仍用 Android，
+Web 支持共享日志、Markdown 表格／链接，以及粘贴或上传一张 PNG/JPEG
+（不超过 5 MiB／1600 万像素，可附带文字；需要已连接且支持图片的会话）。
 原生历史会话选择仍用 Android 或终端。发送结果不确定时不会自动重试，
 关闭网页也不会取消任务。请等现有任务结束后更新并重启 Bridge，
 仅更新 APK 不会增加 Web 功能。详见[浏览器使用指南](docs/user-guide.zh-CN.md#浏览器工作台)。

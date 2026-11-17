@@ -16,6 +16,9 @@
     cancelled: "已取消", accepted: "已接受", starting: "正在启动", started: "已开始"};
   const label = value => statuses[value] || value || "未确认";
   const machines = new Map(), chats = new Map(), histories = new Map(), drafts = new Map();
+  const imageDrafts = new Map(), imageChecks = new Map();
+  const maxImageBytes = 5 * 1024 * 1024, imageTypes = ["image/png", "image/jpeg"];
+  let pickerChat = null;
   let selected = null, signedIn = false, catalogBusy = false, reading = false, dragKey = null;
   let detailSignature = "", selectedTool = null, catalogTimer, journalTimer, catalogVersion = 0;
   const busyApprovals = new Set();
@@ -43,8 +46,10 @@
     catch (failure) { error(`发送记录无法持久保存：${failure.message}。刷新前请核对任务；不要重复发送。`); }
   }
   function loginNeeded() {
+    if (signedIn && selected) $("login-error").textContent = "登录已过期，请重新输入本机 Server 的访问码。未确认的发送不会自动重试。";
     signedIn = false;
     clearTimeout(catalogTimer); clearTimeout(journalTimer);
+    renderHeader(); renderDetails();
     if (!$("login-dialog").open) $("login-dialog").showModal();
   }
   async function api(path, body) {
@@ -53,12 +58,12 @@
     try {
       const response = await fetch(path, {method: body === undefined ? "GET" : "POST",
         credentials: "same-origin", cache: "no-store", signal: controller.signal,
-        headers: body === undefined ? {} : {"Content-Type": "application/json", "X-AgentLink-Web": "1"},
-        body: body === undefined ? undefined : JSON.stringify(body)});
+        headers: body === undefined ? {} : {"Content-Type": body instanceof Blob ? body.type : "application/json", "X-AgentLink-Web": "1"},
+        body: body === undefined ? undefined : body instanceof Blob ? body : JSON.stringify(body)});
       const result = await response.json();
       if (!response.ok) {
         if (response.status === 401 && path !== "/api/login") loginNeeded();
-        throw new Error(result.error || `HTTP ${response.status}`);
+        throw Object.assign(new Error(result.error || `HTTP ${response.status}`), {status: response.status, code: result.code});
       }
       return result;
     } finally { clearTimeout(timer); }
@@ -75,7 +80,7 @@
   function guarded(fn) {
     return async event => {
       try { await fn(event); }
-      catch (failure) { error(failure.message); }
+      catch (failure) { if (failure.status !== 401) error(failure.message); }
     };
   }
   function button(text, action, className) {
@@ -86,6 +91,76 @@
   }
   function machineName(id) { return machines.get(id)?.name || "已移除的电脑"; }
   function snapshot(key = selected) { return key ? chats.get(key) : null; }
+  function attachmentUrl(chat, id = null, capabilities = false) {
+    const query = new URLSearchParams({machineId: chat.machineId, chatId: chat.chatId});
+    if (id) query.set("id", id);
+    return `/api/attachments${capabilities ? "/capabilities" : ""}?${query}`;
+  }
+  function removeImage(key) {
+    const draft = imageDrafts.get(key);
+    if (draft) URL.revokeObjectURL(draft.url);
+    imageDrafts.delete(key); imageChecks.delete(key);
+  }
+  function renderImage() {
+    const draft = imageDrafts.get(selected);
+    $("image-draft").hidden = !draft;
+    if (draft) {
+      if ($("image-preview").getAttribute("src") !== draft.url) $("image-preview").src = draft.url;
+      $("image-name").textContent = `${draft.file.name || "粘贴的图片"} · ${(draft.file.size / 1024).toFixed(0)} KiB`;
+    } else $("image-preview").removeAttribute("src");
+    $("remove-image").disabled = pending.has(selected);
+  }
+  async function attachImage(chat, files) {
+    if (!chat || !signedIn || pending.has(chat.key) || !history(chat.key).online)
+      throw new Error("请先选择在线聊天，并核实未确认的发送。");
+    if (files.length !== 1) throw new Error("每条消息只支持一张图片，请只选择或粘贴一张。");
+    const file = files[0];
+    if (!imageTypes.includes(file.type) || !file.size || file.size > maxImageBytes)
+      throw new Error("请选择不超过 5 MiB 的 PNG/JPEG 图片。");
+    if (!imageDrafts.has(chat.key) && !imageChecks.has(chat.key) &&
+        new Set([...imageDrafts.keys(), ...imageChecks.keys()]).size >= 8)
+      throw new Error("最多保留 8 个聊天的图片草稿，请先发送或移除其他图片。");
+    const ticket = Symbol(), version = catalogVersion;
+    imageChecks.set(chat.key, ticket); renderHeader();
+    const url = URL.createObjectURL(file);
+    let retained = false;
+    try {
+      const image = new Image(); image.src = url;
+      await image.decode();
+      if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth * image.naturalHeight > 16000000)
+        throw new Error("图片不能超过 1600 万像素，请先缩小尺寸。");
+      const capabilities = await api(attachmentUrl(chat, null, true));
+      if (capabilities.version !== 1 || capabilities.imageSupported !== true)
+        throw new Error("当前会话尚未声明支持图片。新聊天请先发一条文字建立连接，并确认使用支持图片的模型。");
+      if (!signedIn || version !== catalogVersion || imageChecks.get(chat.key) !== ticket || !chats.has(chat.key)) return;
+      removeImage(chat.key);
+      imageDrafts.set(chat.key, {file, url}); retained = true;
+    } catch (failure) {
+      if (failure.name === "EncodingError") throw new Error("图片无法解码，请选择有效的 PNG/JPEG。");
+      throw failure;
+    } finally {
+      if (!retained) URL.revokeObjectURL(url);
+      if (imageChecks.get(chat.key) === ticket) imageChecks.delete(chat.key);
+      renderImage(); renderHeader();
+    }
+  }
+  function imageBlock(chat, metadata) {
+    const block = make("div", undefined, "message-image");
+    if (!metadata || !/^[0-9a-f]{64}$/.test(metadata.id) || !imageTypes.includes(metadata.mimeType) ||
+        !Number.isInteger(metadata.size) || metadata.size <= 0 || metadata.size > maxImageBytes) {
+      block.append(make("small", "图片引用无效，无法显示。", "error-text"));
+      return block;
+    }
+    const link = make("a"), image = make("img");
+    link.href = attachmentUrl(chat, metadata.id); link.target = "_blank"; link.rel = "noopener";
+    image.alt = "消息图片"; image.loading = "lazy"; image.src = link.href;
+    image.addEventListener("error", () => {
+      block.replaceChildren(make("small", "图片不可用：可能已清理、电脑离线或登录已过期。", "error-text"),
+        button("重新加载图片", () => block.replaceWith(imageBlock(chat, metadata))));
+    }, {once: true});
+    link.append(image); block.append(link, make("small", "点击查看原图 · 右键可复制图片"));
+    return block;
+  }
   function history(key) {
     if (!histories.has(key) && histories.size >= 8) {
       const oldest = [...histories.keys()].find(value => value !== selected);
@@ -168,7 +243,7 @@
     const ids = new Set(result.machines.map(item => item.id));
     for (const id of machines.keys()) if (!ids.has(id)) machines.delete(id);
     for (const item of result.machines) machines.set(item.id, {...machines.get(item.id), ...item});
-    for (const [key, chat] of chats) if (!ids.has(chat.machineId)) chats.delete(key);
+    for (const [key, chat] of chats) if (!ids.has(chat.machineId)) { chats.delete(key); removeImage(key); }
     const previous = $("machine-filter").value;
     $("machine-filter").replaceChildren(new Option("全部电脑", "all"),
       ...result.machines.map(item => new Option(item.name, item.id)));
@@ -196,7 +271,11 @@
             if (machines.get(machine.id) !== machine || version !== catalogVersion) continue;
             for (const row of rows) {
               const key = keyOf(machine.id, row.chatId);
-              if (row.deleted) { chats.delete(key); continue; }
+              if (row.deleted) {
+                chats.delete(key); removeImage(key);
+                if (selected === key) renderImage();
+                continue;
+              }
               chats.set(key, {...row, machineId: machine.id, key});
             }
             machine.online = true; machine.error = "";
@@ -217,6 +296,7 @@
     if (selected) drafts.set(selected, $("composer").value);
     selected = key; selectedTool = null; detailSignature = "";
     $("composer").value = drafts.get(key) || "";
+    renderImage();
     $("timeline").replaceChildren();
     $("new-messages").hidden = true;
     if (key) { history(key).rendered = -1; renderTimeline(); }
@@ -233,7 +313,11 @@
     $("chat-status").textContent = chat ? label(status) : "";
     $("chat-status").className = `badge ${statuses[status] ? status : "unknown"}`;
     $("composer").disabled = !online;
-    $("send").disabled = !online || pendingUnreliable || pending.has(selected) || !$("composer").value.trim();
+    $("send").disabled = !online || pendingUnreliable || pending.has(selected) || imageChecks.has(selected) ||
+      (!$("composer").value.trim() && !imageDrafts.has(selected));
+    $("attach-image").disabled = !online || pending.has(selected) || imageChecks.has(selected);
+    $("attach-image").textContent = imageChecks.has(selected) ? "检查图片…" : "＋ 图片";
+    $("remove-image").disabled = pending.has(selected);
     $("rename").disabled = !online;
     $("composer-target").textContent = chat ? `发送到 ${machineName(chat.machineId)} · ${chat.chatTitle || chat.chatId}` : "仅连接本机 Web 入口";
     $("history-notice").textContent = [state?.notice, state?.connectionError].filter(Boolean).join("\n");
@@ -252,34 +336,108 @@
         return row;
       }));
   }
-  function inlineText(node, text) {
-    const pattern = /(\*\*([^*\n]+)\*\*|`([^`\n]+)`)/g;
+  function inlineText(node, text, depth = 0) {
+    if (depth >= 6) { node.append(document.createTextNode(text)); return; }
+    const pattern = /\\([\\`*_[\]{}()#+.!|>~-])|(`+)([\s\S]*?)\2(?!`)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|~~([^~\n]+)~~|\*([^*\n]+)\*|!\[([^\]\n]*)\]\(([^)\n]*)\)|\[([^\]\n]+)\]\(([^)\n]+)\)/g;
     let end = 0;
     for (const match of text.matchAll(pattern)) {
-      node.append(document.createTextNode(text.slice(end, match.index)),
-        make(match[2] ? "strong" : "code", match[2] || match[3]));
+      node.append(document.createTextNode(text.slice(end, match.index)));
+      if (match[1]) node.append(document.createTextNode(match[1]));
+      else if (match[2]) node.append(make("code", match[3]));
+      else if (match[8] !== undefined) node.append(document.createTextNode(match[0]));
+      else if (match[10]) {
+        let url;
+        try { url = new URL(match[11]); } catch { /* Invalid links stay visible as text. */ }
+        if (url && ["https:", "http:"].includes(url.protocol) && !url.username && !url.password) {
+          const link = make("a"); link.href = url.href; link.target = "_blank"; link.rel = "noopener noreferrer";
+          inlineText(link, match[10], depth + 1); node.append(link);
+        } else node.append(document.createTextNode(match[0]));
+      } else {
+        const element = make(match[4] || match[5] ? "strong" : match[6] ? "del" : "em");
+        inlineText(element, match[4] || match[5] || match[6] || match[7], depth + 1);
+        node.append(element);
+      }
       end = match.index + match[0].length;
     }
     node.append(document.createTextNode(text.slice(end)));
   }
-  function markdown(text) {
+  function tableCells(line) {
+    let text = line.trim();
+    if (text.startsWith("|")) text = text.slice(1);
+    if (text.endsWith("|") && !text.endsWith("\\|")) text = text.slice(0, -1);
+    const cells = [];
+    let cell = "", ticks = 0;
+    for (let index = 0; index < text.length; index++) {
+      const char = text[index];
+      if (char === "\\" && index + 1 < text.length) { cell += char + text[++index]; continue; }
+      if (char === "`") {
+        let length = 1;
+        while (text[index + length] === "`") length++;
+        if (!ticks) ticks = length;
+        else if (ticks === length) ticks = 0;
+        cell += "`".repeat(length); index += length - 1;
+      } else if (char === "|" && !ticks) { cells.push(cell.trim()); cell = ""; }
+      else cell += char;
+    }
+    cells.push(cell.trim());
+    return cells;
+  }
+  function markdown(text, depth = 0) {
     const box = make("div");
-    // Fences are parsed without HTML, URLs, images, or executable markup.
-    if (String(text).includes("```")) {
-      let fenced = false;
-      for (const piece of String(text).split(/```(?:[a-zA-Z0-9_-]+)?\n?/)) {
-        if (fenced) box.append(make("pre", piece));
-        else for (const line of piece.split("\n")) {
-          const node = make(/^#{1,6} /.test(line) ? "h3" : "div", undefined, "line");
-          inlineText(node, line.replace(/^#{1,6} /, "")); box.append(node);
+    const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index], fence = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
+      if (fence) {
+        const code = [];
+        while (++index < lines.length) {
+          const close = lines[index].trim();
+          if (close.length >= fence[1].length && [...close].every(char => char === fence[1][0])) break;
+          code.push(lines[index]);
         }
-        fenced = !fenced;
+        const pre = make("pre"); pre.append(make("code", code.join("\n"))); box.append(pre); continue;
       }
-    } else {
-      for (const line of String(text).split("\n")) {
-        const node = make(/^#{1,6} /.test(line) ? "h3" : "div", undefined, "line");
-        inlineText(node, line.replace(/^#{1,6} /, "")); box.append(node);
+      const headings = tableCells(line), separators = index + 1 < lines.length ? tableCells(lines[index + 1]) : [];
+      if (line.includes("|") && headings.length === separators.length && separators.every(cell => /^:?-{3,}:?$/.test(cell))) {
+        const wrapper = make("div", undefined, "markdown-table"), table = make("table"), head = make("thead"), body = make("tbody");
+        const addRow = (values, tag) => {
+          const row = make("tr");
+          headings.forEach((_, column) => {
+            const alignment = separators[column];
+            const cell = make(tag, undefined, alignment.endsWith(":") ? (alignment.startsWith(":") ? "align-center" : "align-right") : "align-left");
+            if (tag === "th") cell.scope = "col";
+            inlineText(cell, values[column] || ""); row.append(cell);
+          });
+          return row;
+        };
+        head.append(addRow(headings, "th")); index++;
+        while (index + 1 < lines.length && lines[index + 1].trim() && lines[index + 1].includes("|"))
+          body.append(addRow(tableCells(lines[++index]), "td"));
+        table.append(head, body); wrapper.append(table); box.append(wrapper); continue;
       }
+      if (/^\s{0,3}>/.test(line) && depth < 6) {
+        const quoted = [line.replace(/^\s{0,3}> ?/, "")];
+        while (index + 1 < lines.length && /^\s{0,3}>/.test(lines[index + 1]))
+          quoted.push(lines[++index].replace(/^\s{0,3}> ?/, ""));
+        const quote = make("blockquote"); quote.append(markdown(quoted.join("\n"), depth + 1)); box.append(quote); continue;
+      }
+      if (/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { box.append(make("hr")); continue; }
+      const item = line.match(/^\s*(?:([-+*])|(\d+)[.)])\s+(.*)$/);
+      if (item) {
+        const tag = item[1] ? "ul" : "ol";
+        const list = make(tag);
+        if (tag === "ol") list.start = Number(item[2]);
+        let current = item;
+        do {
+          const entry = make("li"); inlineText(entry, current[3]); list.append(entry);
+          const next = lines[index + 1]?.match(/^\s*(?:([-+*])|(\d+)[.)])\s+(.*)$/);
+          if (!next || Boolean(next[1]) !== Boolean(item[1])) break;
+          current = next; index++;
+        } while (true);
+        box.append(list); continue;
+      }
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/);
+      const node = make(heading ? `h${heading[1].length}` : "div", undefined, "line");
+      inlineText(node, heading ? heading[2].replace(/\s+#+\s*$/, "") : line); box.append(node);
     }
     return box;
   }
@@ -288,7 +446,7 @@
     if (event.type === "operation.accepted") {
       if (!state.records.some(row => row.kind === "user" && row.id === event.operationId))
         state.records.push({kind: "user", id: event.operationId, source: event.source,
-          text: event.content || (event.image ? "[图片消息：请在手机查看]" : event.truncated ? "[该输入超出共享日志限制]" : ""), timestamp: event.timestamp});
+          image: event.image, text: event.content || (event.truncated ? "[该输入超出共享日志限制]" : ""), timestamp: event.timestamp});
     } else if (event.type === "session/update") {
       const update = event.update || {};
       if (["agent_message_chunk", "user_message_chunk"].includes(update.sessionUpdate)) {
@@ -296,8 +454,8 @@
         if (typeof text === "string") {
           const kind = update.sessionUpdate === "agent_message_chunk" ? "assistant" : "user";
           const last = state.records.at(-1);
-          if (last?.kind === kind && last.stream && last.operationId === event.operationId) last.text += text;
-          else state.records.push({kind, text, stream: true, operationId: event.operationId, timestamp: event.timestamp});
+          if (last?.kind === kind && last.stream && !update.image && !last.image && last.operationId === event.operationId) last.text += text;
+          else state.records.push({kind, text, image: update.image, stream: true, operationId: event.operationId, timestamp: event.timestamp});
         }
       } else if (["tool_call", "tool_call_update"].includes(update.sessionUpdate)) {
         let record = state.records.findLast(row => row.kind === "tool" && row.id === update.toolCallId);
@@ -343,9 +501,10 @@
       const node = make("article", undefined, `message ${record.kind}`);
       node.append(make("header", `${record.kind === "user" ? (record.source === "mochi" ? "自动输入" : "已接收输入") : "助手"}${record.timestamp ? " · " + new Date(record.timestamp).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) : ""}`),
         record.kind === "assistant" ? markdown(record.text) : make("p", record.text));
+      if (record.image) node.append(imageBlock(snapshot(), record.image));
       const task = state.tasks.find(item => item.taskId === record.id);
       if (task) node.append(make("div", label(task.state), "receipt"));
-      node.append(button("复制", () => navigator.clipboard.writeText(record.text), "message-copy"));
+      if (record.text) node.append(button("复制", () => navigator.clipboard.writeText(record.text), "message-copy"));
       return node;
     });
     timeline.replaceChildren(...(nodes.length ? nodes : [make("p", "这里会展示 Server 保留的共享记录。发送消息开始工作。", "empty")]));
@@ -405,7 +564,7 @@
   function openDetails() { $("app").classList.remove("details-closed"); $("app").classList.add("details-open"); }
   function renderDetails() {
     const chat = snapshot(), state = chat ? history(chat.key) : null;
-    const online = state?.online && machines.get(chat?.machineId)?.online && Date.now() - state.readAt < 15000;
+    const online = signedIn && state?.online && machines.get(chat?.machineId)?.online && Date.now() - state.readAt < 15000;
     const signature = JSON.stringify([selected, state?.approvals, online, selectedTool?.data, [...busyApprovals]]);
     if (signature === detailSignature) return;
     detailSignature = signature;
@@ -488,22 +647,29 @@
   }
   async function send() {
     const chat = snapshot(), content = $("composer").value.trim();
-    if (!chat || !content || pending.has(chat.key) || $("send").disabled) return;
+    const draft = imageDrafts.get(selected), version = catalogVersion;
+    if (!chat || (!content && !draft) || pending.has(chat.key) || $("send").disabled) return;
     if (content.length > 64000) throw new Error("消息不能超过 64000 字符。");
     const operationId = `web_${crypto.randomUUID()}`;
     pending.set(chat.key, operationId); savePending(); renderHeader();
+    let submitted = false;
     try {
-      await control(chat.machineId, "chat.send", {chatId: chat.chatId, content, operationId});
+      const image = draft ? await api(attachmentUrl(chat), draft.file) : null;
+      if (!signedIn || version !== catalogVersion) throw new Error("登录状态已变化，图片未发送给助手，请重新登录后检查。");
+      submitted = true;
+      await control(chat.machineId, "chat.send", {chatId: chat.chatId, content, operationId, ...(image ? {image} : {})});
       pending.delete(chat.key); savePending();
       if ((drafts.get(chat.key) || "").trim() === content) drafts.delete(chat.key);
       if (selected === chat.key && $("composer").value.trim() === content) $("composer").value = "";
+      if (imageDrafts.get(chat.key) === draft) removeImage(chat.key);
       error("");
     } catch (failure) {
-      if (["INVALID_ARGS", "NOT_FOUND", "PERMISSION_DENIED"].includes(failure.code)) {
+      if (!submitted || ["INVALID_ARGS", "NOT_FOUND", "PERMISSION_DENIED"].includes(failure.code)) {
         pending.delete(chat.key); savePending();
       }
-      throw new Error(`发送到 ${machineName(chat.machineId)}：${failure.message}。结果未确认时请先检查，不要重复发送。`);
-    } finally { renderHeader(); pollJournal(); }
+      if (failure.status === 401) throw failure;
+      throw new Error(`发送到 ${machineName(chat.machineId)}：${failure.message}。${submitted ? "结果未确认时请先检查，不要重复发送。" : "尚未提交消息；图片草稿已保留。"}`);
+    } finally { renderImage(); renderHeader(); pollJournal(); }
   }
   async function cancel(chat, operationId) {
     if (!confirm(`向 ${machineName(chat.machineId)} 请求停止此任务？已经执行的操作无法撤销。`)) return;
@@ -565,10 +731,25 @@
   $("logout").addEventListener("click", guarded(async () => {
     await api("/api/logout", {}); catalogVersion++; signedIn = false;
     chats.clear(); histories.clear(); drafts.clear(); machines.clear(); selected = null;
+    for (const key of imageDrafts.keys()) removeImage(key);
+    imageChecks.clear(); pickerChat = null; $("image-file").value = ""; renderImage();
     for (const id of ["access-code", "pair-link", "machine-token", "machine-relay"]) $(id).value = "";
     $("composer").value = ""; renderList(); renderHeader(); renderDetails(); $("timeline").replaceChildren(); loginNeeded();
   }));
   $("composer").addEventListener("input", () => { if (selected) drafts.set(selected, $("composer").value); renderHeader(); });
+  $("attach-image").addEventListener("click", () => { pickerChat = snapshot(); $("image-file").click(); });
+  $("image-file").addEventListener("change", guarded(async () => {
+    const files = [...$("image-file").files], chat = pickerChat;
+    $("image-file").value = ""; pickerChat = null;
+    if (files.length) await attachImage(chat, files);
+  }));
+  $("composer").addEventListener("paste", guarded(async event => {
+    const files = [...(event.clipboardData?.files || [])];
+    if (!files.length) return;
+    event.preventDefault();
+    await attachImage(snapshot(), files);
+  }));
+  $("remove-image").addEventListener("click", () => { removeImage(selected); renderImage(); renderHeader(); });
   $("composer").addEventListener("keydown", guarded(async event => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); await send(); }
   }));
@@ -680,7 +861,9 @@
   async function start() {
     signedIn = true;
     try { await loadMachines(); await refreshCatalog(); pollJournal(); }
-    catch (failure) { error(failure.message); if (signedIn) loginNeeded(); }
+    catch (failure) {
+      if (failure.status !== 401) { error(failure.message); if (signedIn) loginNeeded(); }
+    }
   }
   start();
 })();

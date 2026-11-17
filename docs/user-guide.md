@@ -35,10 +35,22 @@ The unified chat list labels each computer and supports search, filtering,
 drag ordering and Alt+Up/Down. Order is saved per browser, not sorted by status;
 filtered moves preserve hidden positions. Android Dashboard sorting is separate.
 Each chat has its own in-memory draft, and the composer/approval panel identifies
-the target computer. The first Web version supports text, basic text/code
+the target computer. Web supports text, Markdown tables/links, lists, quotes and code
 formatting, tool details, rename, queue removal and guarded cancellation.
-Images and native session picking remain in Android/the terminal. History comes
+Native session picking remains in Android/the terminal. History comes
 from the retained shared journal, with explicit cache limits and gap/reset notices.
+
+Use **+ Image** or paste a copied image into the composer. One PNG/JPEG up to
+5 MiB / 16 million pixels can be previewed, removed, or sent with optional text;
+Web does not automatically compress it. The session must declare image support:
+for a new chat, send text first to establish the connection and use a vision-capable
+model. Up to eight chats can retain separate image drafts in this page; reloading
+or signing out discards drafts. Nothing uploads until Send. Upload failures keep
+the draft without submitting a prompt; uncertain prompt results remain locked.
+History images can be opened or right-clicked to copy; unavailable/evicted images
+show an explicit notice. Images use the existing bounded Server cache (256 MiB,
+seven-day retention checked on writes), not permanent archival storage.
+Initial or expired login opens the access-code dialog without a persistent banner.
 
 In computer management, paste the VM's current pairing link, verify its target
 and confirm the request on the VM. Remote stdlib Servers need the updated
