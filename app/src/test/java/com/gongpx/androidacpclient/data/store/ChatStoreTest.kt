@@ -54,6 +54,45 @@ class ChatStoreTest {
         store.load()
     }
 
+    @Test fun manualOrderSurvivesUpdatesNewChatsDeletionAndRestartWithoutRewritingMessages() {
+        store.load()
+        listOf("a", "b", "c").forEach { store.upsert(chat(it, listOf(message(1)))) }
+        assertTrue(store.chatOrder.value.isEmpty())
+        store.reorderChats(listOf("c", "a", "b"))
+        store.upsert(store.snapshot().first { it.id == "a" }.copy(title = "Updated", agentStatus = "busy"))
+        store.upsert(chat("d"))
+        store.upsert(chat("e"))
+        store.upsert(chat("d").copy(title = "Updated new chat"))
+        store.awaitDurable()
+        restart()
+        assertEquals(listOf("c", "a", "b", "d", "e"), store.chatOrder.value)
+        assertEquals("Updated", store.snapshot().first { it.id == "a" }.title)
+        assertEquals("message 1", store.snapshot().first { it.id == "a" }.messages.single().text)
+        store.remove("a")
+        store.reorderChats(listOf("a", "b", "c", "b", "unknown"))
+        store.awaitDurable()
+        restart()
+        assertEquals(listOf("b", "c", "d", "e"), store.chatOrder.value)
+        assertTrue(store.isRemoved("a"))
+        assertFalse(store.snapshot().any { it.id == "a" })
+    }
+
+    @Test fun orderOnlyWritesStateAndStorageErrorsAreVisible() {
+        store.load()
+        store.upsert(chat("a"))
+        store.upsert(chat("b"))
+        store.awaitDurable()
+        database.writableDatabase.execSQL("CREATE TRIGGER reject_chat_rewrite BEFORE INSERT ON chats BEGIN SELECT RAISE(ABORT, 'unexpected chat rewrite'); END")
+        store.reorderChats(listOf("b", "a"))
+        store.awaitDurable()
+        assertEquals(listOf("b", "a"), store.chatOrder.value)
+        database.writableDatabase.execSQL("CREATE TRIGGER reject_order BEFORE INSERT ON state WHEN NEW.id='chatOrder' BEGIN SELECT RAISE(ABORT, 'test order failure'); END")
+        store.reorderChats(listOf("a", "b"))
+        assertThrows(IllegalStateException::class.java) { store.awaitDurable() }
+        assertNotNull(store.failure.value)
+        assertEquals("[\"b\",\"a\"]", database.readState("chatOrder"))
+    }
+
     @Test fun foregroundIdleAndBackgroundActivitySurviveEncryptedRestart() {
         store.load()
         store.upsert(chat().copy(agentStatus = "idle", backgroundWork = true, scheduledTasks = 2))

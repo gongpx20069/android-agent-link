@@ -104,6 +104,11 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -687,6 +692,7 @@ fun AgentLinkApp(
     var selectedChatId by rememberSaveable { mutableStateOf<String?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
     val pendingDeletions by chatStore.pendingDeletions.collectAsState()
+    val chatOrder by chatStore.chatOrder.collectAsState()
     var deletionDetailsOpen by remember { mutableStateOf(false) }
     var deletionRetryRevision by remember { mutableStateOf(0) }
     var scannerOpen by remember { mutableStateOf(false) }
@@ -2505,7 +2511,12 @@ fun AgentLinkApp(
                         AppTab.Chats -> chatUiStateHolder.SaveableStateProvider("chats") { ChatsScreen(
                             padding = padding,
                             machines = machines,
-                            chats = chats,
+                            chats = chatOrder.withIndex().associate { it.value to it.index }.let { positions ->
+                                chats.sortedBy { positions[it.id] ?: Int.MAX_VALUE }
+                            },
+                            onReorderChats = { ids ->
+                                if (storageError == null) chatStore.reorderChats(ids)
+                            },
                             busyChatIds = busyChatIds.toSet(),
                             unreadChatIds = unreadChatIds.toSet(),
                             selectedChatId = selectedChatId,
@@ -2857,6 +2868,7 @@ internal fun ChatsScreen(
     deletingChatIds: Set<String> = emptySet(),
     approvalToReveal: String? = null,
     onApprovalRevealed: () -> Unit = {},
+    onReorderChats: (List<String>) -> Unit = {},
 ) {
     val strings = LocalAppStrings.current
     val detailStateHolder = rememberSaveableStateHolder()
@@ -2954,7 +2966,12 @@ internal fun ChatsScreen(
         }
     }
 
-    LazyColumn(modifier = Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    val chatListState = rememberLazyListState()
+    val reorder = rememberChatReorderState(chats.map { it.id }, chatListState, onReorderChats)
+    val chatsById = chats.associateBy { it.id }
+    val orderedChats = reorder.ids.mapNotNull(chatsById::get)
+    LazyColumn(state = chatListState, modifier = Modifier.fillMaxSize().padding(padding).reorderChats(reorder),
+        contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             ElevatedCard(colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
                 Column(Modifier.padding(18.dp)) {
@@ -3097,50 +3114,69 @@ internal fun ChatsScreen(
         item {
             SectionHeader(
                 title = strings.chats,
-                subtitle = strings.conversations(chats.size),
+                subtitle = strings.conversations(chats.size) + " · " +
+                    strings.reliability("Hold and drag to reorder", "长按拖动调整顺序"),
             )
         }
         if (chats.isEmpty()) {
             item { EmptyStateCard(strings.noChatsYet, strings.createChatAfterPairing) }
         } else {
-            items(chats, key = { it.id }) { chat ->
+            items(orderedChats, key = { it.id }) { chat ->
                 val machineState = if (chat.id in connectedChatIds) ConnectionState.Online else ConnectionState.Offline
-                SwipeToDeleteItem(onDelete = {
-                    if (chat.id !in deletingChatIds) chatToDelete = chat
-                }) {
-                    ElevatedCard(onClick = { onOpenChat(chat) }, enabled = chat.id !in deletingChatIds, modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp)) {
-                            if (chat.id in deletingChatIds) {
-                                Text(strings.reliability("Deleting from Server...", "正在从 Server 删除…"))
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                ChatStatusDot(isBusy = chat.id in busyChatIds, connectionState = machineState)
-                                Text(
-                                    chat.title,
-                                    modifier = Modifier.weight(1f),
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                if (chat.id in unreadChatIds) {
-                                    Box(
-                                        Modifier
-                                            .size(10.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(0xFFDC2626)),
-                                    )
+                val index = orderedChats.indexOf(chat)
+                val dragging = reorder.draggedId == chat.id
+                Box(Modifier.fillMaxWidth().zIndex(if (dragging) 1f else 0f)
+                    .graphicsLayer {
+                        translationY = reorder.translation(chat.id)
+                        shadowElevation = if (dragging) 8.dp.toPx() else 0f
+                    }
+                    .semantics {
+                        customActions = buildList {
+                            if (index > 0) add(CustomAccessibilityAction(strings.reliability("Move up", "上移")) {
+                                reorder.move(chat.id, -1)
+                            })
+                            if (index < orderedChats.lastIndex) add(CustomAccessibilityAction(strings.reliability("Move down", "下移")) {
+                                reorder.move(chat.id, 1)
+                            })
+                        }
+                    }) {
+                    SwipeToDeleteItem(onDelete = {
+                        if (chat.id !in deletingChatIds) chatToDelete = chat
+                    }, enabled = reorder.draggedId == null) {
+                        ElevatedCard(onClick = { onOpenChat(chat) }, enabled = chat.id !in deletingChatIds, modifier = Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp)) {
+                                if (chat.id in deletingChatIds) {
+                                    Text(strings.reliability("Deleting from Server...", "正在从 Server 删除…"))
                                 }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    ChatStatusDot(isBusy = chat.id in busyChatIds, connectionState = machineState)
+                                    Text(
+                                        chat.title,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    if (chat.id in unreadChatIds) {
+                                        Box(
+                                            Modifier
+                                                .size(10.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFFDC2626)),
+                                        )
+                                    }
+                                }
+                                Text("${chat.agentName} · ${chat.machineName}", maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(chat.workspacePath, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+                                Text(chatActivityLabel(chat, strings), color = MaterialTheme.colorScheme.primary)
+                                val pending = approvals.count { it.chatId == chat.id && it.status.isActionable() }
+                                if (pending > 0) Text(strings.pending(pending), color = MaterialTheme.colorScheme.error)
+                                chat.connectionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                                Text(strings.messages(chat.messages.size), style = MaterialTheme.typography.labelMedium)
                             }
-                            Text("${chat.agentName} · ${chat.machineName}", maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(chat.workspacePath, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
-                            Text(chatActivityLabel(chat, strings), color = MaterialTheme.colorScheme.primary)
-                            val pending = approvals.count { it.chatId == chat.id && it.status.isActionable() }
-                            if (pending > 0) Text(strings.pending(pending), color = MaterialTheme.colorScheme.error)
-                            chat.connectionError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-                            Text(strings.messages(chat.messages.size), style = MaterialTheme.typography.labelMedium)
                         }
                     }
                 }
@@ -4496,7 +4532,7 @@ internal fun MachinesScreen(
 }
 
 @Composable
-private fun SwipeToDeleteItem(onDelete: () -> Unit, content: @Composable () -> Unit) {
+private fun SwipeToDeleteItem(onDelete: () -> Unit, enabled: Boolean = true, content: @Composable () -> Unit) {
     val revealWidth = 104.dp
     val revealWidthPx = with(LocalDensity.current) { revealWidth.toPx() }
     val scope = rememberCoroutineScope()
@@ -4527,6 +4563,7 @@ private fun SwipeToDeleteItem(onDelete: () -> Unit, content: @Composable () -> U
         ) {
             Button(
                 onClick = onDelete,
+                enabled = enabled,
                 modifier = Modifier
                     .width(revealWidth)
                     .padding(horizontal = 8.dp),
@@ -4542,7 +4579,8 @@ private fun SwipeToDeleteItem(onDelete: () -> Unit, content: @Composable () -> U
             modifier = Modifier
                 .fillMaxWidth()
                 .offset { IntOffset(offsetPx.roundToInt(), 0) }
-                .pointerInput(revealWidthPx) {
+                .pointerInput(revealWidthPx, enabled) {
+                    if (!enabled) return@pointerInput
                     detectHorizontalDragGestures(
                         onDragStart = {
                             settleJob?.cancel()

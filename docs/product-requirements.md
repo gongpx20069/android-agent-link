@@ -291,6 +291,10 @@ Chat
 ### Chats
 
 - Show all chats across all machines.
+- Allow long-press drag ordering, edge scrolling and accessible Move up/Move down
+  actions. Save the order on this phone across restarts without status-priority
+  reordering; new chats append. Preserve tap, ordinary scroll and swipe deletion.
+  Dashboard retains its separate status-priority sorting.
 - Persist the ACP session ID behind each chat so app or bridge restarts continue the same agent conversation instead of creating a replacement.
 - Sessions with completed prompt history must remain discoverable through the agent after the shared Chat is deleted.
 - Display chat title, machine, workspace, agent, status, and pending approval count.

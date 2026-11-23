@@ -294,6 +294,15 @@ writer batches changed rows, commits cursor/effects together, and supplies a
 durability barrier before network sends. Activity/service socket ownership remains
 explicit, but both owners use the same cache, write queue and failure state.
 
+Android Chats ordering is a separate `chatOrder` ID list in the existing encrypted
+`state` table, exposed by `ChatStore` as a StateFlow. Compose previews long-press
+reordering and edge scrolling, then stages one write on release through the
+existing IO writer/error surface. It never writes captured Chat objects back.
+Only Chats applies the saved positions: catalog ownership and Dashboard priority
+ordering remain unchanged. Unknown/deleted IDs are removed and new chats append.
+No new dependency, schema version, Server API or cross-device synchronization is
+needed.
+
 The socket reader parses events and reduces tool JSON off main. `ChatEventPump`
 combines only adjacent compatible text/thought deltas or full tool snapshots; it
 keeps controls ordered, bounds queued work, and delivers small main-thread batches.

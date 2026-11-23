@@ -87,6 +87,14 @@ The page keeps the screen awake while visible. Use **Fullscreen** to hide bars,
 and **Exit fullscreen** or Back to return; leaving the page restores normal sleep
 and the previous rotation policy.
 
+## Reorder Android chats
+
+With an updated APK, long-press a card in **Chats**, then drag it up or down.
+Hold near the top/bottom edge to scroll and release to save. TalkBack users can
+use **Move up** / **Move down** actions. Normal scrolling and left-swipe deletion
+are unchanged. The order survives app restarts on this phone; new chats append.
+It does not change Dashboard priorities or the order on Web/other phones.
+
 ## Add instructions while Copilot works
 
 Type an extra instruction and tap **Add**. With the native Copilot backend, text
