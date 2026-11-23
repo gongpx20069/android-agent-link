@@ -70,7 +70,7 @@ Provider naming surfaces were checked against the integration baselines:
 | Kimi Code 2.1.1 | No rename handler in its ACP server | Bridge alias |
 | DeepSeek Harness 0.1.7-rc.2 | No rename handler in its ACP server | Bridge alias |
 | OpenCode 1.18.35 | ACP has list/load/resume but no naming RPC; its HTTP API is separate | Bridge alias |
-| Copilot CLI (SDK 1.0.13 / ACP compatibility) | No supported naming RPC exposed by the integrated transport; a native TUI command is not a protocol API | Bridge alias |
+| Copilot CLI (SDK 2.0.1 / ACP compatibility) | Native naming is not wired into the Bridge adapter | Bridge alias |
 
 Source references: [Qwen official ACP client](https://github.com/QwenLM/qwen-code/blob/v0.24.6/packages/vscode-ide-companion/src/services/acpConnection.ts),
 [Claude pinned adapter](https://github.com/agentclientprotocol/claude-agent-acp/blob/v0.81.2/src/acp-agent.ts),
@@ -286,11 +286,32 @@ turns and phone acceptance remain separate from those protocol checks.
 
 ## Copilot background-task lifecycle
 
-Copilot uses the native SDK transport by default. Upgrade the bridge dependencies
-with its normal `requirements.txt` / interactive installation command before
-starting the updated bridge. The adapter uses the installed `copilot` executable
-and preserves existing session IDs/model selection. Native protocol compatibility
-was verified with Copilot CLI 1.0.86 and Python SDK 1.0.13.
+Copilot uses the native SDK transport by default, pinned to
+`microsoft-copilot-sdk==2.0.1` (protocol v4). The adapter uses the installed
+`copilot` executable in a separate stdio child process and preserves existing
+session IDs/model selection. Handshake, creation, configuration, history and
+restart/resume were verified with Copilot CLI 1.0.114 without a model prompt.
+
+When upgrading an installation that used `github-copilot-sdk`, wait for active
+work to finish and stop the Bridge, then run from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip uninstall -y github-copilot-sdk
+.\.venv\Scripts\python.exe -m pip install --upgrade -e ".\bridge[interactive]"
+.\.venv\Scripts\python.exe -m pip check
+```
+
+Omit `[interactive]` if you do not use the terminal UI. Both SDK distributions
+provide the `copilot` import, so remove the old distribution **before** installing
+the new one; do not keep both. If a package mirror cannot find 2.0.1, synchronize
+it or use `--index-url https://pypi.org/simple` for the install command.
+Restart the Bridge with your original startup arguments afterward.
+
+`SDK supports versions 3-3, but server reports version 4` means the old SDK is
+still loaded. Upgrading `github-copilot-sdk` alone does not migrate the adapter:
+SDK v2 also changes connection/session options and public protocol imports.
+Do not edit protocol constants, silently switch transports, or downgrade the
+machine-wide CLI to bypass the handshake.
 
 An assistant reply such as "waiting for background agents" is not completion.
 The bridge keeps streaming updates/approvals. Root `assistant.idle` releases the

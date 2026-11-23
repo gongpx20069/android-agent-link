@@ -10,7 +10,11 @@ replace a process that still owned background work.
 
 ## Design
 
-Copilot uses its native SDK session event stream (`github-copilot-sdk==1.0.13`).
+Copilot uses its native SDK session event stream (`microsoft-copilot-sdk==2.0.1`,
+protocol v4). The client explicitly spawns the installed CLI over stdio with
+`mode="coding-agent"`; it does not switch to SDK v2's default in-process hosting.
+Session `permissions.on_request` and `events.on_event` preserve the existing
+approval channel and ordered event delivery, including during resume.
 Other agents retain ACP.
 Kimi Code and Qwen Code use negotiated list/load/resume and the same continuous
 reader, session ownership guards and cancellation notification. Closing their
@@ -88,3 +92,11 @@ Regression coverage must include response-before-background-completion, late
 messages/tools/approvals, multiple background tasks, cancellation and failure,
 message deduplication, and the existing queue/history/configuration guards.
 Tests use a deterministic provider double and do not execute paid model prompts.
+Provider doubles validate calls against the installed SDK's actual client/session
+signatures. The real SDK constructor is also exercised so removed options or
+client modes cannot be hidden by permissive mocks. Native CLI 1.0.114 / SDK 2.0.1
+handshake, create/config/history and named-session restart/resume were checked
+without inference; disposable sessions were deleted afterward.
+For upgrades, remove the old `github-copilot-sdk` distribution before installing
+the pinned replacement, then restart deliberately. Both distributions share the
+`copilot` import namespace; a running process still retains already imported code.

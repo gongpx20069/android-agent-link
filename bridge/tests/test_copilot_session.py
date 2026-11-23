@@ -7,7 +7,10 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, create_autospec, patch
+
+from copilot import CopilotClient
+from copilot.session import CopilotSession
 
 from android_acp_bridge.acp_agent import AcpAgentError, AcpAgentManager
 from android_acp_bridge.config import BridgeConfig
@@ -34,7 +37,8 @@ class FakeNative:
         self.session_id = "native-session"
         self.receive = None
         self.sent = threading.Event()
-        self.send = AsyncMock(side_effect=self._send)
+        self.send = create_autospec(CopilotSession, instance=True).send
+        self.send.side_effect = self._send
         self.abort = AsyncMock(side_effect=lambda: self.emit("session.idle", aborted=True))
         self.set_model = AsyncMock()
         self.get_events = AsyncMock(return_value=[])
@@ -60,18 +64,16 @@ class FakeNative:
 class NativeSessionTests(unittest.TestCase):
     def setUp(self):
         self.native = FakeNative()
-        self.client = SimpleNamespace(
-            start=AsyncMock(), stop=AsyncMock(), ping=AsyncMock(),
-            list_models=AsyncMock(return_value=[SimpleNamespace(id="preserved-model", name="Saved model")]),
-            list_sessions=AsyncMock(return_value=[SimpleNamespace(session_id="native-session")]),
-        )
+        self.client = create_autospec(CopilotClient, instance=True)
+        self.client.list_models.return_value = [SimpleNamespace(id="preserved-model", name="Saved model")]
+        self.client.list_sessions.return_value = [SimpleNamespace(session_id="native-session")]
         async def open_session(*args, **kwargs):
-            self.native.receive = kwargs["on_event"]
-            self.permission = kwargs["on_permission_request"]
+            self.native.receive = kwargs["events"]["on_event"]
+            self.permission = kwargs["permissions"]["on_request"]
             return self.native
-        self.client.create_session = AsyncMock(side_effect=open_session)
-        self.client.resume_session = AsyncMock(side_effect=open_session)
-        self.patch_client = patch("copilot.CopilotClient", return_value=self.client)
+        self.client.create_session.side_effect = open_session
+        self.client.resume_session.side_effect = open_session
+        self.patch_client = patch("copilot.CopilotClient", autospec=True, return_value=self.client)
         self.patch_cli = patch("android_acp_bridge.copilot_session.shutil.which", return_value="copilot")
         self.patch_client.start()
         self.patch_cli.start()
@@ -518,6 +520,28 @@ class NativeSessionTests(unittest.TestCase):
         self.assertFalse(kwargs["continue_pending_work"])
         self.assertEqual(self.session.config_option_updates()[0]["update"]["configOptions"][0]["currentValue"], "preserved-model")
 
+    def test_create_and_resume_keep_v2_events_and_approval_callback(self):
+        created = self.client.create_session.call_args.kwargs
+        self.assertEqual(created["working_directory"], str(Path.cwd()))
+        self.assertEqual(created["events"], {
+            "streaming": True, "include_sub_agent_streaming_events": True, "on_event": self.session._receive})
+        self.assertEqual(created["permissions"], {"on_request": self.session._permission})
+        self.session.stop()
+        self.session = CopilotAgentSession.load_for_continue("copilot-cli", str(Path.cwd()), "native-session", True)
+        resumed = self.client.resume_session.call_args.kwargs
+        self.assertEqual(resumed["events"]["on_event"], self.session._receive)
+        self.assertEqual(resumed["permissions"], {"on_request": self.session._permission})
+        self.assertNotIn("model", resumed)
+        self.assertFalse(resumed["continue_pending_work"])
+
+    def test_missing_approval_channel_rejects_with_public_sdk_type(self):
+        from copilot.rpc import PermissionDecisionReject
+
+        request = SimpleNamespace(to_dict=lambda: {"kind": "shell"})
+        decision = self.session._run(self.permission(request, {}))
+        self.assertIsInstance(decision, PermissionDecisionReject)
+        self.assertEqual(decision.to_dict()["kind"], "reject")
+
     def test_same_live_history_does_not_replace_process(self):
         manager = AcpAgentManager(copilot_transport="sdk")
         manager._set_session("chat", self.session)
@@ -594,6 +618,14 @@ class NativeSessionTests(unittest.TestCase):
         self.native.rpc.permissions.set_approve_all.return_value = SimpleNamespace(success=False)
         with self.assertRaisesRegex(AcpAgentError, "did not accept"):
             self.session.set_config_option("allow_all", "true")
+
+    def test_permission_change_uses_v2_public_rpc_request(self):
+        from copilot.rpc import PermissionsSetApproveAllRequest
+
+        self.session.set_config_option("allow_all", "false")
+        request = self.native.rpc.permissions.set_approve_all.call_args.args[0]
+        self.assertIsInstance(request, PermissionsSetApproveAllRequest)
+        self.assertEqual(request.to_dict(), {"enabled": False})
 
     def test_config_refresh_reads_current_native_selection(self):
         self.native.rpc.model.get_current.return_value = SimpleNamespace(model_id="changed")
@@ -903,6 +935,30 @@ class ProjectionTests(unittest.TestCase):
 
 
 class TransportSelectionTests(unittest.TestCase):
+    def test_v2_client_keeps_installed_cli_in_its_own_stdio_process(self):
+        clients = []
+        def capture(**kwargs):
+            client = CopilotClient(**kwargs)
+            clients.append(kwargs)
+            client.start = AsyncMock()
+            client.stop = AsyncMock()
+            return client
+
+        with patch("copilot.CopilotClient", side_effect=capture), \
+                patch("android_acp_bridge.copilot_session.shutil.which", return_value="copilot"):
+            session = CopilotAgentSession(str(Path.cwd()))
+            try:
+                options = clients[0]
+                self.assertEqual(options["mode"], "coding-agent")
+                self.assertEqual(options["observability"], {"log_level": "error"})
+                runtime = options["runtime"]
+                self.assertEqual(runtime.path, "copilot")
+                self.assertEqual(runtime.args, ("--no-auto-update",))
+                self.assertEqual(runtime.working_directory, str(Path.cwd()))
+                session._client.start.assert_awaited_once()
+            finally:
+                session.stop()
+
     def test_production_defaults_to_sdk_and_claude_stays_acp(self):
         from android_acp_bridge.acp_agent import AcpAgentSession
         manager = AcpAgentManager(copilot_transport=BridgeConfig().copilot_transport)

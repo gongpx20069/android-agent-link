@@ -493,11 +493,15 @@ interrupted，不会自动重发。保存范围和恢复限制见 [bridge 指南
 | `ClientSSH ... send window is full` | Dev Tunnels 正等待 SSH 通道接收窗口更新，偶发时通常可自行恢复；若持续刷出且输出停滞，应检查网络以及接收端 App 是否在正常消费数据。单凭这条提示不能判断 agent 执行失败。 |
 | 手机取消配对后，电脑仍等待输入 | 在电脑按 Enter 结束未完成的确认提示，再重试。 |
 | Agent 不可用或启动失败 | 在电脑上安装、登录对应 CLI，并检查其 ACP 命令能否正常运行。 |
+| Copilot 提示 `SDK supports versions 3-3, but server reports version 4` | 更新 Bridge 代码及其固定的 `microsoft-copilot-sdk` 依赖，再重启；仅升级旧 `github-copilot-sdk` 包不够。详见 [SDK 迁移步骤](../bridge/README.md#copilot-background-task-lifecycle)。 |
 
 更新 bridge 时，先停止进程，在仓库目录运行 `git pull --ff-only`，
 重新执行上面的 pip 安装命令，再启动。新功能需要使用匹配的 App 和 bridge 版本。
 旧安装如需保留固定隧道地址，可添加 `--devtunnel-id agentlink`；
 否则重新发现或配对新的电脑隧道。
+
+迁移协议 v4 时，必须先从 Bridge 虚拟环境卸载旧 `github-copilot-sdk`，
+再安装新版 Bridge；新包与旧包都提供 `copilot` 导入路径，不要同时保留。
 
 更多安装和排查方法见 [bridge 指南](../bridge/README.md)。
 反馈问题时，请在 [GitHub Issues](https://github.com/gongpx20069/android-agent-link/issues)

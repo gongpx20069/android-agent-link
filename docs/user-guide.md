@@ -562,11 +562,16 @@ bridge start command. This does not change streaming replies on your phone.
 | `ClientSSH ... send window is full` | Dev Tunnels is waiting for SSH channel flow-control credit. Occasional pauses can recover automatically; sustained warnings plus stalled output warrant checking the network and whether the receiving app is consuming data. This message alone does not mean the agent failed. |
 | Pairing was cancelled but the computer still waits | Press Enter to dismiss its outstanding confirmation prompt before trying again. |
 | Agent is missing or fails to start | Install and sign in to the agent CLI on the computer, and check that its ACP command works there. |
+| Copilot reports `SDK supports versions 3-3, but server reports version 4` | Update the Bridge source and migrate to its pinned `microsoft-copilot-sdk` dependency, then restart. Updating the old `github-copilot-sdk` package alone is insufficient; see the [SDK migration steps](../bridge/README.md#copilot-background-task-lifecycle). |
 
 To update the bridge, stop it, run `git pull --ff-only` in your checkout, repeat the
 pip install command above, and start it again. Use matching app and bridge versions
 for new features. Older installations can retain their fixed tunnel address with
 `--devtunnel-id agentlink`; otherwise rediscover or re-pair the new computer tunnel.
+
+For the SDK v4 migration, uninstall `github-copilot-sdk` from the Bridge's virtual
+environment **before** reinstalling the updated Bridge. The replacement SDK uses
+the same `copilot` import namespace; do not install both distributions together.
 
 For more setup and troubleshooting, see the [bridge guide](../bridge/README.md).
 For bugs, include the app version and the error message in a

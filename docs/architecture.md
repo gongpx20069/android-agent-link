@@ -490,10 +490,19 @@ If Android's `lastEventId` is older than the bridge cache window, the bridge ret
 
 ### Operation Lifecycle
 
-Copilot uses the pinned Python `github-copilot-sdk` dependency and the installed
+Copilot uses the pinned Python `microsoft-copilot-sdk==2.0.1` dependency (protocol v4) and the installed
 CLI's native stdio transport by default. It does not download another CLI or
 change the selected model. `copilot_session.py` projects native events onto the
 existing wire updates; Android, terminal, and Mochi keep the same API.
+The SDK v2 client explicitly selects `RuntimeConnection.for_spawned_stdio`,
+not its default in-process runtime. Process working directory belongs to that
+connection; `mode="coding-agent"` preserves coding-agent defaults. Permissions
+and streaming callbacks use the nested session `permissions` and `events` options;
+protocol types come from the public `copilot.rpc` namespace. Resume retains the
+saved model and uses `continue_pending_work=False`. The package rename does not
+change persisted session IDs or the Bridge journal format. Remove the old
+`github-copilot-sdk` distribution before installing the new one because both own
+the `copilot` Python package.
 The adapter continuously consumes session events on a dedicated thread, while
 permission decisions run outside the SDK event reader. Root `assistant.idle`
 releases only the foreground slot after the user turn starts; `operation.background`

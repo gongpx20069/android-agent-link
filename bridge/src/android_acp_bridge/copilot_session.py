@@ -156,8 +156,9 @@ class CopilotAgentSession(AcpAgentSession):
         if not executable:
             raise AcpAgentError("GitHub Copilot CLI is not installed or not on PATH.")
         self._client = CopilotClient(
-            connection=RuntimeConnection.for_stdio(path=executable, args=["--no-auto-update"]),
-            working_directory=self._workspace, log_level="error", mode="copilot-cli",
+            runtime=RuntimeConnection.for_spawned_stdio(
+                path=executable, args=["--no-auto-update"], working_directory=self._workspace),
+            observability={"log_level": "error"}, mode="coding-agent",
         )
         await self._client.start()
 
@@ -175,8 +176,9 @@ class CopilotAgentSession(AcpAgentSession):
 
     async def _open(self, session_id: str | None = None) -> None:
         options = dict(
-            working_directory=self._workspace, streaming=True, include_sub_agent_streaming_events=True,
-            on_permission_request=self._permission, on_event=self._receive,
+            working_directory=self._workspace,
+            permissions={"on_request": self._permission},
+            events={"streaming": True, "include_sub_agent_streaming_events": True, "on_event": self._receive},
         )
         if session_id is None:
             self._native = await self._client.create_session(**options)
@@ -199,7 +201,7 @@ class CopilotAgentSession(AcpAgentSession):
                 self._condition.notify_all()
 
     async def _permission(self, request: Any, invocation: Any) -> Any:
-        from copilot.generated.rpc import PermissionDecisionApproveOnce, PermissionDecisionReject
+        from copilot.rpc import PermissionDecisionApproveOnce, PermissionDecisionReject
 
         callback = self.permission_callback
         if callback is None:
@@ -510,7 +512,7 @@ class CopilotAgentSession(AcpAgentSession):
     def set_config_option(self, config_id: str, value: str) -> list[dict[str, Any]]:
         self._require_idle()
         async def change() -> None:
-            from copilot.generated.rpc import PermissionsSetApproveAllRequest
+            from copilot.rpc import PermissionsSetApproveAllRequest
             if config_id == "model":
                 await self._native.set_model(value)
             elif config_id == "allow_all" and value in {"true", "false"}:
