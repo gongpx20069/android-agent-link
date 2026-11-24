@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -87,16 +88,19 @@ internal fun ToolActivityItem(item: ChatMessage, source: ImagePromptContext?, ca
                     Text(item.title ?: strings.agentActivity, style = MaterialTheme.typography.labelLarge)
                     Text(item.text, style = MaterialTheme.typography.bodySmall)
                 }
-                Text(if (expanded) strings.hide else strings.details)
+                Text(if (expanded) strings.hide else strings.details, style = MaterialTheme.typography.labelMedium)
             }
             if (expanded) {
                 if (!terminal) Text(strings.reliability(
-                    "Running · snapshot only; refresh to see newer output.", "运行中 · 当前为快照，可手动刷新。"))
-                if (loading) Text(strings.reliability("Loading details...", "正在加载详情…"))
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    "Running · snapshot only; refresh to see newer output.", "运行中 · 当前为快照，可手动刷新。"),
+                    style = MaterialTheme.typography.bodySmall)
+                if (loading) Text(strings.reliability("Loading details...", "正在加载详情…"),
+                    style = MaterialTheme.typography.bodySmall)
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 page?.let { loaded ->
                     SelectionContainer {
                         Text(loaded.text, modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            fontFamily = FontFamily.Monospace,
                             style = MaterialTheme.typography.bodySmall)
                     }
                 }

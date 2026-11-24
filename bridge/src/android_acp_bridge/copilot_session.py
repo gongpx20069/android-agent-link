@@ -512,12 +512,14 @@ class CopilotAgentSession(AcpAgentSession):
     def set_config_option(self, config_id: str, value: str) -> list[dict[str, Any]]:
         self._require_idle()
         async def change() -> None:
-            from copilot.rpc import PermissionsSetApproveAllRequest
+            from copilot import PermissionMode
+            from copilot.rpc import PermissionsSetModeRequest
             if config_id == "model":
                 await self._native.set_model(value)
             elif config_id == "allow_all" and value in {"true", "false"}:
-                result = await self._native.rpc.permissions.set_approve_all(PermissionsSetApproveAllRequest(enabled=value == "true"))
-                if not result.success:
+                mode = PermissionMode.ALLOW_ALL if value == "true" else PermissionMode.MANUAL
+                result = await self._native.rpc.permissions.set_mode(PermissionsSetModeRequest(mode=mode))
+                if not result.success or result.mode != mode:
                     raise AcpAgentError("Copilot did not accept the requested permission setting.")
             else:
                 raise AcpAgentError("Unsupported Copilot configuration option or value.")

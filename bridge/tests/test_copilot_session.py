@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, create_autospec, patch
 
-from copilot import CopilotClient
+from copilot import CopilotClient, PermissionMode
 from copilot.session import CopilotSession
 
 from android_acp_bridge.acp_agent import AcpAgentError, AcpAgentManager
@@ -46,9 +46,13 @@ class FakeNative:
             model=SimpleNamespace(get_current=AsyncMock(return_value=SimpleNamespace(model_id="preserved-model"))),
             permissions=SimpleNamespace(
                 get_mode=AsyncMock(return_value=SimpleNamespace(mode=SimpleNamespace(value="manual"))),
-                set_approve_all=AsyncMock(return_value=SimpleNamespace(success=True)),
+                set_mode=AsyncMock(side_effect=self._set_permission_mode),
             ),
         )
+
+    async def _set_permission_mode(self, request):
+        self.rpc.permissions.get_mode.return_value = SimpleNamespace(mode=request.mode)
+        return SimpleNamespace(success=True, mode=request.mode)
 
     async def _send(self, prompt, attachments=None, mode=None):
         self.emit("user.message", content=prompt)
@@ -615,17 +619,28 @@ class NativeSessionTests(unittest.TestCase):
         self.client.stop.assert_awaited_once()
 
     def test_permission_change_rejection_is_not_success(self):
-        self.native.rpc.permissions.set_approve_all.return_value = SimpleNamespace(success=False)
+        self.native.rpc.permissions.set_mode.side_effect = None
+        self.native.rpc.permissions.set_mode.return_value = SimpleNamespace(success=False, mode=PermissionMode.MANUAL)
         with self.assertRaisesRegex(AcpAgentError, "did not accept"):
             self.session.set_config_option("allow_all", "true")
 
-    def test_permission_change_uses_v2_public_rpc_request(self):
-        from copilot.rpc import PermissionsSetApproveAllRequest
+    def test_permission_change_mode_mismatch_is_not_success(self):
+        self.native.rpc.permissions.set_mode.side_effect = None
+        self.native.rpc.permissions.set_mode.return_value = SimpleNamespace(success=True, mode=PermissionMode.MANUAL)
+        with self.assertRaisesRegex(AcpAgentError, "did not accept"):
+            self.session.set_config_option("allow_all", "true")
 
-        self.session.set_config_option("allow_all", "false")
-        request = self.native.rpc.permissions.set_approve_all.call_args.args[0]
-        self.assertIsInstance(request, PermissionsSetApproveAllRequest)
-        self.assertEqual(request.to_dict(), {"enabled": False})
+    def test_permission_change_sets_authoritative_mode_and_refreshes_selection(self):
+        from copilot.rpc import PermissionsSetModeRequest
+
+        for value, mode in [("true", "allow-all"), ("false", "manual")]:
+            with self.subTest(value=value):
+                updates = self.session.set_config_option("allow_all", value)
+                request = self.native.rpc.permissions.set_mode.call_args.args[0]
+                self.assertIsInstance(request, PermissionsSetModeRequest)
+                self.assertEqual(request.to_dict(), {"mode": mode})
+                option = next(option for option in updates[0]["update"]["configOptions"] if option["id"] == "allow_all")
+                self.assertEqual(option["currentValue"], value)
 
     def test_config_refresh_reads_current_native_selection(self):
         self.native.rpc.model.get_current.return_value = SimpleNamespace(model_id="changed")

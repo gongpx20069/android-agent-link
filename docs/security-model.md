@@ -261,7 +261,10 @@ automatic permission-approval handler. Native permission requests, including
 background requests, use the existing human approval path asynchronously.
 Without an approval callback they are rejected. The existing confirmed
 `allow-all` UI can change the native permission mode; provider-managed policy
-still applies. Resuming history does not automatically continue pending work.
+still applies. The adapter uses `permissions.setMode` and checks both success and
+the authoritative returned mode; a rejected or mismatched mode is an error, not
+a successful permission change. Resuming history does not automatically continue
+pending work.
 
 - Every bridge must require authentication.
 - Use short, revocable tokens for MVP.
