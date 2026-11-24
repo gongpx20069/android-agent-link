@@ -47,6 +47,15 @@ connection responses and request logs. Removing a connection does not revoke the
 credential on the VM; a partially failed pairing may already have consumed the
 link/issued a device grant. Check the target before trying a fresh link.
 
+Tool detail reads require the existing device bearer token (or authenticated Web
+control route) and bind both reference and immutable snapshot to the requested
+chat. They never accept a filesystem path or execute a tool. Bodies remain in the
+owner-private Bridge database with bounded retention; references do not bypass
+authorization. Deleting a shared chat removes its retained tool bodies/snapshots.
+Android caches only explicitly loaded first pages with authenticated encryption in
+no-backup storage; Web keeps a bounded in-memory cache, cleared on logout. Approval
+payloads retain their existing review information and are not reduced to tool titles.
+
 Agent output, names and tool details are rendered as text/DOM nodes, never raw
 HTML. CSP forbids external scripts and embedding; there are no external image
 loads. Browser storage holds only ordering keys and pending operation IDs, not

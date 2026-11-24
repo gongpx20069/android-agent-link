@@ -109,6 +109,9 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
         identity = required_text(payload.get("taskId"), "taskId", 256)
         return {"task": runtime.shared.task_receipt(chat_id, identity),
                 "online": True, "observedAt": int(time.time() * 1000)}
+    if action == "tool.read":
+        return runtime.tool_details.page(chat_id, required_text(payload.get("ref"), "ref", 48),
+                                         payload.get("snapshot"), integer(payload, "cursor", 0, 0, 4 * 1024 * 1024))
     if action == "chat.read":
         # Approval publication takes its own lock before the event lock.
         # Snapshot separately rather than invert that ordering during a read.
@@ -194,11 +197,11 @@ def execute(runtime: BridgeRuntime, payload: dict[str, Any]) -> dict[str, Any]:
                            configId=required_text(payload.get("configId"), "configId", 256),
                            value=required_text(payload.get("value"), "value", 1024))
         responses = runtime.websocket_responses(message)
-        error = next((event.get("update", {}).get("content", {}).get("error")
-                      for event in responses if isinstance(event.get("update", {}).get("content"), dict)
-                      and event["update"].get("status") == "failed"), None)
-        if error:
-            raise ControlError("CONFLICT", str(error))
+        failure = next((event["update"] for event in responses
+                        if isinstance(event.get("update"), dict) and event["update"].get("status") == "failed"), None)
+        if failure is not None:
+            raise ControlError("CONFLICT", str(failure.get("title") or "Configuration request failed.") +
+                               " Open the tool details for more information.")
         return {"chat": runtime.shared.chat(chat_id)}
     raise ControlError("INVALID_ARGS", "Unknown control action.")
 

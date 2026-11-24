@@ -170,7 +170,8 @@ class SharedConfigTests(unittest.TestCase):
             for kind in ("session.refreshConfigOptions", "session.setConfigOption"):
                 responses = runtime.websocket_responses({"type": kind, "chatId": "one", "configId": "model", "value": "x"})
                 self.assertEqual(responses[0]["update"]["status"], "failed")
-                self.assertIn("busy", responses[0]["update"]["content"]["error"])
+                self.assertNotIn("content", responses[0]["update"])
+                self.assertIn("busy", runtime.tool_details.page("one", responses[0]["update"]["detailRef"])["text"])
         finally:
             manager.release.set()
 
@@ -185,6 +186,7 @@ class SharedConfigTests(unittest.TestCase):
                 return super().refresh_config_options(*args, **kwargs)
 
         runtime, _ = self.runtime(Manager())
+        runtime.shared.register({"chatId": "one", "agentId": "copilot-cli", "workspacePath": "D:\\repo"})
         responses = []
         thread = threading.Thread(target=lambda: responses.extend(runtime.websocket_responses(
             {"type": "session.refreshConfigOptions", "chatId": "one"})))
@@ -198,7 +200,7 @@ class SharedConfigTests(unittest.TestCase):
             self.assertIn("error", history[0])
             legacy = runtime.websocket_responses({"type": "session.load", "chatId": "one", "sessionId": "session"})
             self.assertEqual(legacy[0]["update"]["status"], "failed")
-            self.assertIn("busy", legacy[0]["update"]["content"]["error"])
+            self.assertIn("busy", runtime.tool_details.page("one", legacy[0]["update"]["detailRef"])["text"])
         finally:
             release.set()
             thread.join(3)

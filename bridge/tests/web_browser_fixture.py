@@ -72,6 +72,14 @@ def main():
                     fixture.web.sessions.clear()
             elif command in {"images-off", "images-on"}:
                 fixture.local.agent_manager.images_supported = command == "images-on"
+            elif command in {"tool-start", "tool-partial", "tool-finish"}:
+                suffix = {"tool-start": "v1", "tool-partial": "v2", "tool-finish": "final"}[command]
+                fixture.local._record_broadcast("same-id", {"type": "session/update", "update": {
+                    "sessionUpdate": "tool_call" if command == "tool-start" else "tool_call_update",
+                    "toolCallId": "lazy-tool", "title": f"Lazy test tool {suffix}",
+                    "status": "completed" if command == "tool-finish" else "in_progress",
+                    "rawInput": "private-tool-input", "rawOutput": f"snapshot-{suffix}\n" + ("data\n" * 5000),
+                }})
             elif command == "delivery":
                 for event in (
                     {"type": "operation.accepted", "operationId": "original", "content": "Original work", "state": "starting"},

@@ -302,6 +302,11 @@ Chat
 - Support creating a new chat.
 - Support opening an existing chat.
 - Support completed, idle, running, failed, and disconnected states.
+- Tool calls show live title/status but never prefetch large arguments, file/diff
+  bodies or output. Expansion reads a paged snapshot; running tools allow manual
+  refresh and refresh once on completion only if still expanded. Reopening an
+  unchanged cached page does not download it again. Replay/history follow the same
+  summary rule. Detail errors/expiration are explicit and never rerun the tool.
 
 ### New Chat
 

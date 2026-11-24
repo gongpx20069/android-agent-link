@@ -39,11 +39,12 @@ def create_app(runtime: BridgeRuntime) -> FastAPI:
             try:
                 response = await call_next(request)
             except (DeviceTokenStoreError, sqlite3.Error):
-                if not request.url.path.startswith("/attachments"):
+                if not request.url.path.startswith(("/attachments", "/tool-details")):
                     raise
-                runtime.console.message("error", "attachment.storage_failed")
-                response = JSONResponse({"error": "attachment_storage_unavailable"}, status_code=503)
-            if request.url.path.startswith("/attachments"):
+                resource = "tool_details" if request.url.path.startswith("/tool-details") else "attachment"
+                runtime.console.message("error", resource + ".storage_failed")
+                response = JSONResponse({"error": resource + "_storage_unavailable"}, status_code=503)
+            if request.url.path.startswith(("/attachments", "/tool-details")):
                 response.headers["Cache-Control"] = "no-store"
             status = response.status_code
             return response
@@ -72,6 +73,19 @@ def create_app(runtime: BridgeRuntime) -> FastAPI:
     def image_capabilities(request: Request) -> dict[str, Any]:
         try:
             return runtime.image_capabilities(image_auth(request))
+        except ControlError as exc:
+            raise HTTPException(status_code=error_status(exc), detail=str(exc)) from None
+
+    @app.get("/tool-details")
+    def tool_details(request: Request) -> dict[str, Any]:
+        chat_id = image_auth(request)
+        try:
+            try:
+                cursor = int(request.query_params.get("cursor", "0"))
+            except ValueError:
+                raise ControlError("INVALID_ARGS", "Invalid tool detail cursor.") from None
+            return runtime.tool_details.page(chat_id, request.query_params.get("ref", ""),
+                                             request.query_params.get("snapshot"), cursor)
         except ControlError as exc:
             raise HTTPException(status_code=error_status(exc), detail=str(exc)) from None
 

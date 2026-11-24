@@ -287,6 +287,25 @@ and background owners apply it without replacing transcripts or checkpoints.
 
 ### Android streaming and persistence
 
+Tool activity now has a summary plane and an on-demand detail plane. `ToolDetails`
+stores merged ACP replacement snapshots in the existing Bridge SQLite database;
+only bounded summary fields/reference/version enter the chat journal, replay,
+history and Web control responses. The live local terminal observer still sees
+the original tool events. Existing retained journals are projected on startup.
+Tool bodies have a 4 MiB per-record and combined 64 MiB retention budget; metadata
+indexes avoid scanning body blobs for quota checks. Read snapshots are immutable,
+expire after 30 minutes and return JSON text in pages under 32 KiB. Authentication
+and chat/ref ownership checks reuse the existing device/control boundary.
+
+Android and Web fetch only on explicit expansion, page navigation or refresh.
+Running-version changes do not initiate reads; a transition to completed/failed/
+cancelled refreshes only an open card. Closing/navigation/backgrounding cancels
+requests, including Android HTTP body reads. Android caches first pages using
+RecordCipher in an 8 MiB no-backup cache; Web keeps at most 128 pages in memory and
+clears them at logout. Detail reads do not affect event cursors or task state.
+Bridge, App and Web must be updated together; no compatibility negotiation, new
+service, polling loop or generic delta protocol is introduced.
+
 The current single app module uses a shared, ordered `ChatStore` rather than
 serializing the lifetime chat collection for each token. `ChatDatabase` stores
 encrypted message/approval records separately from chat metadata. The single IO

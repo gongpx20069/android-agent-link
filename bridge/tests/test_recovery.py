@@ -315,7 +315,10 @@ class HistoryRecoveryTests(unittest.TestCase):
         activity = next(row for row in older["messages"] if row["kind"] == "activity")
         self.assertEqual(activity["timestampMillis"], 42)
         self.assertEqual(activity["activityId"], "edit-1")
-        self.assertIn('"newText":"new"', activity["details"])
+        self.assertNotIn("newText", activity["details"])
+        ref = json.loads(activity["details"])["detailRef"]
+        detail = json.loads(instance.tool_details.page("chat-a", ref)["text"])
+        self.assertEqual(detail["content"][0]["newText"], "new")
         self.assertTrue(any(row["kind"] == "plan" for row in older["messages"]))
         original_id = activity["historyItemId"]
         activity["details"] = "mutated"

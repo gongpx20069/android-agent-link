@@ -52,7 +52,8 @@ class ContextResumeTests(unittest.TestCase):
         events = list(self.runtime._event_logs["chat"])
         self.assertEqual(events[0], old)
         self.assertTrue(any(event.get("update", {}).get("sessionUpdate") == "config_option_update" for event in events))
-        self.assertTrue(any("previous context" in event.get("update", {}).get("rawOutput", "") for event in events))
+        refs = [event["update"]["detailRef"] for event in events if event.get("update", {}).get("detailRef")]
+        self.assertTrue(any("previous context" in self.runtime.tool_details.page("chat", ref)["text"] for ref in refs))
         self.assertFalse(self.runtime.shared.chat("chat")["historyReplaySupported"])
         live = self.manager._get_session("chat")
         self.assertNotIn("error", self.resume())

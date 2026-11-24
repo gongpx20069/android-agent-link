@@ -346,9 +346,15 @@ The initial Android app supports machine onboarding plus an MVP chat shell:
 - Bottom tabs: Chats, Approvals, Machines, Settings.
 - Chats is the default home screen. Chat status and connection status are separate;
   the last synchronization time and actionable connection errors remain visible.
-- Tool activity preserves ACP content arrays, diffs, locations and raw input/output.
-  Status-only updates no longer erase earlier tool details. Expanded output supports
-  selection and horizontal scrolling.
+- Tool cards receive only title/status and a versioned detail reference, including
+  during background monitoring, replay and history loading. Expanding downloads one
+  snapshot page; running tools do not poll. Refresh is explicit except for one
+  automatic final-version refresh while expanded. Closing the card, leaving the
+  screen or backgrounding cancels detail requests. Text remains selectable.
+- Detail pagination uses an immutable snapshot, replacing the displayed page rather
+  than accumulating unbounded output. First pages use an 8 MiB encrypted cache in
+  no-backup storage, expiring after seven days. Errors remain visible and retryable.
+  Update Bridge and App together; there is no old-client protocol compatibility.
 - In-app QR scanning with CameraX and ML Kit Barcode Scanning.
 - `acpclient://pair?data=...` deep-link handling.
 - Manual pairing-link paste fallback.

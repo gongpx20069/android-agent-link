@@ -710,8 +710,12 @@ class NativeSessionTests(unittest.TestCase):
         self.assertFalse(any(e["type"] == "operation.done" for e in emitted))
         self.native.emit("tool.execution_partial_result", toolCallId="old-tool", partialOutput="late")
         self.native.emit("assistant.message", messageId="answer-2", content="Second answer")
-        wait_until(lambda: any(e.get("update", {}).get("rawOutput") == "late" for e in emitted))
-        late = next(e for e in emitted if e.get("update", {}).get("rawOutput") == "late")
+        wait_until(lambda: any(e.get("update", {}).get("toolCallId") == "old-tool"
+                              and e["update"].get("detailVersion", 0) >= 2 for e in emitted))
+        late = next(e for e in emitted if e.get("update", {}).get("toolCallId") == "old-tool"
+                    and e["update"].get("detailVersion", 0) >= 2)
+        self.assertNotIn("rawOutput", late["update"])
+        self.assertIn('"rawOutput": "late"', runtime.tool_details.page("chat", late["update"]["detailRef"])["text"])
         self.assertEqual(late["operationId"], "first")
         self.native.emit("assistant.idle")
         wait_until(lambda: runtime._chat_status["chat"] == "idle")

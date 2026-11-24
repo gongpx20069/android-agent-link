@@ -2347,7 +2347,7 @@ fun AgentLinkApp(
                         }
                         items(page.messages, key = { it.localId }, contentType = { it.kind }) { item ->
                             Column {
-                                if (item.image == null || item.text.isNotBlank()) ChatTimelineItem(item)
+                                if (item.image == null || item.text.isNotBlank()) ChatTimelineItem(item, imageSource)
                                 item.image?.let { AttachmentPreview(it, imageSource) }
                             }
                         }
@@ -3385,7 +3385,7 @@ internal fun ChatDetailScreen(
                 }
                 items(visibleMessages, key = { it.localId }, contentType = { it.kind }) { item ->
                     Column {
-                        if (item.image == null || item.text.isNotBlank()) ChatTimelineItem(item)
+                        if (item.image == null || item.text.isNotBlank()) ChatTimelineItem(item, imageContext)
                         item.image?.let { AttachmentPreview(it, imageContext) }
                     }
                 }
@@ -3770,11 +3770,15 @@ private fun CopyTextButton(text: String, label: String) {
 }
 
 @Composable
-internal fun ChatTimelineItem(item: ChatMessage) {
+internal fun ChatTimelineItem(item: ChatMessage, toolSource: ImagePromptContext? = null) {
     if (item.kind == ChatMessageKind.CommandUpdate || item.kind == ChatMessageKind.ConfigUpdate) {
         return
     }
     if (item.kind == ChatMessageKind.Activity) {
+        if (com.gongpx.androidacpclient.data.model.parseToolCallDetails(item.details)?.has("detailRef") == true) {
+            ToolActivityItem(item, toolSource)
+            return
+        }
         AgentActivityItem(item)
         return
     }

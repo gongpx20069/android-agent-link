@@ -137,15 +137,36 @@ byId("machines-dialog").close(); chat("local").click();
 '@
     Wait-Js '!document.getElementById("composer").disabled'
     $null = Eval @'
-window.originalFetch=window.fetch;window.uploads=0;window.sends=0;
+window.originalFetch=window.fetch;window.uploads=0;window.sends=0;window.toolReads=0;
 window.fetch=async(...args)=>{if(String(args[0]).startsWith("/api/attachments?")&&args[1]?.method==="POST")uploads++;
+if(args[0]==="/api/control"&&JSON.parse(args[1]?.body||"{}").request?.action==="tool.read")toolReads++;
 if(args[0]==="/api/control"&&JSON.parse(args[1]?.body||"{}").request?.action==="chat.send")sends++;return originalFetch(...args)};
 window.pasteImage=async()=>{const canvas=document.createElement("canvas");canvas.width=8;canvas.height=8;
 const blob=await new Promise(resolve=>canvas.toBlob(resolve,"image/png"));window.imageFile=new File([blob],"paste.png",{type:"image/png"});
 const data=new DataTransfer();data.items.add(imageFile);byId("composer").dispatchEvent(new ClipboardEvent("paste",{clipboardData:data,bubbles:true,cancelable:true}))};
 window.chooseImage=()=>{const data=new DataTransfer();data.items.add(imageFile);byId("image-file").files=data.files;byId("image-file").dispatchEvent(new Event("change"))};
-pasteImage();
 '@
+    Fixture-Command 'tool-start'
+    Wait-Js 'document.getElementById("timeline").textContent.includes("Lazy test tool v1")'
+    $null = Eval @'
+window.lazyTool=()=>[...byId("timeline").querySelectorAll("details")].find(node=>node.querySelector("summary").textContent.includes("Lazy test tool"));
+check(toolReads===0&&!byId("timeline").textContent.includes("private-tool-input"),"Collapsed tool sends no body");
+lazyTool().querySelector("summary").click();
+'@
+    Wait-Js 'document.getElementById("timeline").textContent.includes("snapshot-v1")'
+    $null = Eval 'check(toolReads===1,"Expansion reads exactly one snapshot")'
+    Fixture-Command 'tool-partial'
+    Wait-Js 'document.getElementById("timeline").textContent.includes("Lazy test tool v2")'
+    $null = Eval 'check(toolReads===1&&byId("timeline").textContent.includes("snapshot-v1"),"Running updates do not poll or replace snapshot")'
+    Fixture-Command 'tool-finish'
+    Wait-Js 'document.getElementById("timeline").textContent.includes("snapshot-final")'
+    $null = Eval 'check(toolReads===2,"Completion refreshes expanded tool once");lazyTool().querySelector("summary").click()'
+    Wait-Js '!window.lazyTool().open'
+    $null = Eval 'lazyTool().querySelector("summary").click()'
+    Wait-Js 'window.lazyTool().open && document.getElementById("timeline").textContent.includes("snapshot-final")'
+    $null = Eval 'check(toolReads===2,"Reopening unchanged tool uses cache");[...lazyTool().querySelectorAll("button")].find(node=>node.textContent==="下一页").click()'
+    Wait-Js 'window.toolReads===3 && !window.lazyTool().textContent.includes("正在加载详情")'
+    $null = Eval 'check(!lazyTool().textContent.includes("snapshot-final"),"Next page replaces rather than duplicates snapshot text");lazyTool().querySelector("summary").click();pasteImage()'
     Wait-Js '!document.getElementById("image-draft").hidden && !document.getElementById("send").disabled'
     $null = Eval 'check(uploads===0&&sends===0,"Pasting does not upload or send");chat(vm).click();check(byId("image-draft").hidden,"Image draft isolated by machine");chat("local").click();check(!byId("image-draft").hidden,"Image draft survives switching");byId("remove-image").click();check(byId("image-draft").hidden&&byId("send").disabled,"Image-only draft removal disables send")'
     $null = Invoke-Cdp 'Page.setInterceptFileChooserDialog' @{enabled=$true}

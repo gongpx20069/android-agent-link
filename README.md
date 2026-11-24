@@ -18,6 +18,11 @@
 
 Multiple agents, projects and computers — connected through Android, a lightweight Web workspace, and an optional terminal.
 
+**Upcoming coordinated App/Bridge update:** tool cards transfer only title/status
+until expanded, with paged snapshots instead of continuous full-output downloads.
+See [on-demand details](docs/user-guide.md#load-tool-details-only-when-needed).
+This protocol change requires updating both ends; it is not in APK 0.0.50.
+
 **Android image input (0.0.39+):** attach one screenshot/photo with optional text, preview
 it and send it to an image-capable agent/model. Requires updated App **and** Bridge;
 see [image input](docs/user-guide.md#send-an-image) for limits.

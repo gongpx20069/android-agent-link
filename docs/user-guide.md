@@ -95,6 +95,16 @@ use **Move up** / **Move down** actions. Normal scrolling and left-swipe deletio
 are unchanged. The order survives app restarts on this phone; new chats append.
 It does not change Dashboard priorities or the order on Web/other phones.
 
+## Load tool details only when needed
+
+With the updated Bridge, Android app and Web, tool cards initially download only
+their title/status. Expand **Details** to read a snapshot; **Next page** loads more.
+Running tools show a snapshot, not live output: use **Refresh** for progress.
+Completion refreshes once only while the card remains expanded. Closing the card,
+switching chats or backgrounding stops detail requests. Cached unchanged pages can
+be reopened without downloading again. Expired details show an error; refreshing
+never reruns the tool. Update all components together; this is not in APK 0.0.50.
+
 ## Add instructions while Copilot works
 
 Type an extra instruction and tap **Add**. With the native Copilot backend, text

@@ -174,6 +174,9 @@ class SharedState:
                 self.db.execute(f"DELETE FROM {table} WHERE chat=?", (identity,))
             if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='images'").fetchone():
                 self.db.execute("DELETE FROM images WHERE chat=?", (identity,))
+            for table in ("tool_details", "tool_snapshots"):
+                if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                    self.db.execute(f"DELETE FROM {table} WHERE chat=?", (identity,))
             self._active_receipts.pop(identity, None)
 
     def bind_session(self, identity: str, session: str) -> None:

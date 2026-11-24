@@ -193,6 +193,8 @@ class BridgeRuntime:
         self._history_loading_chats: set[str] = set()
         self._configuring_chats: set[str] = set()
         self.shared = SharedState(config.shared_state_store)
+        from .tool_details import ToolDetails
+        self.tool_details = ToolDetails(self.shared)
         self.attachments = AttachmentStore(self.shared)
         self._event_generation = self.shared.generation
         for workspace in config.workspaces:
@@ -304,7 +306,9 @@ class BridgeRuntime:
                 return [error, {"type": "bridge.done", "chatId": chat_id}]
             self._chat_requests[chat_id] = self._chat_requests.get(chat_id, 0) + 1
         try:
-            return self._websocket_responses(payload, emit)
+            responses = self._websocket_responses(payload, emit)
+            scope = self.tool_details.scope(chat_id)
+            return [self.tool_details.capture(chat_id, response, scope) for response in responses]
         finally:
             with self._prompt_lock:
                 self._chat_requests[chat_id] -= 1
@@ -1210,7 +1214,19 @@ class BridgeRuntime:
                     self._history_loading_chats.discard(chat_id)
         for update in updates:
             update.setdefault("chatId", chat_id)
-        return [self.attachments.project_update(chat_id, update) for update in updates] + [{"type": "bridge.done", "chatId": chat_id}]
+        return self._project_tool_history(chat_id, updates) + [{"type": "bridge.done", "chatId": chat_id}]
+
+    def _project_tool_history(self, chat_id: str, updates: list[Any]) -> list[Any]:
+        scope = "history:" + secrets.token_hex(16)
+        projected = [self.tool_details.capture(chat_id, self.attachments.project_update(chat_id, update), scope)
+                     if isinstance(update, dict) else update for update in updates]
+        latest = {event["update"]["detailRef"]: event["update"] for event in projected
+                  if isinstance(event, dict) and self.tool_details.is_tool(event) and event["update"].get("detailRef")}
+        # Every historical occurrence points to the final retained tool snapshot.
+        return [{**event, "update": {**latest[event["update"]["detailRef"]],
+                                    "sessionUpdate": event["update"]["sessionUpdate"]}}
+                if isinstance(event, dict) and self.tool_details.is_tool(event) and event["update"].get("detailRef") else event
+                for event in projected]
 
     def _session_load_recent_response(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         chat_id = _string_or_default(payload.get("chatId"), "unknown-chat")
@@ -1239,7 +1255,7 @@ class BridgeRuntime:
             result = self.agent_manager.load_recent_session(chat_id, agent_id, workspace_path, session_id, limit)
             updates = result.get("updates", [])
             if isinstance(updates, list):
-                updates = [self.attachments.project_update(chat_id, update) if isinstance(update, dict) else update for update in updates]
+                updates = self._project_tool_history(chat_id, updates)
             if result.get("truncated"):
                 raise AcpAgentError("Session history replay was incomplete; no history snapshot was created.")
             page = self._history.create(
@@ -1604,15 +1620,17 @@ class BridgeRuntime:
                                     titleGeneration=self.shared.generation)
             if enriched.get("type") == "chat.status":
                 self._chat_status[chat_id] = _string_or_default(enriched.get("status"), "idle")
+            full_event = enriched
+            enriched = self.tool_details.capture(chat_id, enriched, self.tool_details.scope(chat_id))
             self.shared.append(chat_id, enriched)
             self._next_event_ids[chat_id] = event_id + 1
             log = self._event_logs.setdefault(chat_id, [])
             log.append(enriched)
             if len(log) > CHAT_EVENT_LOG_LIMIT:
                 del log[: len(log) - CHAT_EVENT_LOG_LIMIT]
-            self.console.observe(enriched, log_operation_id)
+            self.console.observe(full_event, log_operation_id)
             if self.local_client is not None:
-                self.local_client.observe_event(enriched)
+                self.local_client.observe_event(full_event)
             return enriched
 
     def _record_broadcast(self, chat_id: str, event: dict[str, Any], exclude=None) -> dict[str, Any]:

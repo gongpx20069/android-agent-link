@@ -100,6 +100,23 @@ class WebGatewayTests(unittest.TestCase):
         self.assertEqual(status, 200, result)
         return result
 
+    def test_lazy_tool_details_route_to_correct_computer_without_journal_body(self):
+        self.connect_remote()
+        for runtime, text in ((self.local, "local-private"), (self.remote, "remote-private")):
+            runtime._record_broadcast("same-id", {"type": "session/update", "update": {
+                "sessionUpdate": "tool_call", "toolCallId": "shared-tool-id", "title": "Read",
+                "rawOutput": text, "status": "completed",
+            }})
+        refs = {}
+        for machine, text in (("local", "local-private"), ("vm", "remote-private")):
+            journal = self.control(machine, "chat.read", chatId="same-id")["data"]
+            self.assertNotIn("-private", json.dumps(journal))
+            refs[machine] = next(event["update"]["detailRef"] for event in journal["events"] if event.get("update"))
+            detail = self.control(machine, "tool.read", chatId="same-id", ref=refs[machine])
+            self.assertIn(text, detail["data"]["text"])
+        mismatch = self.control("vm", "tool.read", chatId="same-id", ref=refs["local"])
+        self.assertEqual(mismatch["status"], "error")
+
     def test_loopback_auth_origin_host_logout_and_static_assets(self):
         self.assertEqual(self.web.server_address[0], "127.0.0.1")
         self.assertEqual(self.request("/api/machines")[0], 401)

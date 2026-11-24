@@ -17,6 +17,17 @@
   const label = value => statuses[value] || value || "未确认";
   const machines = new Map(), chats = new Map(), histories = new Map(), drafts = new Map();
   const imageDrafts = new Map(), imageChecks = new Map();
+  const toolPages = new Map();
+  const toolDone = record => ["completed", "failed", "cancelled"].includes(record.data.status);
+  const toolState = record => record.detail ||= {open: false, page: null, loading: false, error: "", controller: null};
+  function closeTools() {
+    if (!selected) return;
+    for (const record of history(selected).records.filter(row => row.kind === "tool")) {
+      const detail = toolState(record);
+      detail.open = false; detail.controller?.abort(); detail.controller = null; detail.loading = false;
+    }
+    selectedTool = null;
+  }
   const maxImageBytes = 5 * 1024 * 1024, imageTypes = ["image/png", "image/jpeg"];
   let pickerChat = null;
   let selected = null, signedIn = false, catalogBusy = false, reading = false, dragKey = null;
@@ -47,13 +58,17 @@
   }
   function loginNeeded() {
     if (signedIn && selected) $("login-error").textContent = "登录已过期，请重新输入本机 Server 的访问码。未确认的发送不会自动重试。";
+    closeTools();
     signedIn = false;
     clearTimeout(catalogTimer); clearTimeout(journalTimer);
     renderHeader(); renderDetails();
     if (!$("login-dialog").open) $("login-dialog").showModal();
   }
-  async function api(path, body) {
+  async function api(path, body, signal) {
     const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal?.addEventListener("abort", abort);
+    if (signal?.aborted) controller.abort();
     const timer = setTimeout(() => controller.abort(), path.endsWith("/pair") ? 70000 : 30000);
     try {
       const response = await fetch(path, {method: body === undefined ? "GET" : "POST",
@@ -66,10 +81,10 @@
         throw Object.assign(new Error(result.error || `HTTP ${response.status}`), {status: response.status, code: result.code});
       }
       return result;
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); signal?.removeEventListener("abort", abort); }
   }
-  async function control(machineId, action, args = {}) {
-    const result = await api("/api/control", {machineId, request: {action, ...args}});
+  async function control(machineId, action, args = {}, signal) {
+    const result = await api("/api/control", {machineId, request: {action, ...args}}, signal);
     if (result.status !== "ok") {
       const failure = new Error(result.message || "Server 没有确认操作成功");
       failure.code = result.code;
@@ -294,6 +309,7 @@
   }
   function select(key) {
     if (selected) drafts.set(selected, $("composer").value);
+    closeTools();
     selected = key; selectedTool = null; detailSignature = "";
     $("composer").value = drafts.get(key) || "";
     renderImage();
@@ -441,7 +457,7 @@
     }
     return box;
   }
-  function fold(state, event) {
+  function fold(state, event, chat) {
     if (event.truncated) state.notice = event.notice || "某条 Server 事件过长，详情不完整。";
     if (event.type === "operation.accepted") {
       if (!state.records.some(row => row.kind === "user" && row.id === event.operationId))
@@ -463,7 +479,9 @@
           record = {kind: "tool", id: update.toolCallId, data: {}, timestamp: event.timestamp};
           state.records.push(record);
         }
+        const wasDone = toolDone(record);
         record.data = {...record.data, ...update};
+        if (!wasDone && toolDone(record) && toolState(record).open) loadTool(record, chat, true);
       }
     } else if (event.type === "approval.resolved") {
       state.records.push({kind: "notice", text: `审批结果：${event.status}${event.optionId ? " · " + event.optionId : ""}`});
@@ -471,7 +489,12 @@
       state.records.push({kind: "notice", text: event.error || "任务失败，请查看工具详情。"});
     }
     if (state.records.length > 1000) {
-      state.records.splice(0, state.records.length - 1000);
+      for (const removed of state.records.splice(0, state.records.length - 1000)) {
+        if (removed.detail) {
+          removed.detail.open = false; removed.detail.controller?.abort(); removed.detail.controller = null;
+        }
+        if (selectedTool === removed) selectedTool = null;
+      }
       state.notice = "页面只保留最近 1000 个消息/工具块；更早记录可能仍在 Server 日志中。";
     }
     const tail = state.records.at(-1);
@@ -481,20 +504,85 @@
     }
     state.version++;
   }
+  async function loadTool(record, chat, refresh = false, next = false) {
+    const detail = toolState(record);
+    if (!detail.open || !chat) return;
+    if (detail.loading && !refresh) return;
+    detail.controller?.abort();
+    const controller = new AbortController();
+    detail.controller = controller;
+    const previous = toolPages.get(detail.page);
+    const cursor = next ? previous?.next : 0;
+    const cacheKey = JSON.stringify([chat.key, record.data.detailRef, record.data.detailVersion, cursor]);
+    if (!refresh && toolPages.has(cacheKey)) {
+      detail.page = cacheKey; detail.loading = false; detail.error = "";
+      history(chat.key).version++; renderTimeline(); return;
+    }
+    detail.loading = true; detail.error = "";
+    history(chat.key).version++; renderTimeline();
+    try {
+      if (!record.data.detailRef) throw new Error("该工具没有可用的详情引用，请更新 Server 或重新加载历史。");
+      if (next && (!previous || cursor == null)) throw new Error("快照缓存已清理，请刷新。");
+      const page = await control(chat.machineId, "tool.read", {chatId: chat.chatId, ref: record.data.detailRef,
+        ...(next ? {snapshot: previous.snapshot, cursor} : {})}, controller.signal);
+      if (controller.signal.aborted || selected !== chat.key || !detail.open) return;
+      if (page.ref !== record.data.detailRef || page.offset !== cursor || typeof page.text !== "string" ||
+          page.text.length > 8192 || !Number.isInteger(page.version) || page.version < 1 ||
+          !/^[a-f0-9]{48}$/.test(page.snapshot) || (next && page.snapshot !== previous.snapshot))
+        throw new Error("Server 返回的工具详情快照无效。");
+      const key = JSON.stringify([chat.key, page.ref, page.version, page.offset]);
+      toolPages.delete(key); toolPages.set(key, page);
+      while (toolPages.size > 128) toolPages.delete(toolPages.keys().next().value);
+      detail.page = key;
+    } catch (failure) {
+      if (!controller.signal.aborted) detail.error = failure.message;
+    } finally {
+      if (detail.controller === controller) {
+        detail.loading = false; detail.controller = null;
+        history(chat.key).version++;
+        if (selected === chat.key) { renderTimeline(); detailSignature = ""; renderDetails(); }
+      }
+    }
+  }
+  function toolBody(record, chat) {
+    const detail = toolState(record), body = make("div"), page = toolPages.get(detail.page);
+    if (!toolDone(record)) body.append(make("p", "运行中 · 当前为快照，可手动刷新。", "muted"));
+    if (detail.loading) body.append(make("p", "正在加载详情…"));
+    if (detail.error) body.append(make("p", detail.error, "error-text"));
+    if (page) body.append(make("pre", page.text, "detail-code"));
+    else if (detail.page) body.append(make("p", "快照缓存已清理，请刷新。", "muted"));
+    const refresh = button("刷新详情", () => loadTool(record, chat, true));
+    refresh.disabled = detail.loading;
+    body.append(refresh);
+    if (page?.next != null) {
+      const more = button("下一页", () => loadTool(record, chat, false, true));
+      more.disabled = detail.loading; body.append(more);
+    }
+    return body;
+  }
   function renderTimeline() {
     if (!selected) return;
     const state = history(selected);
     if (state.rendered === state.version) return;
     const timeline = $("timeline"), pinned = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 90;
     const oldScroll = timeline.scrollTop;
-    const openTools = new Set([...timeline.querySelectorAll("details[open]")].map(node => node.dataset.record));
     const nodes = state.records.map((record, index) => {
       if (record.kind === "tool") {
+        const detail = toolState(record), chat = snapshot();
         const node = make("details", undefined, "tool");
-        node.dataset.record = String(index); node.open = openTools.has(String(index));
+        node.dataset.record = String(index); node.open = detail.open;
         node.append(make("summary", `${record.data.title || record.data.toolCallId || "工具"} · ${label(record.data.status)}`),
-          make("pre", JSON.stringify(record.data, null, 2), "detail-code"),
+          toolBody(record, chat),
           button("在右侧查看", () => { selectedTool = record; detailSignature = ""; openDetails(); renderDetails(); }));
+        node.addEventListener("toggle", () => {
+          if (!node.isConnected || node.open === detail.open) return;
+          detail.open = node.open;
+          if (detail.open) loadTool(record, chat);
+          else {
+            detail.controller?.abort(); detail.controller = null; detail.loading = false;
+            if (selectedTool === record) { selectedTool = null; detailSignature = ""; renderDetails(); }
+          }
+        });
         return node;
       }
       if (record.kind === "notice") return make("div", record.text, "notice");
@@ -527,6 +615,7 @@
       const result = await control(chat.machineId, "chat.read", {chatId: chat.chatId, afterEventId: state.cursor, limit: 100});
       if (!signedIn || !machines.has(chat.machineId)) return;
       if (state.generation && state.generation !== result.eventGeneration) {
+        if (selected === chat.key) closeTools();
         state.cursor = 0; state.records = []; state.version++;
         state.generation = result.eventGeneration;
         state.notice = "Server 事件代际已变化，正在重新载入保留记录；不会自动重发任务。";
@@ -535,7 +624,7 @@
         state.generation = result.eventGeneration;
         if (result.truncated && !state.notice.includes("仅保留部分共享历史"))
           state.notice = [state.notice, "Server 仅保留部分共享历史，较早记录不在此页面中。"].filter(Boolean).join("\n");
-        for (const event of result.events) if (event.eventId > state.cursor) fold(state, event);
+        for (const event of result.events) if (event.eventId > state.cursor) fold(state, event, chat);
         state.cursor = result.nextEventId; more = result.hasMore;
       }
       if (JSON.stringify(state.tasks) !== JSON.stringify(result.tasks)) state.version++;
@@ -633,7 +722,7 @@
     }
     if (!state?.approvals.length) target.append(make("p", online ? "没有待审批事项" : "状态尚未确认；缓存不能作为审批依据。", "muted"));
     if (selectedTool) target.append(make("h3", selectedTool.data.title || "工具详情"),
-      make("pre", JSON.stringify(selectedTool.data, null, 2), "detail-code"));
+      toolBody(selectedTool, chat));
   }
   async function decide(chat, approval, decision) {
     if (Date.now() >= approval.expiresAt) throw new Error("该审批已过期，请刷新。");
@@ -730,6 +819,7 @@
   });
   $("logout").addEventListener("click", guarded(async () => {
     await api("/api/logout", {}); catalogVersion++; signedIn = false;
+    closeTools(); toolPages.clear();
     chats.clear(); histories.clear(); drafts.clear(); machines.clear(); selected = null;
     for (const key of imageDrafts.keys()) removeImage(key);
     imageChecks.clear(); pickerChat = null; $("image-file").value = ""; renderImage();
@@ -849,7 +939,11 @@
   $("machine-filter").addEventListener("change", renderList); $("search").addEventListener("input", renderList);
   document.addEventListener("keydown", event => { if ((event.ctrlKey || event.metaKey) && event.key === "k") { event.preventDefault(); $("search").focus(); } });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { renderDetails(); return; }
+    if (document.hidden) {
+      closeTools();
+      if (selected) { history(selected).version++; renderTimeline(); }
+      renderDetails(); return;
+    }
     if (selected) { history(selected).online = false; renderHeader(); detailSignature = ""; renderDetails(); }
     refreshCatalog(); pollJournal();
   });

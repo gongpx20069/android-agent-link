@@ -448,6 +448,25 @@ Bridge-to-Android chat events must include:
 
 ### Attach Chat Channel
 
+Tool calls use mandatory lazy details (update Bridge, Android and Web together).
+`tool_call` / `tool_call_update` contain title, status, toolCallId, optional kind/
+parentToolCallId, `detailRef`, `detailVersion`, and `detailAvailable`, never raw
+input/output, content or locations. This also applies to replay and history pages.
+Event IDs retain their existing meaning; detail reads never advance a checkpoint.
+`detailsTruncated` explicitly marks incomplete retained data.
+
+Authenticated `GET /tool-details?chatId=...&ref=...` returns `{ref, snapshot,
+version, offset, text, next, complete}`. `text` is one page of a formatted JSON
+snapshot; subsequent pages supply `snapshot` and `cursor=next`. The immutable
+snapshot prevents mixing output versions. Each page has at most 2048 characters
+(under 32 KiB on the JSON wire). `tool.read` on `/control` exposes the same fields
+for the loopback Web gateway. Reads never execute a tool. Missing/expired details
+return an explicit error. Snapshots expire after 30 minutes; retained tool state
+after seven days, subject to a combined 64 MiB quota and 4 MiB per-tool limit.
+Only expansion fetches details. Running tools allow manual refresh, not polling;
+completion triggers one refresh only while expanded. Approval payloads and normal
+chat/operation events are not reduced.
+
 Android opens or reconnects a persistent chat WebSocket by sending:
 
 ```json

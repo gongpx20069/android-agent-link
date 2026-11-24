@@ -3,6 +3,7 @@ package com.gongpx.androidacpclient.data.bridge
 import android.os.Handler
 import android.os.Looper
 import com.gongpx.androidacpclient.data.model.Agent
+import com.gongpx.androidacpclient.data.model.ToolDetailPage
 import com.gongpx.androidacpclient.data.model.ImageAttachment
 import com.gongpx.androidacpclient.data.store.ImageStore
 import com.gongpx.androidacpclient.data.model.AgentSessionInfo
@@ -127,6 +128,52 @@ class BridgeClient(
             }
         })
     }
+
+    suspend fun toolDetails(machine: Machine, chatId: String, ref: String, snapshot: String? = null, cursor: Int = 0): ToolDetailPage =
+        withContext(Dispatchers.IO) {
+            val url = (toHttpBase(machine.endpoint) + "/tool-details").toHttpUrl().newBuilder()
+                .addQueryParameter("chatId", chatId).addQueryParameter("ref", ref)
+                .addQueryParameter("cursor", cursor.toString()).apply {
+                    if (snapshot != null) addQueryParameter("snapshot", snapshot)
+                }.build()
+            val request = Request.Builder().url(url).apply {
+                machine.connectionHeaders.forEach { (key, value) -> header(key, value) }
+                header("Authorization", "Bearer ${machine.deviceToken}")
+            }.build()
+            suspendCancellableCoroutine { continuation ->
+                val call = imageHttpClient.newCall(request)
+                continuation.invokeOnCancellation { call.cancel() }
+                call.enqueue(object : okhttp3.Callback {
+                    override fun onFailure(call: okhttp3.Call, error: IOException) {
+                        if (continuation.isActive) continuation.resumeWith(Result.failure(error))
+                    }
+                    override fun onResponse(call: okhttp3.Call, response: Response) {
+                        try {
+                            val page = response.use {
+                                if (!it.isSuccessful) throw IOException(when (it.code) {
+                                    404 -> "Tool details expired or are unavailable. Refresh or check the computer."
+                                    401, 403 -> "Tool detail access denied. Check the machine connection and sign-in."
+                                    else -> "Tool detail request failed (HTTP ${it.code})."
+                                })
+                                val body = it.body ?: throw IOException("Empty tool detail response.")
+                                val raw = body.byteStream().use { input -> ImageStore.readBounded(input, 32768) }
+                                ToolDetailPage.parse(JSONObject(raw.toString(Charsets.UTF_8))).also { page ->
+                                    if (page.ref != ref || page.offset != cursor || (snapshot != null && page.snapshot != snapshot))
+                                        throw IOException("Tool detail response does not match the requested snapshot.")
+                                }
+                            }
+                            if (continuation.isActive) continuation.resume(page)
+                        } catch (error: IOException) {
+                            onFailure(call, error)
+                        } catch (error: org.json.JSONException) {
+                            onFailure(call, IOException("Invalid tool detail response.", error))
+                        } catch (error: IllegalArgumentException) {
+                            onFailure(call, IOException("Tool detail response exceeds the page limit.", error))
+                        }
+                    }
+                })
+            }
+        }
 
     suspend fun uploadImage(machine: Machine, chatId: String, image: ImageAttachment, bytes: ByteArray): ImageAttachment =
         withContext(Dispatchers.IO) {

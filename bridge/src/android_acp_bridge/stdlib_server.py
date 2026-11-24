@@ -34,6 +34,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/tool-details":
+            self._tool_detail_request(parsed)
+            return
         if parsed.path in {"/attachments", "/attachments/capabilities"}:
             self._attachment_request(parsed)
             return
@@ -52,6 +55,27 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+
+    def _tool_detail_request(self, parsed) -> None:
+        runtime = self.server.runtime
+        try:
+            authorization = self.headers.get("Authorization", "")
+            if not authorization.startswith("Bearer ") or not runtime.is_device_token_valid(authorization[7:]):
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                return
+            query = parse_qs(parsed.query)
+            value = lambda key, default=None: query.get(key, [default])[0]
+            try:
+                cursor = int(value("cursor", "0"))
+            except ValueError:
+                raise ControlError("INVALID_ARGS", "Invalid tool detail cursor.") from None
+            result = runtime.tool_details.page(value("chatId", ""), value("ref", ""), value("snapshot"), cursor)
+            self._send_json(HTTPStatus.OK, result)
+        except ControlError as exc:
+            self._send_json(HTTPStatus(error_status(exc)), {"error": exc.code, "message": str(exc)})
+        except (sqlite3.Error, DeviceTokenStoreError):
+            runtime.console.message("error", "tool_details.storage_failed")
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "tool_details_storage_unavailable"})
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
